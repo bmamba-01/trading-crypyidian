@@ -108,7 +108,7 @@ async def run_probe(
     sessions = create_session_factory(engine)
     trade_patterns = ("loss", "flat", "profit") * 9 if scorer_seed else ("loss", "loss")
     pattern_stride = 10 if scorer_seed else 3
-    bar_count = 200 + pattern_stride * len(trade_patterns)
+    bar_count = 620 + pattern_stride * len(trade_patterns)
     dataset_start = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
         hours=bar_count
     )

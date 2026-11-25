@@ -79,7 +79,10 @@ from trading_bot.domain.research.source_policy import SourcePolicyState, SourceU
 from trading_bot.domain.research.source_registry import SourceRegistryEntry
 
 PHASE = os.environ.get("WP06_SOURCE_SCOPE_PHASE", "seed")
-STATE = json.loads(os.environ.get("WP06_SOURCE_SCOPE_STATE", "{}"))
+_RAW_STATE = os.environ.get("WP06_SOURCE_SCOPE_STATE")
+if _RAW_STATE is None and not sys.stdin.isatty():
+    _RAW_STATE = sys.stdin.read().strip()
+STATE = json.loads(_RAW_STATE or "{}")
 WORKSPACE_ID = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
 QA_SOURCE = "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE"
 QA_PROVIDER = "CRYPIDIAN_FIRST_PARTY_QA"

@@ -31,6 +31,12 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
     environment = os.environ | {
         "CRYPIDIAN_APP_IMAGE": image_reference,
         "TRADING_BOT_INGESTION_WORKSPACE_ID": workspace_id,
+        "TRADING_BOT_INGESTION_LIVE_SYMBOLS": "",
+        "TRADING_BOT_INGESTION_LIVE_EVENTS": "",
+        "TRADING_BOT_MARKET_COLLECTOR_ENABLED": "false",
+        "TRADING_BOT_MACRO_CALENDAR_ENABLED": "false",
+        "TRADING_BOT_DERIVATIVES_COLLECTOR_ENABLED": "false",
+        "TRADING_BOT_LISTINGS_COLLECTOR_ENABLED": "false",
     }
     probe_mount = f"{repository_root / 'tests'}:/e2e-tests:ro"
     probe_script = "/e2e-tests/e2e/probes/wp06_source_license_scope.py"
@@ -43,7 +49,7 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         "learning",
     )
 
-    def compose(*args: str) -> subprocess.CompletedProcess[str]:
+    def compose(*args: str, stdin_text: str | None = None) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             [
                 "docker",
@@ -59,6 +65,7 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
             capture_output=True,
             cwd=repository_root,
             env=environment,
+            input=stdin_text,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -83,6 +90,7 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
             "run",
             "--rm",
             "--no-deps",
+            "-T",
             "--volume",
             probe_mount,
             "-e",
@@ -100,9 +108,8 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
                     "WP06_E2E_SUPERUSER_PASSWORD_FILE=/run/secrets/wp06_e2e_postgres_password",
                 )
             )
-        if state is not None:
-            command.extend(("-e", f"WP06_SOURCE_SCOPE_STATE={json.dumps(state)}"))
-        result = compose(*command, service, "python", probe_script)
+        stdin_payload = json.dumps(state) if state is not None else None
+        result = compose(*command, service, "python", probe_script, stdin_text=stdin_payload)
         return json.loads(result.stdout.strip().splitlines()[-1])
 
     ensure_image_available(repository_root, image_reference)

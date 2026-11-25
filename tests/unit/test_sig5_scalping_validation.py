@@ -348,7 +348,7 @@ def test_backtest_replay_executor_uses_producer_window() -> None:
     from trading_bot.application.market_signal_composition import PRODUCER_MAX_BARS_PER_STREAM
 
     assert executor.REPLAY_MAX_BARS_PER_TIMEFRAME == PRODUCER_MAX_BARS_PER_STREAM
-    assert executor.REPLAY_CONTEXT_PROVIDER.endswith("window256")
+    assert executor.REPLAY_CONTEXT_PROVIDER.endswith("window768")
 
 
 def test_sig5_execution_uses_1m_bars_when_available(

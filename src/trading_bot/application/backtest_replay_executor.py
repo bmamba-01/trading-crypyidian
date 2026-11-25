@@ -121,8 +121,8 @@ def learning_feature_schema_hash_for_bundle(
 # lịch sử → O(n²): 180 ngày 15m một coin > 25 phút và > 4 GB RAM. Đo thật BTCUSDT 10 ngày 15m:
 # cùng 7 lệnh, PnL lệch < 1e-9 USDT. Đổi cửa sổ = đổi ngữ nghĩa → context provider v2 (đổi
 # pipeline_content_hash nên kết quả replay cũ/mới không bị coi là cùng pipeline).
-REPLAY_MAX_BARS_PER_TIMEFRAME = 256
-REPLAY_CONTEXT_PROVIDER = "backtest-dataset-runtime-context-v2-window256"
+REPLAY_MAX_BARS_PER_TIMEFRAME = 768
+REPLAY_CONTEXT_PROVIDER = "backtest-dataset-runtime-context-v3-window768"
 
 _SUPPORTED_EXECUTION_INTERVALS = {
     "1m": timedelta(minutes=1),

@@ -751,14 +751,15 @@ def build_h03_source_pinned_dataset_replay(
     if not isinstance(fee_rate, Decimal) or not fee_rate.is_finite() or fee_rate < 0:
         raise ValueError("fee_rate phải là Decimal hữu hạn không âm.")
 
-    bar_count = 200 + pattern_stride * len(trade_patterns)
+    warmup_bars = 620
+    bar_count = warmup_bars + pattern_stride * len(trade_patterns)
     end_anchor = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = dataset_start or end_anchor - timedelta(hours=bar_count)
     if start.tzinfo is None or start.utcoffset() is None:
         raise ValueError("dataset_start phải có múi giờ.")
     start = start.astimezone(UTC)
     range_end = start + timedelta(hours=bar_count)
-    evaluation_start = start + timedelta(hours=200)
+    evaluation_start = start + timedelta(hours=warmup_bars)
     if rights_evidence is None:
         # Pure unit fixture only; Compose E2E passes evidence issued by the persisted registry gate.
         rights = BackfillRightsEvidence(
@@ -787,7 +788,8 @@ def build_h03_source_pinned_dataset_replay(
         raise PermissionError("Rights evidence không khớp provider fixture.")
     bars: list[OHLCVBar] = []
     signal_patterns = {
-        200 + pattern_stride * index: pattern for index, pattern in enumerate(trade_patterns)
+        warmup_bars + pattern_stride * index: pattern
+        for index, pattern in enumerate(trade_patterns)
     }
     entry_patterns = {index + 1: pattern for index, pattern in signal_patterns.items()}
     exit_patterns = {index + 2: pattern for index, pattern in signal_patterns.items()}
@@ -898,7 +900,7 @@ def build_h03_source_pinned_dataset_replay(
     child_manifest = build_backtest_dataset_manifest(
         request,
         evaluation_start=evaluation_start,
-        warmup_bars=200,
+        warmup_bars=warmup_bars,
         bars=tuple(bars),
         rights_evidence=rights,
         prepared_at=range_end,

@@ -237,7 +237,7 @@ def test_license_evidence_upload_limits_through_tls_compose_proxy() -> None:
             f"{state['policy_id']}/license-evidence"
         )
         production_cookie_name = session_cookie_name(
-            AppSettings(app_env="production", allowed_hosts="localhost")
+            AppSettings(_env_file=None, app_env="production", allowed_hosts="localhost")
         )
         headers = {
             "Cookie": f"{production_cookie_name}={state['cookie']}",

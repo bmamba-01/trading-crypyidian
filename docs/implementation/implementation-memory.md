@@ -13,6 +13,39 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — Kiểm chứng & vá E2E `CRY-178` (`[WP-06/WP06.12]`) trên `dev`
+
+- **Mục tiêu/phạm vi:**
+  1. Chạy lại toàn bộ unit & Compose E2E của `CRY-178` trên `dev` sau khi hợp nhất `WP-06` & `CRY-455`:
+     - `tests/e2e/test_wp06_license_evidence_upload_proxy.py`: sửa `AppSettings(_env_file=None, app_env="production", allowed_hosts="localhost")` để tránh đọc `CRYPIDIAN_APP_IMAGE` từ `.env` Compose ở root.
+     - `tests/e2e/test_wp06_source_license_scope.py` & `tests/e2e/probes/wp06_source_license_scope.py`: cô lập `TRADING_BOT_INGESTION_LIVE_SYMBOLS=""` / tắt collector thực khỏi `.env` root để `ingestion-worker` đạt `healthy` trong test, và truyền `WP06_SOURCE_SCOPE_STATE` qua `stdin` (`-T`) để tránh lỗi `argument list too long` sau khi nâng warmup lên 620 nến.
+- **Kiểm chứng (`CRY-178`):**
+  - `uv run ruff check tests/e2e/test_wp06_source_license_scope.py tests/e2e/test_wp06_license_evidence_upload_proxy.py`: sạch 100%.
+  - Unit tests (`test_source_license_scope.py`, `test_wp06_training_license_scope_migration.py`): **71 passed in 1.57s**.
+  - Compose E2E `test_wp06_license_evidence_upload_proxy.py`: **1 passed**.
+  - Compose E2E `test_wp06_source_license_scope.py`: **1 passed in 242.40s**.
+  - Giữ `CRY-178` ở `In Progress` do phần còn mở là bằng chứng giấy phép `non-QA` thật bên ngoài (không dùng QA để giả entitlement; `SHADOW`/`PAPER_GATE` tiếp tục khóa).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
+### 2026-11-25 — Hoàn tất CRY-455 (`[WP-06/WP06.13-gap-replay-fixture]`)
+
+- **Mục tiêu/phạm vi:**
+  1. Khắc phục lỗi `QUALITY_NOT_READY: Feature 1h:atr_14 không READY` trong `build_h03_source_pinned_dataset_replay` (`tests/fixtures/runtime_replay.py`): nâng `warmup_bars` từ `200` lên `620`.
+  2. Đồng bộ cửa sổ replay `REPLAY_MAX_BARS_PER_TIMEFRAME = 768` và `REPLAY_CONTEXT_PROVIDER = "backtest-dataset-runtime-context-v3-window768"` trong `src/trading_bot/application/backtest_replay_executor.py` khớp `PRODUCER_MAX_BARS_PER_STREAM = 768` (`tests/unit/test_sig5_scalping_validation.py` cập nhật `window768`).
+  3. Cập nhật `bar_count = 620 + ...` trong `tests/e2e/probes/wp06_source_pinned_replay_persistence.py`.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent src/trading_bot/application/backtest_replay_executor.py`: sạch 100%.
+  - Unit tests (`test_wp06_source_pinned_scorer_replay_fixture.py`, `test_ai5_r_band_labels.py`, `test_sig5_scalping_validation.py` lọc `test_wp06 or test_training or test_r_band or test_backtest_replay_executor_uses_producer_window or test_sig5_execution_uses_1m_bars_when_available`): **15 passed, 22 deselected in 95.27s**.
+  - Compose E2E PostgreSQL `tests/e2e/test_wp06_replay_rights_races.py`: **1 passed in 579.49s**.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
+### 2026-11-25 — CRY-374 lát đầu: read-model bối cảnh thị trường có provenance
+
+- **Phạm vi:** chuyển `CRY-374` `[WP-07D/market-context]` Backlog → In Progress. Thêm `src/trading_bot/domain/portfolio/market_context.py`: observation có provenance (nguồn/checksum/`event_at`/`available_at`/revision), coverage theo cửa sổ 24h, ngưỡng stale, cảnh báo reason-coded `NO_DATA`/`STALE`/`PARTIAL_COVERAGE`/`RIGHTS_NOT_ALLOWED` với thông điệp tiếng Việt. Quyền hiển thị dùng `SourceUsePurpose.DISPLAY`; khi từ chối thì payload **không** chứa giá trị/checksum/nguồn. Cờ `used_for_fill_or_signal=False` khẳng định bối cảnh không phải giá fill hay tín hiệu.
+- **Kiểm chứng:** `uv run pytest -q --tb=short tests/unit/test_cry374_market_context.py` → **6 passed/0.07s**; `uv run ruff check`, `ruff format --check`, `mypy --explicit-package-bases --follow-imports=silent` và `git diff --check` đạt.
+- **Tracker:** column In Progress (3), comment **#4604** nêu phạm vi lát và lệnh kiểm chứng. Chưa làm DB read-model, API/admin mobile hay Compose E2E → không chuyển Done.
+- **Va chạm:** 4 file của hướng fix CRY-455 đang bẩn do agent khác (sửa lúc 13:46–13:50) — không đụng vào; chỉ thêm file mới.
+
 ### 2026-11-25 — Hoàn tất CRY-453 (`[WP-07B/retention-gap]`) & bổ sung kiểm chứng `CRY-313`
 
 - **Mục tiêu/phạm vi (`CRY-453`):**
