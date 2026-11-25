@@ -227,6 +227,7 @@ class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
             name="derivatives_snapshot_values_valid",
         ),
         Index("ix_derivatives_snapshot_asof", "workspace_id", "collected_at", "symbol"),
+        Index("ix_derivatives_snapshot_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(
@@ -234,6 +235,7 @@ class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
     )
     symbol: Mapped[str] = mapped_column(String(40), nullable=False)
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     mark_price: Mapped[Decimal] = mapped_column(_STAT, nullable=False)

@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from trading_bot.application.source_use_gate import SourceUseGate
 from trading_bot.domain.research.derivatives import (
+    DERIVATIVES_RETENTION_DAYS,
     DERIVATIVES_SOURCE_ID,
     SourceThrottled,
     build_snapshot,
@@ -39,6 +40,8 @@ class DerivativesStore(Protocol):
     def gate(self, source_id: str) -> SourceUseGate: ...
 
     async def last_collected_at(self) -> datetime | None: ...
+
+    async def prune_expired(self, now: datetime) -> int: ...
 
     async def insert(self, record: dict[str, Any]) -> None: ...
 
@@ -74,6 +77,9 @@ class DerivativesCollector:
     async def collect_once(self, now: datetime) -> DerivativesTickResult:
         try:
             async with self._store_scope() as store:
+                removed = await store.prune_expired(now)
+                if removed:
+                    logger.info("derivatives: đã xoá %s ảnh chụp hết hạn", removed)
                 last = await store.last_collected_at()
                 if last is not None and now - last < self._refresh:
                     return DerivativesTickResult("skipped_recent")
@@ -109,6 +115,7 @@ class DerivativesCollector:
                             "id": uuid4(),
                             "workspace_id": self._workspace_id,
                             "policy_fingerprint": evidence.policy_fingerprint,
+                            "expires_at": now + timedelta(days=DERIVATIVES_RETENTION_DAYS),
                             **record,
                         }
                     )
