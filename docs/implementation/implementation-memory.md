@@ -13,6 +13,31 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-463 [OPS07F/Task5] Done: Preflight chỉ đọc và đối soát trạng thái sàn
+
+- **Tài liệu Binance USDⓈ-M đã kiểm tra (2026-11-25):**
+  - `GET /fapi/v1/time`, `GET /fapi/v1/exchangeInfo`, `GET /fapi/v3/balance` (USER_DATA, weight 5), `GET /fapi/v3/positionRisk` (USER_DATA, weight 1, chỉ trả symbol có vị thế/lệnh mở), `GET /fapi/v1/openOrders` (USER_DATA, weight 1/40), rate limits `X-MBX-USED-WEIGHT-1M` (2400/min, HTTP 429/418) — nguồn `https://developers.binance.com/docs/derivatives/usds-margined-futures/` (kiểm tra 25/11/2026).
+  - **Endpoint bị loại tuyệt đối khỏi preflight:** `POST /fapi/v1/order`, `PUT /fapi/v1/order`, `DELETE /fapi/v1/order`, `DELETE /fapi/v1/allOpenOrders`, `POST /fapi/v1/batchOrders`, `/sapi/*` (withdraw/transfer).
+- **Phạm vi & thay đổi:**
+  - `src/trading_bot/domain/execution/live_preflight.py`: định nghĩa `LivePreflightSnapshot` (kèm SHA-256 `compute_hash()`), `LocalReconciliationState`, `PreflightReasonCode`, `LivePreflightVerdict` và hàm thuần `evaluate_live_preflight` fail-closed (kiểm account/environment mismatch, stale snapshot, clock drift, quyền API thiếu READ hoặc bật WITHDRAW/TRANSFER, UNKNOWN intent, stream sequence gap, foreign position, exposure mismatch, thiếu lệnh bảo vệ, foreign order).
+  - `src/trading_bot/application/live_preflight_service.py`: `LiveReadOnlyPreflightService` dùng `ReadOnlyVenueGateway` chỉ đọc với retry exponential backoff an toàn; lỗi endpoint trả `PREFLIGHT_ENDPOINT_FAILURE` và giữ `hold_reservations=True`.
+  - `src/trading_bot/adapters/database/repositories/live_preflight.py`: `SqlAlchemyPreflightIncidentRecorder` lưu `readiness='RECOVERY_REQUIRED'`, `reason_code`, `activity_status='UNVERIFIED'` vào `bot_runtime_state`, không chạm/xóa `risk_reservation`.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` & `uv run mypy` trên 3 source files + 2 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_live_readiness_reconciliation.py tests/e2e/test_live_readonly_preflight_e2e.py`: **16 passed in 18.75s** (10 unit + 5 in-process guard/network-boundary + 1 PostgreSQL Compose E2E xác minh `bot_runtime_state` ghi `RECOVERY_REQUIRED`/`PREFLIGHT_FOREIGN_POSITION`, giữ nguyên 2 `risk_reservation` `RESERVED` & `UNKNOWN`, chỉ gọi `GET`).
+  - Regression venue/readiness: **78 passed in 2.78s**.
+- **Pitfall & giới hạn còn lại:**
+  - Trigger DB tự sinh `bot_instance` khi insert `trading_account`, và `mb05_guard_runtime_lease` giới hạn TTL của `bot_runtime_lease` (dùng 30s).
+  - Task này **không tự mở Live**; việc kết nối production thật vẫn khóa sau các gate OPS07F/Task3–4 & G0–G5.
+
+### 2026-11-25 — Setup AI module chạy được: warmup 600/768 cho feature vector
+
+- Nguyên nhân 10 unit learning đỏ: `h01-v1` cần `ema_200`, warmup `3x = 600` nến; fixture 224/206 nến làm `FeatureSnapshot.is_usable=false`, mọi feature trả `QUALITY_NOT_READY` (báo lỗi ở `1h:ema_20`). Không hạ trap `exact_decimal`; tăng fixture lên 640/640 nến.
+- Compose parity: probe `wp06_learning_feature_vector_parity.py` tăng 640/640 và đặt `BotDecisionContext.max_bars_per_stream=1200` (default 256 không đủ warmup 600); assertion `bar_counts` 640. E2E parity **1 passed/29,24s**, evaluator CLI **1 passed**, training process supervision **1 passed**; unit learning **990 passed/12,35s**.
+- Task9 probe: 1h 260→800, 4h 205→640 theo cửa sổ producer 768. Producer tạo 3 quyết định/3 dispatched, nhưng `status=ABSTAIN` (artifact chưa hiệu chuẩn) → assertion CANDIDATE vẫn đỏ. Đây là blocker entitlement/calibration của CRY-330/332, không đổi assertion để nhận ABSTAIN. Thêm diagnostic `statuses`/`evidence_count` trong probe để lần sau không phải đoán.
+- Tracker: comments **#4878** (CRY-236), **#4879** (CRY-330); CRY-236 giữ In Progress vì chưa có policy/evidence TRAINING non-QA, corpus ≥1.000/100 mỗi lớp và active scorer dương tính.
+- Race điều chỉnh `.env`: agent khác cũng dời/khôi phục `.env` trong lúc chạy test; dùng tên backup có PID và `trap` trong cùng shell, luôn xác nhận file gốc trở lại trước khi kết thúc.
+
 ### 2026-11-25 — CRY-231 [CK-12/con-lai] Done: Lỗ ngày múi giờ cấu hình, cầu dao thật & telemetry runtime
 
 - **Phạm vi & thay đổi:**

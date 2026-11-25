@@ -9,12 +9,17 @@ Chứng minh:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from scripts.docker_image import build_image_reference, ensure_image_available
 
 from trading_bot.adapters.binance_usdm.demo_rest import BinanceHttpRequest, BinanceHttpResponse
 from trading_bot.adapters.binance_usdm.gateway_boundary import (
@@ -331,3 +336,364 @@ async def test_e2e_full_matched_state_opens_entry_safely() -> None:
     assert verdict.reason_code == PreflightReasonCode.PASSED
     assert verdict.hold_reservations is False
     assert len(recorder.incidents) == 0
+
+
+def test_e2e_postgres_readonly_preflight_denial_holds_reservation_and_closes_entry() -> None:
+    """Compose PostgreSQL E2E: denial ghi DB thật, entry đóng, reservation giữ nguyên."""
+    repo_root = Path(__file__).resolve().parents[2]
+    compose_file = repo_root / "compose.yaml"
+    project_name = f"crypidian-cry463-preflight-{uuid4().hex[:10]}"
+    env = os.environ.copy()
+    env.setdefault("APP_IMAGE", build_image_reference(repo_root))
+    env["CRYPIDIAN_APP_IMAGE"] = env["APP_IMAGE"]
+    env["COMPOSE_PROJECT_NAME"] = project_name
+
+    ensure_image_available(repo_root, env["APP_IMAGE"])
+    subprocess.run(
+        [sys.executable, str(repo_root / "scripts/prepare_local_secrets.py")],
+        cwd=repo_root,
+        check=True,
+    )
+    base_cmd = [
+        "docker",
+        "compose",
+        "--profile",
+        "paper",
+        "--project-name",
+        project_name,
+        "-f",
+        str(compose_file),
+    ]
+
+    drill_code = """
+import asyncio
+import json
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
+
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from trading_bot.adapters.binance_usdm.demo_rest import BinanceHttpRequest, BinanceHttpResponse
+from trading_bot.adapters.database.models.bot_entities import BotInstance
+from trading_bot.adapters.database.models.bot_runtime_entities import (
+    BotRuntimeLeaseRecord,
+    BotRuntimeStateRecord,
+)
+from trading_bot.adapters.database.models.entities import TradingAccount, Workspace
+from trading_bot.adapters.database.models.risk_entities import (
+    RiskDecisionRecord,
+    RiskReservationRecord,
+    TradePlanRecord,
+)
+from trading_bot.adapters.database.repositories.live_preflight import (
+    SqlAlchemyPreflightIncidentRecorder,
+)
+from trading_bot.application.live_preflight_service import LiveReadOnlyPreflightService
+from trading_bot.domain.execution.live_preflight import (
+    LivePreflightSnapshot,
+    LocalReconciliationState,
+    PreflightReasonCode,
+    VenuePositionSnapshot,
+)
+
+async def run_drill() -> None:
+    with open("/run/secrets/postgres_password", "r", encoding="utf-8") as fh:
+        pw = fh.read().strip()
+    url = f"postgresql+psycopg://crypidian_admin:{pw}@postgres:5432/crypidian"
+    engine = create_async_engine(url)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    now = datetime.now(UTC)
+    ws_id = uuid4()
+    acc_id = uuid4()
+    bot_id = uuid4()
+    plan_hash = "a" * 64
+    decision_id = uuid4()
+    res_reserved_id = uuid4()
+    res_unknown_id = uuid4()
+
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"),
+                {"ws": str(ws_id)},
+            )
+            await session.execute(
+                text("SELECT set_config('app.bot_id', :bot, true)"),
+                {"bot": str(bot_id)},
+            )
+            session.add(
+                Workspace(
+                    id=ws_id,
+                    slug=f"ws-{ws_id.hex[:8]}",
+                    name="Preflight E2E",
+                    mode="PAPER",
+                    status="ACTIVE",
+                )
+            )
+            await session.flush()
+            session.add(
+                TradingAccount(
+                    id=acc_id,
+                    workspace_id=ws_id,
+                    name="Live Candidate Account",
+                    venue="binance_usdm",
+                    mode="PAPER",
+                    environment="local",
+                    status="ENABLED",
+                    max_notional=Decimal("10000"),
+                )
+            )
+            await session.flush()
+            existing_bot = await session.scalar(
+                select(BotInstance).where(
+                    BotInstance.workspace_id == ws_id,
+                    BotInstance.trading_account_id == acc_id,
+                )
+            )
+            if existing_bot is not None:
+                bot_id = existing_bot.id
+                await session.execute(
+                    text("SELECT set_config('app.bot_id', :bot, true)"),
+                    {"bot": str(bot_id)},
+                )
+            else:
+                session.add(
+                    BotInstance(
+                        id=bot_id,
+                        workspace_id=ws_id,
+                        trading_account_id=acc_id,
+                        name="Preflight Bot",
+                        status="ENABLED",
+                    )
+                )
+                await session.flush()
+            session.add(
+                BotRuntimeLeaseRecord(
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    owner_id="preflight-e2e-worker",
+                    fencing_token=1,
+                    expires_at=now + timedelta(seconds=30),
+                )
+            )
+            await session.flush()
+            session.add(
+                BotRuntimeStateRecord(
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    readiness="STARTING",
+                    reason_code=None,
+                    heartbeat_at=now,
+                    fencing_token=1,
+                )
+            )
+            session.add(
+                TradePlanRecord(
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    plan_hash=plan_hash,
+                    symbol="BTCUSDT",
+                    notional=Decimal("500"),
+                    payload={"symbol": "BTCUSDT"},
+                )
+            )
+            await session.flush()
+            session.add(
+                RiskDecisionRecord(
+                    id=decision_id,
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    decision_key="dec-key-1",
+                    plan_hash=plan_hash,
+                    snapshot_id="snap-1",
+                    approved=True,
+                    reason_code="APPROVED",
+                    detail_vi="Duyệt cho kiểm thử preflight",
+                    payload={},
+                )
+            )
+            await session.flush()
+            session.add(
+                RiskReservationRecord(
+                    id=res_reserved_id,
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    risk_decision_id=decision_id,
+                    idempotency_key="res-reserved-1",
+                    plan_hash=plan_hash,
+                    symbol="BTCUSDT",
+                    reserved_risk=Decimal("25"),
+                    reserved_notional=Decimal("500"),
+                    reserved_initial_margin=Decimal("100"),
+                    expires_at=now + timedelta(minutes=30),
+                    status="RESERVED",
+                    resolution_reason=None,
+                )
+            )
+            session.add(
+                RiskReservationRecord(
+                    id=res_unknown_id,
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=acc_id,
+                    risk_decision_id=decision_id,
+                    idempotency_key="res-unknown-1",
+                    plan_hash=plan_hash,
+                    symbol="BTCUSDT",
+                    reserved_risk=Decimal("30"),
+                    reserved_notional=Decimal("600"),
+                    reserved_initial_margin=Decimal("120"),
+                    expires_at=now + timedelta(minutes=30),
+                    status="UNKNOWN",
+                    resolution_reason=None,
+                )
+            )
+
+    sent_methods: list[str] = []
+
+    class _FakeReadOnlyGateway:
+        async def fetch_authoritative_snapshot(self) -> LivePreflightSnapshot:
+            req = BinanceHttpRequest(
+                method="GET",
+                url="https://demo-fapi.binance.com/fapi/v3/account",
+                headers=(("User-Agent", "CrypidianBot"),),
+                body=b"",
+            )
+            sent_methods.append(req.method)
+            return LivePreflightSnapshot(
+                account_id=str(acc_id),
+                environment="LIVE",
+                observed_at=now,
+                server_time=now,
+                api_permissions=frozenset({"READ", "TRADE"}),
+                balances={"USDT": Decimal("10000")},
+                positions=[
+                    VenuePositionSnapshot(
+                        symbol="ETHUSDT",
+                        position_side="BOTH",
+                        quantity=Decimal("2.5"),
+                        entry_price=Decimal("3000"),
+                        mark_price=Decimal("3020"),
+                        unrealized_pnl=Decimal("50"),
+                    )
+                ],
+                open_orders=[],
+                algo_orders=[],
+            )
+
+    class _StateProvider:
+        async def load_local_state(self, **kwargs):
+            return LocalReconciliationState(
+                account_id=str(acc_id),
+                environment="LIVE",
+                known_client_order_ids=frozenset(),
+                known_positions={},
+                active_protection_symbols=frozenset(),
+                unknown_intent_ids=[],
+            )
+
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"),
+                {"ws": str(ws_id)},
+            )
+            await session.execute(
+                text("SELECT set_config('app.bot_id', :bot, true)"),
+                {"bot": str(bot_id)},
+            )
+            service = LiveReadOnlyPreflightService(
+                venue_gateway=_FakeReadOnlyGateway(),
+                state_provider=_StateProvider(),
+                incident_recorder=SqlAlchemyPreflightIncidentRecorder(session),
+                clock=lambda: now,
+            )
+            verdict = await service.run_preflight(
+                workspace_id=ws_id, bot_id=bot_id, account_id=acc_id
+            )
+            assert verdict.passed is False
+            assert verdict.reason_code == PreflightReasonCode.FOREIGN_POSITION
+            assert verdict.hold_reservations is True
+
+    # Xác minh trực tiếp trên PostgreSQL trong transaction độc lập
+    async with session_factory() as session:
+        state = await session.scalar(
+            select(BotRuntimeStateRecord).where(BotRuntimeStateRecord.bot_id == bot_id)
+        )
+        assert state is not None
+        assert state.readiness == "RECOVERY_REQUIRED"
+        assert state.reason_code == "PREFLIGHT_FOREIGN_POSITION"
+        assert state.activity_status == "UNVERIFIED"
+
+        reservations = (
+            await session.scalars(
+                select(RiskReservationRecord).where(RiskReservationRecord.bot_id == bot_id)
+            )
+        ).all()
+        statuses = {r.id: r.status for r in reservations}
+        assert statuses == {res_reserved_id: "RESERVED", res_unknown_id: "UNKNOWN"}
+        assert all(m == "GET" for m in sent_methods)
+
+    await engine.dispose()
+    print(json.dumps({"ok": True, "reason": state.reason_code, "reservations": len(statuses)}))
+
+asyncio.run(run_drill())
+"""
+
+    try:
+        subprocess.run(
+            [*base_cmd, "up", "--detach", "--wait", "--wait-timeout", "180", "postgres"],
+            env=env,
+            cwd=repo_root,
+            check=True,
+        )
+        subprocess.run(
+            [*base_cmd, "run", "--rm", "--no-deps", "db-provisioner"],
+            env=env,
+            cwd=repo_root,
+            check=True,
+        )
+        subprocess.run(
+            [*base_cmd, "run", "--rm", "--no-deps", "-T", "migrator", "alembic", "upgrade", "head"],
+            env=env,
+            cwd=repo_root,
+            check=True,
+        )
+        result = subprocess.run(
+            [
+                *base_cmd,
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "-v",
+                f"{repo_root / '.secrets'}:/run/secrets:ro",
+                "-v",
+                f"{repo_root / 'src/trading_bot'}:/app/src/trading_bot:ro",
+                "migrator",
+                "python",
+                "-c",
+                drill_code,
+            ],
+            env=env,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + "\n" + result.stderr
+        assert '"ok": true' in result.stdout, result.stdout
+    finally:
+        subprocess.run(
+            [*base_cmd, "down", "-v", "--remove-orphans"],
+            env=env,
+            cwd=repo_root,
+            check=False,
+        )
