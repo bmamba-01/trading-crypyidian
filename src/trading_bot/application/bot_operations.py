@@ -80,6 +80,20 @@ class BotRuntimeStatus:
     readiness_reason_code: str | None
     workspace_kill_state: WorkspaceKillState
     workspace_control_revision: int
+    # CRY-231 (CK-12): thông tin lease, heartbeat và mốc tick gần nhất phục vụ giám sát.
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    last_tick_at: datetime | None = None
+
+    @property
+    def lease(self) -> dict[str, Any] | None:
+        if self.lease_owner is None and self.lease_expires_at is None:
+            return None
+        return {
+            "owner": self.lease_owner,
+            "expires_at": self.lease_expires_at.isoformat() if self.lease_expires_at else None,
+        }
 
     @property
     def entry_allowed(self) -> bool:
@@ -103,6 +117,13 @@ class BotRuntimeStatus:
             "workspace_kill_state": self.workspace_kill_state.value,
             "workspace_control_revision": self.workspace_control_revision,
             "entry_allowed": self.entry_allowed,
+            "lease": self.lease,
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": (
+                self.lease_expires_at.isoformat() if self.lease_expires_at else None
+            ),
+            "heartbeat_at": self.heartbeat_at.isoformat() if self.heartbeat_at else None,
+            "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
         }
 
 
@@ -519,4 +540,8 @@ def _status(
         readiness_reason_code=runtime.readiness_reason_code,
         workspace_kill_state=workspace.kill_state,
         workspace_control_revision=workspace.revision,
+        lease_owner=runtime.lease_owner,
+        lease_expires_at=runtime.lease_expires_at,
+        heartbeat_at=runtime.heartbeat_at,
+        last_tick_at=runtime.last_tick_at,
     )

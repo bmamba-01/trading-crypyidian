@@ -280,10 +280,12 @@ class BotReportingService:
         repository: Callable[[Any], Any] = BotReportRepository,
         grants: Callable[[Any], Any] = BotGrantRepository,
         bot_config_loader: Callable[..., Any] | None = None,
+        drawdown_breaker_provider: Callable[..., Any] | None = None,
     ) -> None:
         self._sessions = sessions
         self._report_reader_sessions = report_reader_sessions
         self._bot_config_loader = bot_config_loader
+        self._drawdown_breaker_provider = drawdown_breaker_provider
         self._unit_of_work = unit_of_work
         self._repository = repository
         self._grants = grants
@@ -773,10 +775,12 @@ class BotReportingService:
 
         loader = self._bot_config_loader or load_effective_bot_config
         from trading_bot.domain.risk.protection_view import protection_view
+        from trading_bot.domain.risk.risk_windows import daily_window_start
 
         bot = await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id)
         limits = None
         limits_note: str | None = None
+        loss_tz: str | None = None
         try:
             config = await loader(
                 session, workspace_id=principal.workspace_id, account_id=bot.account_id, as_of=now
@@ -788,7 +792,8 @@ class BotReportingService:
                 limits_note = "Bot chưa publish cấu hình nên chưa có giới hạn hiệu lực."
             else:
                 limits = config.risk_limits
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                loss_tz = getattr(config, "loss_window_timezone", None)
+        day_start = daily_window_start(now, loss_tz)
         today = await repository.closed_net_since(
             workspace_id=principal.workspace_id, bot_id=bot_id, since=day_start
         )
@@ -796,6 +801,21 @@ class BotReportingService:
             workspace_id=principal.workspace_id, bot_id=bot_id, since=now - timedelta(hours=24)
         )
         asset = next(iter(sorted({*today, *rolling})), "USDT")
+
+        breaker_view: dict[str, Any] | None = None
+        drawdown_provider = self._drawdown_breaker_provider
+        if drawdown_provider is not None:
+            try:
+                breaker_view = await drawdown_provider(
+                    session=session,
+                    workspace_id=principal.workspace_id,
+                    bot_id=bot_id,
+                    account_id=bot.account_id,
+                    as_of=now,
+                )
+            except Exception:
+                breaker_view = None
+
         view = protection_view(
             open_positions=await repository.count_open_trades(
                 workspace_id=principal.workspace_id, bot_id=bot_id
@@ -806,6 +826,8 @@ class BotReportingService:
             max_daily_loss=limits.max_daily_loss if limits else None,
             max_rolling_loss=limits.max_rolling_loss if limits else None,
             quote_asset=asset,
+            timezone_name=loss_tz or "UTC",
+            breaker=breaker_view,
         )
         view["note"] = limits_note
         return view

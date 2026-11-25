@@ -364,8 +364,14 @@
           <div><dt>Vận hành</dt><dd>{% if setup.runtime %}{{ setup.runtime.entry_state | label_vi }}{% if setup.runtime.workspace_kill_state != "ACTIVE" %} · workspace {{ setup.runtime.workspace_kill_state | label_vi }}{% endif %} · {{ "cho phép vào lệnh" if setup.runtime.entry_allowed else "không vào lệnh mới" }}{% else %}Chưa đọc được{% endif %}</dd></div>
           {% set pr = setup.protection %}
           <div class="mc-monitor--{{ pr.slots.state }}"><dt>Chỗ chạy</dt><dd data-monitor-slots>{{ pr.slots.label }}{% if pr.slots.state == "full" %} · đã đủ{% endif %}</dd></div>
-          <div class="mc-monitor--{{ pr.daily.state }}"><dt>Lỗ ròng hôm nay (UTC)</dt><dd>{{ pr.daily.loss | number2_vi }}{% if pr.daily.limit is not none %} / {{ pr.daily.limit | number2_vi }} {{ pr.quote_asset }} ({{ pr.daily.used_pct | round(0) | int }}%){% else %} {{ pr.quote_asset }}{% endif %}</dd></div>
+          <div class="mc-monitor--{{ pr.daily.state }}"><dt>Lỗ ròng hôm nay ({{ pr.timezone or "UTC" }})</dt><dd>{{ pr.daily.loss | number2_vi }}{% if pr.daily.limit is not none %} / {{ pr.daily.limit | number2_vi }} {{ pr.quote_asset }} ({{ pr.daily.used_pct | round(0) | int }}%){% else %} {{ pr.quote_asset }}{% endif %}</dd></div>
           <div class="mc-monitor--{{ pr.rolling.state }}"><dt>Lỗ ròng 24 giờ</dt><dd>{{ pr.rolling.loss | number2_vi }}{% if pr.rolling.limit is not none %} / {{ pr.rolling.limit | number2_vi }} {{ pr.quote_asset }} ({{ pr.rolling.used_pct | round(0) | int }}%){% else %} {{ pr.quote_asset }}{% endif %}</dd></div>
+          {% if pr.breaker %}
+          <div class="mc-monitor--{{ pr.breaker.state or ('breached' if pr.breaker.tripped else 'ok') }}"><dt>Cầu dao drawdown (FX-2)</dt><dd data-monitor-breaker>{{ "Đã ngắt mạch" if pr.breaker.tripped else "Ổn định" }}{% if pr.breaker.drawdown_pct %} · sụt vốn {{ pr.breaker.drawdown_pct }}{% if pr.breaker.max_drawdown_pct %} / {{ pr.breaker.max_drawdown_pct }}{% endif %}{% endif %}</dd></div>
+          {% endif %}
+          {% if setup.runtime and (setup.runtime.heartbeat_at or setup.runtime.lease_owner or setup.runtime.last_tick_at) %}
+          <div><dt>Runtime</dt><dd data-monitor-runtime>{% if setup.runtime.lease_owner %}Lease: {{ setup.runtime.lease_owner }}{% endif %}{% if setup.runtime.heartbeat_at %} · Heartbeat: {{ setup.runtime.heartbeat_at }}{% endif %}{% if setup.runtime.last_tick_at %} · Tick: {{ setup.runtime.last_tick_at }}{% endif %}</dd></div>
+          {% endif %}
         </dl>
         {% if pr.note %}<p class="sc-meta">{{ pr.note }}</p>{% endif %}
         <p class="mc-setup__links"><a href="/admin/bots/{{ setup.bot_id }}">Trang bot (tạm dừng/tiếp tục có lý do)</a> · <a href="/admin/chart?bot_id={{ setup.bot_id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">Xem bot này trên chart (dock "Nhật ký quyết định")</a></p>

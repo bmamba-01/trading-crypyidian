@@ -710,7 +710,9 @@ async def _build_operations_health_data(
         else None
     )
     if health_service is None and request is not None:
-        session_factory = getattr(request.app.state, "session_factory", None)
+        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+            request.app.state, "database_session_factory", None
+        )
         if session_factory is not None:
             health_service = OperationalHealthService(session_factory)
     if health_service is not None:

@@ -36,10 +36,10 @@ from trading_bot.domain.risk.circuit_breaker import (
 )
 from trading_bot.domain.risk.drawdown_breaker import ClosedTradePnl, evaluate_drawdown_breaker
 from trading_bot.domain.risk.risk_windows import (
-    RISK_LOSS_WINDOW_POLICY,
     LossWindowSnapshot,
     RealizedTradePnlEvent,
     calculate_loss_windows,
+    loss_window_policy_for,
 )
 
 _LOSS_LOOKBACK = timedelta(hours=48)
@@ -231,7 +231,21 @@ class OperationalTelemetryRepository:
             for trade_id, closed_at, net_pnl in rows
             if closed_at is not None and net_pnl is not None
         ]
-        return calculate_loss_windows(events, as_of=as_of, policy=RISK_LOSS_WINDOW_POLICY)
+        tz_name: str | None = None
+        try:
+            from trading_bot.adapters.database.repositories.workspace_settings import (
+                WorkspaceSettingsRepository,
+            )
+
+            published = await WorkspaceSettingsRepository(self._session).load_effective_config(
+                workspace_id=workspace_id, as_of=as_of
+            )
+            if published is not None:
+                tz_name = published.settings.risk.loss_window_timezone
+        except Exception:
+            tz_name = None
+        policy = loss_window_policy_for(tz_name)
+        return calculate_loss_windows(events, as_of=as_of, policy=policy)
 
     async def _load_drawdown_pct(
         self,

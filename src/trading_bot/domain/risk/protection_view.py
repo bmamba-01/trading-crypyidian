@@ -40,6 +40,8 @@ def protection_view(
     max_daily_loss: Decimal | None,
     max_rolling_loss: Decimal | None,
     quote_asset: str,
+    timezone_name: str = "UTC",
+    breaker: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if max_positions is None or max_positions <= 0:
         slots = {
@@ -57,12 +59,22 @@ def protection_view(
         }
     daily = _loss(net_today, max_daily_loss)
     rolling = _loss(net_24h, max_rolling_loss)
-    overall = max((slots["state"], daily["state"], rolling["state"]), key=lambda item: _ORDER[item])
+    states = [slots["state"], daily["state"], rolling["state"]]
+    if breaker is not None:
+        b_tripped = bool(breaker.get("tripped", False))
+        b_state = breaker.get("state") or ("breached" if b_tripped else "ok")
+        if b_tripped:
+            states.append("breached")
+        elif b_state in _ORDER:
+            states.append(b_state)
+    overall = max(states, key=lambda item: _ORDER.get(item, 1))
     return {
         "formula_version": PROTECTION_VERSION,
         "quote_asset": quote_asset,
+        "timezone": timezone_name,
         "slots": slots,
         "daily": daily,
         "rolling": rolling,
         "overall": overall,
+        "breaker": breaker,
     }

@@ -95,3 +95,30 @@ def test_loss_window_can_include_unrealized_loss_and_rejects_naive_datetime() ->
             as_of=datetime(2026, 11, 14, 10, 0),  # noqa: DTZ001
             policy=policy,
         )
+
+
+def test_daily_window_start_utc_and_configured_timezones() -> None:
+    """Kiểm tra mốc bắt đầu ngày theo múi giờ cấu hình (CRY-231)."""
+    from trading_bot.domain.risk.risk_windows import daily_window_start
+
+    # UTC mặc định
+    as_of_utc = datetime(2026, 11, 14, 15, 30, tzinfo=UTC)
+    start_utc = daily_window_start(as_of_utc)
+    assert start_utc == datetime(2026, 11, 14, 0, 0, tzinfo=UTC)
+
+    # Asia/Ho_Chi_Minh (UTC+7): lúc 10:00 UTC ngày 14/11 là 17:00 VN ngày 14/11
+    # Bắt đầu ngày 14/11 VN là 00:00 VN ngày 14/11 = 17:00 UTC ngày 13/11
+    start_vn = daily_window_start(as_of_utc, "Asia/Ho_Chi_Minh")
+    assert start_vn == datetime(2026, 11, 13, 17, 0, tzinfo=UTC)
+
+    # Khi as_of là 02:00 UTC ngày 14/11 (09:00 VN ngày 14/11)
+    as_of_early = datetime(2026, 11, 14, 2, 0, tzinfo=UTC)
+    assert daily_window_start(as_of_early, "Asia/Ho_Chi_Minh") == datetime(
+        2026, 11, 13, 17, 0, tzinfo=UTC
+    )
+
+    # Với LossWindowPolicy có daily_reset_hour=7
+    policy = LossWindowPolicy(timezone_name="Asia/Ho_Chi_Minh", daily_reset_hour=7)
+    # 08:00 VN ngày 14/11 (01:00 UTC) -> mốc reset là 07:00 VN ngày 14/11 (00:00 UTC 14/11)
+    as_of_after_reset = datetime(2026, 11, 14, 1, 0, tzinfo=UTC)
+    assert daily_window_start(as_of_after_reset, policy) == datetime(2026, 11, 14, 0, 0, tzinfo=UTC)

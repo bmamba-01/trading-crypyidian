@@ -16,7 +16,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import (
+    BotDecisionRecord,
     BotInstance,
+    BotRuntimeLeaseRecord,
     BotRuntimeStateRecord,
     TradingAccount,
 )
@@ -50,6 +52,11 @@ class BotRuntimeRow:
     control_revision: int
     readiness: str | None
     readiness_reason_code: str | None
+    # CRY-231 (CK-12): lease, heartbeat và mốc tick/decision gần nhất.
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    last_tick_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,17 +119,44 @@ class BotOperationsRepository:
         control = await BotRuntimeControlRepository(self._session).current_bot(workspace_id, bot_id)
         state = (
             await self._session.execute(
-                select(BotRuntimeStateRecord.readiness, BotRuntimeStateRecord.reason_code).where(
+                select(
+                    BotRuntimeStateRecord.readiness,
+                    BotRuntimeStateRecord.reason_code,
+                    BotRuntimeStateRecord.heartbeat_at,
+                ).where(
                     BotRuntimeStateRecord.workspace_id == workspace_id,
                     BotRuntimeStateRecord.bot_id == bot_id,
                 )
             )
         ).first()
+        lease = (
+            await self._session.execute(
+                select(
+                    BotRuntimeLeaseRecord.owner_id,
+                    BotRuntimeLeaseRecord.expires_at,
+                ).where(
+                    BotRuntimeLeaseRecord.workspace_id == workspace_id,
+                    BotRuntimeLeaseRecord.bot_id == bot_id,
+                )
+            )
+        ).first()
+        last_decision = (
+            await self._session.execute(
+                select(func.max(BotDecisionRecord.created_at)).where(
+                    BotDecisionRecord.workspace_id == workspace_id,
+                    BotDecisionRecord.bot_id == bot_id,
+                )
+            )
+        ).scalar_one_or_none()
         return BotRuntimeRow(
             entry_state=control.entry_state if control is not None else BotEntryState.ENABLED,
             control_revision=control.revision if control is not None else 0,
             readiness=state[0] if state is not None else None,
             readiness_reason_code=state[1] if state is not None else None,
+            lease_owner=lease[0] if lease is not None else None,
+            lease_expires_at=lease[1] if lease is not None else None,
+            heartbeat_at=state[2] if state is not None else None,
+            last_tick_at=last_decision,
         )
 
     async def workspace_control(self, workspace_id: UUID) -> WorkspaceControlRow:

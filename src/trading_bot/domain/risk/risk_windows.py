@@ -162,3 +162,26 @@ def calculate_loss_windows(
 def _require_aware(value: datetime, field: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} bắt buộc phải có timezone-aware.")
+
+
+def daily_window_start(
+    as_of: datetime,
+    policy: LossWindowPolicy | str | None = None,
+) -> datetime:
+    """Trả về mốc bắt đầu ngày (UTC) theo múi giờ cấu hình workspace (FX-2, CK-12)."""
+    _require_aware(as_of, "as_of")
+    active_policy = (
+        policy if isinstance(policy, LossWindowPolicy) else loss_window_policy_for(policy)
+    )
+    tz = ZoneInfo(active_policy.timezone_name)
+    as_of_utc = as_of.astimezone(UTC)
+    as_of_local = as_of_utc.astimezone(tz)
+    daily_start_local = as_of_local.replace(
+        hour=active_policy.daily_reset_hour,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if as_of_local < daily_start_local:
+        daily_start_local -= timedelta(days=1)
+    return daily_start_local.astimezone(UTC)

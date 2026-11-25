@@ -123,6 +123,8 @@ class EffectiveBotConfig:
     effective_hash: str
     # CRY-428: ghi đè thông số thoát theo bot (None = dùng recipe của release).
     exit_override: ExitOverride | None = None
+    # CRY-231 (CK-12): múi giờ cửa sổ lỗ cấu hình từ workspace risk settings.
+    loss_window_timezone: str | None = None
 
     def strategy_selection(self) -> StrategySelection:
         """Hợp đồng strategy runtime; version ghim là root để khớp PlannerSettings."""
@@ -268,6 +270,7 @@ def resolve_effective_bot_config(
         risk_limits=evaluation.risk_limits,
         effective_hash="",
         exit_override=evaluation.exit_override,
+        loss_window_timezone=workspace_settings.settings.risk.loss_window_timezone,
     )
     return replace(config, effective_hash=compute_effective_hash(config))
 

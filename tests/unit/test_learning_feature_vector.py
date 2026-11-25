@@ -206,12 +206,14 @@ async def runtime_replay_snapshots(monkeypatch: pytest.MonkeyPatch) -> tuple[Dec
     bars_by_timeframe = {
         "1h": _bars(
             "1h",
-            count=224,
+            # h01-v1 cần ema_200: warmup = 3 × 200 = 600 nến; 224 nến làm
+            # FeatureSnapshot.is_usable=false và mọi feature trả QUALITY_NOT_READY.
+            count=640,
             last_open_time=BASE_TIME + timedelta(hours=223),
         ),
         "4h": _bars(
             "4h",
-            count=206,
+            count=640,
             last_open_time=BASE_TIME + timedelta(hours=220),
         ),
     }
