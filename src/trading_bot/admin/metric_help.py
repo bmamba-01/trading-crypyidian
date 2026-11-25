@@ -1100,9 +1100,7 @@ HELP: dict[str, MetricHelp] = {
             "Vốn ban đầu của tài khoản PAPER cộng lãi/lỗ ròng đã chốt trong khoảng báo cáo."
         ),
         formula_vi="Tổng vốn = vốn ban đầu + lãi/lỗ ròng đã chốt",
-        reading_vi=(
-            "Kèm phần trăm thay đổi so với vốn ban đầu để theo dõi tăng trưởng tài khoản."
-        ),
+        reading_vi=("Kèm phần trăm thay đổi so với vốn ban đầu để theo dõi tăng trưởng tài khoản."),
         limits_vi=(
             "Chưa gồm lãi/lỗ chưa chốt của các vị thế đang mở; chỉ tính trong khoảng thời gian "
             "cửa sổ báo cáo."

@@ -374,9 +374,7 @@ def evaluate_workbench_metrics_and_alerts(
             reason_parts: list[str] = []
             if bar.is_stale:
                 age_text = (
-                    f"{int(bar.age_seconds)}s"
-                    if bar.age_seconds is not None
-                    else "chưa có dữ liệu"
+                    f"{int(bar.age_seconds)}s" if bar.age_seconds is not None else "chưa có dữ liệu"
                 )
                 reason_parts.append(f"dữ liệu cũ ({age_text})")
             if bar.gap_count > 0:
@@ -385,9 +383,7 @@ def evaluate_workbench_metrics_and_alerts(
                 WorkbenchAlert(
                     code="MARKET_DATA_STALE",
                     severity=(
-                        AlertSeverity.WARNING
-                        if bar.latest_bar_close_at
-                        else AlertSeverity.CRITICAL
+                        AlertSeverity.WARNING if bar.latest_bar_close_at else AlertSeverity.CRITICAL
                     ),
                     category=AlertCategory.DATA_STALE,
                     title_vi=f"Dữ liệu {bar.symbol} ({bar.timeframe}) bị chậm hoặc thiếu nến",

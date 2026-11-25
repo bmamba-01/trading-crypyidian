@@ -923,11 +923,53 @@
 </section>
 {% endif %}
 </div>
+
+<section class="glass-card report-breakdown" aria-labelledby="r-multiple-heading">
+  <h3 id="r-multiple-heading">Hậu kiểm R theo nhãn (MI-7)</h3>
+  {% if r_by_dimensions and r_by_dimensions.rows %}
+  <p class="report-card__hint">R = PnL ròng / 1R đã duyệt · nhóm theo chiến lược × lý do vào × lý do thoát × chế độ lúc vào.</p>
+  <div class="report-table-wrap">
+    <table class="report-table">
+      <thead><tr><th>Chiến lược</th><th>Lý do vào</th><th>Lý do thoát</th><th>Chế độ</th><th class="num">Lệnh</th><th class="num">R TB</th><th class="num">Tổng R</th></tr></thead>
+      <tbody>
+      {% for row in r_by_dimensions.rows %}
+        <tr data-testid="r-dimension-row">
+          <td>{{ row.strategy }}</td>
+          <td>{{ row.entry_reason }}</td>
+          <td>{{ row.exit_reason }}</td>
+          <td>{{ row.market_mode }}</td>
+          <td class="num">{{ row.trade_count }}</td>
+          <td class="num">{{ row.avg_r if row.avg_r is not none else "—" }}</td>
+          <td class="num">{{ row.sum_r if row.sum_r is not none else "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if r_by_dimensions.unpriced_trade_count %}
+  <p class="report-note" role="status">{{ r_by_dimensions.unpriced_trade_count }} lệnh thiếu 1R trong ledger nên không có giá trị R; không gán R = 0.</p>
+  {% endif %}
+  {% else %}
+  <p class="value-muted">Chưa có giao dịch để hậu kiểm theo nhãn.</p>
+  {% endif %}
+</section>
+
+<section id="report-market-context" class="glass-card report-market-context" aria-labelledby="market-context-heading">
+  <h3 id="market-context-heading">Bối cảnh thị trường (có nguồn gốc)</h3>
+  <p class="report-card__hint">Funding · open interest · thanh lý · mark price · trade flow. Chỉ để quan sát, không phải giá khớp hay tín hiệu.</p>
+  <form id="market-context-form" class="report-market-context__form">
+    <label for="market-context-symbol">Symbol</label>
+    <input id="market-context-symbol" name="symbol" maxlength="64" autocomplete="off" value="{{ filters.get('symbol') or 'BTCUSDT' }}">
+    <button type="submit" class="btn btn-secondary btn-sm">Kiểm tra bối cảnh</button>
+  </form>
+  <div id="market-context-result" class="report-market-context__result" role="status" aria-live="polite"></div>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script src="/static/coins.js" defer></script>
 <script src="/static/reports.js" defer></script>
+<script src="/static/market-context.js" defer></script>
 {% if chart_data %}
   <script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
   <script src="/static/trade-chart.js" defer></script>

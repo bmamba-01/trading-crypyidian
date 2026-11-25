@@ -626,3 +626,25 @@
 @media (max-width: 40rem) {
   .report-comparison-grid, .report-breakdown-grid { grid-template-columns: 1fr; }
 }
+
+/* CRY-374: bối cảnh thị trường có provenance — ưu tiên đọc được trên mobile. */
+.report-market-context { padding: 0.85rem 1rem; margin-bottom: 1rem; min-width: 0; }
+.report-market-context h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+.report-market-context__form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+.report-market-context__form label { font-size: 0.82rem; color: var(--text-muted); }
+.report-market-context__form input { min-width: 8rem; max-width: 100%; padding: 0.35rem 0.5rem; font: inherit; }
+.report-market-context__result { min-height: 1.2rem; font-size: 0.82rem; overflow-wrap: anywhere; }
+.market-context-summary { margin: 0 0 0.5rem; color: var(--text-muted); }
+.market-context-alerts { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+.market-context-alert { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 0.5rem; background: var(--bg-surface-subtle); }
+.market-context-item { display: grid; gap: 0.15rem; }
+.market-context-item__label { font-size: 0.85rem; }
+.market-context-item__count, .market-context-item__time { font-size: 0.76rem; color: var(--text-muted); }
+.market-context-observations { list-style: none; padding: 0; margin: 0.6rem 0 0; display: grid; gap: 0.35rem; }
+.market-context-observation { display: grid; gap: 0.1rem; min-width: 0; }
+.market-context-observation__source { color: var(--text-muted); overflow-wrap: anywhere; }
+
+@media (max-width: 40rem) {
+  .report-market-context__form input { flex: 1 1 100%; }
+  .market-context-grid { grid-template-columns: 1fr; }
+}

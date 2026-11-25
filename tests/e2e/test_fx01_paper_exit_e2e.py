@@ -862,7 +862,15 @@ def test_fx01_paper_channel_exit_and_feature_exit_e2e_postgres() -> None:
     try:
         ensure_image_available(root, image)
         _compose(
-            root, project, environment, "up", "--detach", "--wait", "--wait-timeout", "180", "postgres"
+            root,
+            project,
+            environment,
+            "up",
+            "--detach",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            "postgres",
         )
         _compose(root, project, environment, "run", "--rm", "--no-deps", "db-provisioner")
         _compose(
@@ -877,7 +885,9 @@ def test_fx01_paper_channel_exit_and_feature_exit_e2e_postgres() -> None:
             "upgrade",
             "head",
         )
-        heads = _compose(root, project, environment, "run", "--rm", "--no-deps", "migrator", "alembic", "heads")
+        heads = _compose(
+            root, project, environment, "run", "--rm", "--no-deps", "migrator", "alembic", "heads"
+        )
         assert "a3c7e9f1b5d2 (head)" in heads.stdout
 
         result = subprocess.run(

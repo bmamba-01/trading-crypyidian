@@ -656,9 +656,9 @@ class PostgresPaperDecisionContextProvider:
             )
             strategy = strategy_registry().resolve(release, selection)
             candidate = strategy.evaluate(snapshot, selection)
-            if (
-                isinstance(candidate, StrategyCandidate)
-                and candidate.direction in ("long", "short")
+            if isinstance(candidate, StrategyCandidate) and candidate.direction in (
+                "long",
+                "short",
             ):
                 return candidate.direction != position_direction
         except Exception:

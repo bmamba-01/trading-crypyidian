@@ -85,9 +85,7 @@ class _InMemoryJournalService:
             "updated_at": now.isoformat(),
         }
         self.entries[tid] = entry
-        self.audits.setdefault(tid, []).append(
-            {"action": action, "created_at": now.isoformat()}
-        )
+        self.audits.setdefault(tid, []).append({"action": action, "created_at": now.isoformat()})
         return entry
 
     async def build_attribution_summary(

@@ -219,9 +219,7 @@ def reconcile_filtered_totals(trades: Sequence[Mapping[str, Any]]) -> dict[str, 
         }
 
 
-def _group_breakdown(
-    trades: Sequence[Mapping[str, Any]], key_fn: Any
-) -> list[dict[str, Any]]:
+def _group_breakdown(trades: Sequence[Mapping[str, Any]], key_fn: Any) -> list[dict[str, Any]]:
     buckets: dict[str, list[Mapping[str, Any]]] = {}
     for trade in trades:
         label = str(key_fn(trade))
@@ -253,6 +251,101 @@ def breakdown_trades(trades: Sequence[Mapping[str, Any]]) -> dict[str, list[dict
             ),
         ),
     }
+
+
+def _positive_decimal(value: object) -> Decimal | None:
+    """Chỉ nhận số thập phân hữu hạn > 0; không đoán rủi ro khi thiếu dữ liệu."""
+    if value is None or value == "":
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except ValueError, ArithmeticError:
+        return None
+    return parsed if parsed.is_finite() and parsed > 0 else None
+
+
+def _entry_reason(trade: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = trade.get("entry_reason")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _dimension(value: object) -> str:
+    text = str(value or "").strip() if value is not None else ""
+    return text or "UNKNOWN"
+
+
+def r_multiples_by_dimensions(
+    trades: Sequence[Mapping[str, Any]],
+    *,
+    risk_amounts: Mapping[str, object] | None = None,
+) -> dict[str, Any]:
+    """Bảng R-multiple theo chiến lược × lý do vào × lý do thoát × chế độ lúc vào (MI-7).
+
+    R = PnL ròng / 1R đã duyệt: ưu tiên `planned_risk_amount`, rồi `estimated_loss`, rồi
+    `risk_budget` trong `entry_reason`; caller có thể đưa `risk_amounts` theo `trade_id`
+    để dùng ngân sách từ post-mortem. Trade thiếu 1R được đếm riêng, không gán R = 0.
+    """
+    buckets: dict[tuple[str, str, str, str], list[tuple[Decimal, Decimal | None]]] = {}
+    unpriced = 0
+    for trade in trades:
+        entry = _entry_reason(trade)
+        dimensions = (
+            _trade_strategy(trade),
+            _dimension(entry.get("reason_code")),
+            _dimension(trade.get("exit_reason")),
+            _dimension(entry.get("context_regime")),
+        )
+        trade_id = str(trade.get("trade_id") or "")
+        override = risk_amounts.get(trade_id) if risk_amounts is not None else None
+        risk = (
+            _positive_decimal(override)
+            or _positive_decimal(entry.get("planned_risk_amount"))
+            or _positive_decimal(entry.get("estimated_loss"))
+            or _positive_decimal(entry.get("risk_budget"))
+        )
+        net = _dec(trade.get("net_pnl"))
+        r_value = net / risk if risk is not None else None
+        if r_value is None:
+            unpriced += 1
+        buckets.setdefault(dimensions, []).append((net, r_value))
+
+    with exact_decimal():
+        rows: list[dict[str, Any]] = []
+        for dimensions in sorted(buckets):
+            items = buckets[dimensions]
+            priced = [r for _net, r in items if r is not None]
+            wins = sum(1 for r in priced if r > 0)
+            losses = sum(1 for r in priced if r < 0)
+            rows.append(
+                {
+                    "strategy": dimensions[0],
+                    "entry_reason": dimensions[1],
+                    "exit_reason": dimensions[2],
+                    "market_mode": dimensions[3],
+                    "trade_count": len(items),
+                    "priced_trade_count": len(priced),
+                    "winning_trades": wins,
+                    "losing_trades": losses,
+                    "sum_r": canonical_decimal(sum(priced, Decimal("0"))) if priced else None,
+                    "avg_r": (
+                        canonical_decimal(
+                            (sum(priced, Decimal("0")) / Decimal(len(priced))).quantize(
+                                _RATIO_QUANT, rounding=ROUND_HALF_UP
+                            )
+                        )
+                        if priced
+                        else None
+                    ),
+                    "best_r": canonical_decimal(max(priced)) if priced else None,
+                    "worst_r": canonical_decimal(min(priced)) if priced else None,
+                }
+            )
+        return {
+            "rows": rows,
+            "trade_count": len(trades),
+            "priced_trade_count": len(trades) - unpriced,
+            "unpriced_trade_count": unpriced,
+        }
 
 
 def compare_report_periods(
@@ -307,4 +400,5 @@ __all__ = [
     "filter_report_trades",
     "filtered_report_hash",
     "reconcile_filtered_totals",
+    "r_multiples_by_dimensions",
 ]

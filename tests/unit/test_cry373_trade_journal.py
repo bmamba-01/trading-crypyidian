@@ -103,9 +103,7 @@ def test_domain_privacy_retention_and_attachment_guards() -> None:
     assert not is_entry_visible_to_actor(
         private_entry, actor_user_id=other_id, is_workspace_owner=False
     )
-    assert is_entry_visible_to_actor(
-        private_entry, actor_user_id=other_id, is_workspace_owner=True
-    )
+    assert is_entry_visible_to_actor(private_entry, actor_user_id=other_id, is_workspace_owner=True)
 
 
 def test_mistake_attribution_and_setup_breakdown_keep_quote_assets_separate() -> None:

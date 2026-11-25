@@ -636,6 +636,9 @@ def _candidate_explanation(candidate: Mapping[str, Any]) -> dict[str, Any] | Non
         "evidence_bar_keys",
         "evidence_feature_ids",
         "geometry_version",
+        "context_regime",
+        "estimated_loss",
+        "risk_budget",
     )
     explanation = {key: candidate[key] for key in fields if key in candidate}
     return explanation or None

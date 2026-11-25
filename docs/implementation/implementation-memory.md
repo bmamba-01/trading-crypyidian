@@ -13,6 +13,31 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-81 [MI-7] Done: hậu kiểm R theo nhãn AI
+
+- **Phạm vi:** `report_analytics.r_multiples_by_dimensions` tính R = PnL ròng / 1R đã duyệt, nhóm chiến lược × lý do vào × lý do thoát × chế độ lúc vào; thiếu 1R đếm riêng, không gán R=0. `reporting._candidate_explanation` đưa `context_regime`/`estimated_loss`/`risk_budget` từ candidate thật vào `entry_reason`. Bảng hiển thị trên `/admin/reports` qua `web_router.reports` + `reports.html`.
+- **Kiểm chứng:** unit CRY-81 6 passed; regression report_analytics/reporting/MT-1/admin **156 passed/10,15s**; Playwright 1440×900/390×844/360×780 **3 passed/8,33s** (nhãn `DONCHIAN_BREAKOUT`/`TRENDING`, R=2, không tràn ngang); ruff check/format, mypy, `git diff --check` đạt. Tracker **#4854** nhận, **#4869** chốt Done.
+- **Pitfall:** fixture report có 3 trade cho win rate 1/3 → `quantize` trong `exact_decimal` bắn `Inexact`; dùng 2 trade (0,5) cho Playwright thay vì hạ trap. `.env` local vẫn có `CRYPIDIAN_APP_IMAGE` cũ; chạy test bằng `trap` dời/khôi phục trong cùng shell, không sửa file người dùng.
+- **Còn mở trong AI:** CRY-236/CRY-178/CRY-180/CRY-181/CRY-330/CRY-332 phụ thuộc entitlement non-QA, corpus ≥1.000/100 mỗi lớp và quyết định owner — không tạo fixture thay quyền thật.
+
+### 2026-11-25 — Chốt CRY-374 Done & dọn Docker
+
+- **Tracker:** chuyển `CRY-374` từ In Progress sang Done (column 4), xác nhận bằng `list_issues` filtered by `columnId`; comment chốt **#4838** với đủ bằng chứng unit/Playwright/Compose E2E. Không có correction/downgrade comment nào sau #4624.
+- **Docker (theo yêu cầu):** `docker container prune -f` xóa 14 container `Exited` (262,1 kB); `docker image prune -a -f --filter "until=2h"` xóa image cũ không còn container tham chiếu (1,358 GB). Images 68→23 tag, containers 30→18 (đều đang chạy). Các compose active (`crypidian-review`, `crypidian-wp06-replay-persistence-*`, `crypidian-wp06-replay-race-*`, `itsaplan`) giữ nguyên. Build cache ban đầu ~8,93 GB reclaimable; theo yêu cầu bổ sung đã chạy `docker builder prune -f` (thu hồi 8,93 GB) và `docker buildx prune -f` (0 B), Build Cache còn 1,088 GB / `RECLAIMABLE 0B`. Tổng thu hồi ~10,29 GB; 18 container đang chạy giữ nguyên.
+- Quy tắc dọn an toàn: chỉ prune stopped containers + unused images có `CreatedSince` ≥2h; không `docker system prune` (không đụng volume/network đang dùng) và không restart Docker Desktop khi agent khác còn chạy. Prefix người dùng: mỗi lần dọn Docker mặc định dọn luôn build cache (đã lưu vào memory).
+
+### 2026-11-25 — CRY-374 lát 3: UI/mobile + Compose E2E trên PostgreSQL thật
+
+- **Thay đổi:** thẻ bối cảnh thị trường trong `templates/admin/reports.html` + `static/market-context.js` + `static/pages/reports.css`; fetch `/api/v1/reports/market-context`, render bằng `textContent` (không innerHTML), cờ `data-display-allowed`, mobile không tràn ngang. Endpoint nhận service inject qua `app.state.market_context_service`.
+- **Kiểm chứng:** Playwright 1440×900/390×844/360×780 **3 passed/10.16s**; unit + Playwright **16 passed/11.34s**; ruff check/format 8 file đạt. Compose E2E `tests/e2e/test_cry374_market_context_compose.py` **1 passed/18.80s**: PostgreSQL + Alembic head, policy discovered→rights_pending→verified có license evidence/scope + 3 receipt, funding checksum `a*64`, value `0.0001`, coverage 1/stale false; đổi `source_id` thiếu quyền → `display_allowed=false`, payload rỗng. Tracker comment **#4624**.
+- **Pitfall harness:** `compose.yaml` dùng `${CRYPIDIAN_APP_IMAGE}`; E2E cũ chỉ đặt `APP_IMAGE` nên chạy image `:local` cũ và migration lỗi `WP06_ADMIN_ROLE_ATTRIBUTES_UNEXPECTED`. Test CRY-374 đặt cả hai biến; không sửa `.env` hay migration của người dùng.
+
+### 2026-11-25 — CRY-374 lát 2: nối DB/RLS và endpoint bối cảnh thị trường
+
+- **Thay đổi:** `SqlAlchemyMarketContextRepository` đọc `market_funding`, `market_open_interest`, `market_mark_price`, `market_liquidation`, `market_trade_flow` trong session/workspace của caller (`set_config('app.workspace_id', …, true)`, join `market_instrument`, tối đa 500 bản ghi/loại), ánh xạ provenance (`source`, `checksum`, `event_at`, `available_at`, `revision`, `raw_reference`). Quyền hiển thị lấy từ `SourceRegistryRepository.get_observed_entry`: policy hiện hành VERIFIED, có receipt `known_at` trước DB clock, purpose `DISPLAY` và chưa hết hạn. `MarketContextReadModelService` kiểm quyền trước, không đọc market data khi bị từ chối. Endpoint `GET /api/v1/reports/market-context?symbol=…` dùng `Permission.WORKSPACE_READ`, `no-store`.
+- **Kiểm chứng:** unit CRY-374 **13 passed/1.26s**; cụm gồm SEC18 route-policy **122 passed/38.94s**; ruff check/format, mypy, `git diff --check` đạt. Tracker comment **#4617**. Chưa Playwright mobile/Compose E2E nên chưa Done.
+- **Pitfall môi trường:** `.env` local chứa `CRYPIDIAN_APP_IMAGE` (không còn thuộc `AppSettings`) làm test import `create_app` lỗi `extra_forbidden`. Chạy test bằng cách tạm dời `.env` trong cùng shell rồi khôi phục bằng `trap`; không sửa file cấu hình của người dùng.
+
 ### 2026-11-25 — Kiểm chứng & vá E2E `CRY-178` (`[WP-06/WP06.12]`) trên `dev`
 
 - **Mục tiêu/phạm vi:**

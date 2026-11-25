@@ -158,25 +158,19 @@ def test_limit_maker_requires_tick_penetration_and_respects_queue_and_maker_fee(
     assert order.queue_ahead_quantity == Decimal("3.0")
 
     # Nến 1: chỉ chạm đúng 100.0 (chưa xuyên >= 1 tick = 99.9) -> không khớp, hàng đợi giữ nguyên.
-    res1 = gateway.apply_market_event(
-        _bar(1, low_p="100.0"), available_quantity=Decimal("10.0")
-    )[0]
+    res1 = gateway.apply_market_event(_bar(1, low_p="100.0"), available_quantity=Decimal("10.0"))[0]
     assert res1.status is OrderStatus.ACCEPTED
     assert res1.filled_quantity == ZERO
     assert res1.queue_ahead_quantity == Decimal("3.0")
 
     # Nến 2: xuyên qua 99.9 (đạt >= 1 tick), thanh khoản 2.0 < hàng đợi 3.0 -> trừ hàng đợi còn 1.0.
-    res2 = gateway.apply_market_event(
-        _bar(2, low_p="99.9"), available_quantity=Decimal("2.0")
-    )[0]
+    res2 = gateway.apply_market_event(_bar(2, low_p="99.9"), available_quantity=Decimal("2.0"))[0]
     assert res2.status is OrderStatus.ACCEPTED
     assert res2.filled_quantity == ZERO
     assert res2.queue_ahead_quantity == Decimal("1.0")
 
     # Nến 3: xuyên qua 99.8, thanh khoản 2.5 -> 1.0 trừ hết hàng đợi, còn 1.5 khớp một phần.
-    res3 = gateway.apply_market_event(
-        _bar(3, low_p="99.8"), available_quantity=Decimal("2.5")
-    )[0]
+    res3 = gateway.apply_market_event(_bar(3, low_p="99.8"), available_quantity=Decimal("2.5"))[0]
     assert res3.status is OrderStatus.PARTIALLY_FILLED
     assert res3.filled_quantity == Decimal("1.5")
     assert res3.remaining_quantity == Decimal("0.5")
@@ -188,9 +182,7 @@ def test_limit_maker_requires_tick_penetration_and_respects_queue_and_maker_fee(
     assert res3.fills[0].fee_cost == Decimal("0.03")
 
     # Nến 4: xuyên qua 99.9, thanh khoản 1.0 -> khớp nốt 0.5 còn lại.
-    res4 = gateway.apply_market_event(
-        _bar(4, low_p="99.9"), available_quantity=Decimal("1.0")
-    )[0]
+    res4 = gateway.apply_market_event(_bar(4, low_p="99.9"), available_quantity=Decimal("1.0"))[0]
     assert res4.status is OrderStatus.FILLED
     assert res4.remaining_quantity == ZERO
 

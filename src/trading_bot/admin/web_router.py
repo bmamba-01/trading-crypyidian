@@ -3150,6 +3150,7 @@ async def reports(
         compare_report_periods,
         filter_report_trades,
         filtered_report_hash,
+        r_multiples_by_dimensions,
         reconcile_filtered_totals,
     )
 
@@ -3173,6 +3174,7 @@ async def reports(
         weekday=parsed_weekday,
     )
     breakdown: dict[str, list[dict[str, Any]]] | None = None
+    r_by_dimensions: dict[str, Any] | None = None
     filtered_totals: dict[str, Any] | None = None
     filtered_hash: str | None = None
     period_comparison: dict[str, Any] | None = None
@@ -3183,6 +3185,7 @@ async def reports(
             report["trades"] = filtered_trades
         filtered_totals = reconcile_filtered_totals(filtered_trades)
         breakdown = breakdown_trades(filtered_trades)
+        r_by_dimensions = r_multiples_by_dimensions(filtered_trades)
         filtered_hash = filtered_report_hash(
             source_report_hash=report.get("report_hash"),
             criteria=criteria,
@@ -3261,6 +3264,7 @@ async def reports(
             "bot_id": str(parsed_bot_id or ""),
             "filters": criteria.as_dict(),
             "breakdown": breakdown,
+            "r_by_dimensions": r_by_dimensions,
             "filtered_totals": filtered_totals,
             "filtered_hash": filtered_hash,
             "period_comparison": period_comparison,

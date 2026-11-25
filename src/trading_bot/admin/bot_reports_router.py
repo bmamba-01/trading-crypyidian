@@ -10,14 +10,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from trading_bot.adapters.database.repositories.market_context import (
+    SqlAlchemyMarketContextRepository,
+)
 from trading_bot.application.bot_reporting import (
     BotReportError,
     BotReportingService,
     BotReportQuery,
     ReportScope,
 )
+from trading_bot.application.market_context import MarketContextReadModelService
 from trading_bot.auth.bot_policy import BotPermission
-from trading_bot.auth.route_policy import bot_scoped_route
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import bot_scoped_route, permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.portfolio.report_analytics import (
@@ -134,3 +139,37 @@ async def get_report(
             trade_ids=[str(t.get("trade_id", "")) for t in filtered],
         )
     return {"report": payload}
+
+
+@router.get(
+    "/market-context",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
+async def get_market_context(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    symbol: Annotated[str, Query(min_length=1, max_length=64)],
+) -> dict[str, object]:
+    """Bối cảnh funding/OI/thanh lý đã kiểm quyền DISPLAY; không phải giá fill hay tín hiệu."""
+    response.headers["Cache-Control"] = "no-store"
+    injected = cast(
+        MarketContextReadModelService | None,
+        getattr(request.app.state, "market_context_service", None),
+    )
+    if injected is not None:
+        report = await injected.get_report(
+            workspace_id=identity.principal.workspace_id,
+            symbol=symbol.strip(),
+        )
+    else:
+        sessions = getattr(request.app.state, "session_factory", None)
+        if sessions is None:
+            raise HTTPException(status_code=503, detail="Chưa có session factory cơ sở dữ liệu.")
+        async with sessions() as session:
+            service = MarketContextReadModelService(SqlAlchemyMarketContextRepository(session))
+            report = await service.get_report(
+                workspace_id=identity.principal.workspace_id,
+                symbol=symbol.strip(),
+            )
+    return {"market_context": report.to_dict()}

@@ -126,9 +126,7 @@ async def test_cry453_funding_collector_prunes_on_interval() -> None:
     market = MagicMock()
     market.get_cursor = AsyncMock(return_value=None)
     market.prune_expired_live_market = AsyncMock(
-        side_effect=lambda *, workspace_id, now: (
-            prune_calls.append(now) or {"market_funding": 1}
-        )
+        side_effect=lambda *, workspace_id, now: prune_calls.append(now) or {"market_funding": 1}
     )
     rights_gate = MagicMock()
     rights_gate.authorize = AsyncMock()

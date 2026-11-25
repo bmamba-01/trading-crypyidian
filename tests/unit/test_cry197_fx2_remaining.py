@@ -306,7 +306,7 @@ def test_replay_account_state_trips_drawdown_breaker_and_uses_workspace_timezone
     """ReplayAccountState phải bật drawdown_breaker_tripped khi sụt vốn >= ngưỡng và áp múi giờ."""
     t0 = datetime(2026, 11, 22, 17, 0, tzinfo=UTC)
     t_close = datetime(2026, 11, 22, 18, 0, tzinfo=UTC)  # 01:00+07 ngày 23/11
-    t_eval = datetime(2026, 11, 23, 2, 0, tzinfo=UTC)    # 09:00+07 ngày 23/11
+    t_eval = datetime(2026, 11, 23, 2, 0, tzinfo=UTC)  # 09:00+07 ngày 23/11
 
     published = _sample_published_settings(
         max_drawdown_fraction=Decimal("0.10"),

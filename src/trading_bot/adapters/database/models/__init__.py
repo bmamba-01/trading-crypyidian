@@ -203,6 +203,9 @@ from trading_bot.adapters.database.models.risk_entities import (
     RiskReservationRecord,
     TradePlanRecord,
 )
+from trading_bot.adapters.database.models.scalping_validation_entities import (
+    ScalpingValidationReportRecord,
+)
 from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionJobRecord,
     BotDecisionRecord,
@@ -222,17 +225,14 @@ from trading_bot.adapters.database.models.telegram_entities import (
     TelegramTradeNotification,
     TelegramUpdateReceipt,
 )
-from trading_bot.adapters.database.models.venue_entities import (
-    VenueOrderIntentRecord,
-    VenueOrderTransitionRecord,
-)
-from trading_bot.adapters.database.models.scalping_validation_entities import (
-    ScalpingValidationReportRecord,
-)
 from trading_bot.adapters.database.models.trade_journal_entities import (
     TradeJournalAttachment,
     TradeJournalAudit,
     TradeJournalEntry,
+)
+from trading_bot.adapters.database.models.venue_entities import (
+    VenueOrderIntentRecord,
+    VenueOrderTransitionRecord,
 )
 from trading_bot.adapters.database.models.worker_heartbeat_entities import WorkerHeartbeat
 

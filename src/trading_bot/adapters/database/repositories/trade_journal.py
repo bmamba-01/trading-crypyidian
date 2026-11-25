@@ -74,9 +74,7 @@ class TradeJournalRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_entry(
-        self, *, workspace_id: UUID, trade_id: UUID
-    ) -> dict[str, Any] | None:
+    async def get_entry(self, *, workspace_id: UUID, trade_id: UUID) -> dict[str, Any] | None:
         stmt = select(TradeJournalEntry).where(
             TradeJournalEntry.workspace_id == workspace_id,
             TradeJournalEntry.trade_id == trade_id,
@@ -108,9 +106,7 @@ class TradeJournalRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_entry_to_dict(row) for row in rows]
 
-    async def list_attachments(
-        self, *, workspace_id: UUID, entry_id: UUID
-    ) -> list[dict[str, Any]]:
+    async def list_attachments(self, *, workspace_id: UUID, entry_id: UUID) -> list[dict[str, Any]]:
         stmt = (
             select(TradeJournalAttachment)
             .where(

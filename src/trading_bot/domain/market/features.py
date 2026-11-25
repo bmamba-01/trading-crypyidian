@@ -259,9 +259,7 @@ def bollinger_bands(
     return tuple(middle), tuple(upper), tuple(lower)
 
 
-def zscore(
-    values: Sequence[float], window: int, *, inclusive: bool = False
-) -> FeatureSeries:
+def zscore(values: Sequence[float], window: int, *, inclusive: bool = False) -> FeatureSeries:
     """Chuẩn hóa mẫu theo ``window`` mẫu.
 
     Nếu ``inclusive=False`` (mặc định): chuẩn hóa mẫu hiện tại theo ``window``

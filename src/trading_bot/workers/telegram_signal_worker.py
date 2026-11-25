@@ -277,9 +277,7 @@ class TelegramSignalDeliveryWorker:
                 worker_id=self._worker_id,
             )
 
-    async def _mark_failed(
-        self, claim: SignalDeliveryClaim, decision: RetryDecision
-    ) -> None:
+    async def _mark_failed(self, claim: SignalDeliveryClaim, decision: RetryDecision) -> None:
         if decision.ambiguous_duplicate_risk:
             logger.warning(
                 "Telegram delivery %s gặp lỗi mơ hồ (%s); "

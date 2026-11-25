@@ -48,9 +48,7 @@ def test_audit_workspace_releases_reports_clean_when_all_published_match_registr
             content_hash="0" * 64,
         ),
     ]
-    report = audit_workspace_releases(
-        workspace_id=WORKSPACE, existing_rows=rows, registry=registry
-    )
+    report = audit_workspace_releases(workspace_id=WORKSPACE, existing_rows=rows, registry=registry)
     assert report.clean is True
     assert report.unknown_releases == ()
     assert report.hash_mismatches == ()
@@ -76,9 +74,7 @@ def test_audit_workspace_releases_detects_unknown_and_hash_mismatch() -> None:
             content_hash="a" * 64,  # không còn trong catalog
         ),
     ]
-    report = audit_workspace_releases(
-        workspace_id=WORKSPACE, existing_rows=rows, registry=registry
-    )
+    report = audit_workspace_releases(workspace_id=WORKSPACE, existing_rows=rows, registry=registry)
     assert report.clean is False
     assert len(report.unknown_releases) == 1
     assert report.unknown_releases[0].release_id == "legacy-removed-v1"

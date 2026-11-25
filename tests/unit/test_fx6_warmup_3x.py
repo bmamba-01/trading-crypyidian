@@ -137,9 +137,9 @@ def test_calculator_applies_3x_warmup_to_snapshot_usability() -> None:
         code_hash="a" * 64,
         sma_period=5,
         ema_periods=(5,),  # cần 3 * 5 = 15 nến
-        atr_period=5,      # cần 3 * 5 = 15 nến
-        rsi_period=5,      # cần 3 * 5 + 1 = 16 nến
-        adx_period=5,      # cần (3 + 1) * 5 = 20 nến
+        atr_period=5,  # cần 3 * 5 = 15 nến
+        rsi_period=5,  # cần 3 * 5 + 1 = 16 nến
+        adx_period=5,  # cần (3 + 1) * 5 = 20 nến
         bollinger_period=5,
         realized_volatility_period=5,
         efficiency_ratio_period=5,

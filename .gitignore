@@ -24,3 +24,4 @@ var/
 
 # macOS
 .DS_Store
+.worktrees/

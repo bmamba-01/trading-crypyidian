@@ -227,9 +227,7 @@ def test_cry339_trade_chart_desktop_and_mobile_touch(
         expect(page.locator("[data-close-provenance]")).to_have_text("paper-ledger-v2")
         expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
 
-        overflow_desktop = page.evaluate(
-            "document.documentElement.scrollWidth > window.innerWidth"
-        )
+        overflow_desktop = page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
         assert not overflow_desktop
         desktop.close()
 

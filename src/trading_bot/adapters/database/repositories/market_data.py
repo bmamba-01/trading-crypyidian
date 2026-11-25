@@ -679,9 +679,7 @@ class MarketDataRepository:
             expires_at=event_at + retention,
         )
 
-    async def _prune_versioned_table(
-        self, model: Any, *, workspace_id: UUID, now: datetime
-    ) -> int:
+    async def _prune_versioned_table(self, model: Any, *, workspace_id: UUID, now: datetime) -> int:
         """Xóa các bản ghi đã quá hạn trên bảng có FK tự tham chiếu ``supersedes_id``."""
         total = 0
         while True:

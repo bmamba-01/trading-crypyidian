@@ -87,9 +87,7 @@ class TradeJournalService:
                         404, "JOURNAL_NOT_FOUND", "Không tìm thấy nhật ký giao dịch."
                     ) from error
             repo = cast(TradeJournalRepository, self._repository(unit.session))
-            entry = await repo.get_entry(
-                workspace_id=principal.workspace_id, trade_id=trade_id
-            )
+            entry = await repo.get_entry(workspace_id=principal.workspace_id, trade_id=trade_id)
             if entry is None:
                 return None
             if not is_entry_visible_to_actor(
@@ -236,9 +234,7 @@ class TradeJournalService:
             actor_membership_id=principal.membership_id,
         ) as unit:
             repo = cast(TradeJournalRepository, self._repository(unit.session))
-            entry = await repo.get_entry(
-                workspace_id=principal.workspace_id, trade_id=trade_id
-            )
+            entry = await repo.get_entry(workspace_id=principal.workspace_id, trade_id=trade_id)
             if entry is None:
                 raise TradeJournalError(
                     404,

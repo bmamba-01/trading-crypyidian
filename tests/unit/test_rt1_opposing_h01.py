@@ -158,9 +158,7 @@ async def test_opposing_signal_suppressed_when_recipe_has_no_opposite_signal_exi
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     recipe_no_opp = ExitRecipe("h03-exit-v1", 2.0, opposite_signal_exit=False, max_hold_bars=120)
     position = _make_position(recipe=recipe_no_opp)
     command = SimpleNamespace(
@@ -205,9 +203,7 @@ async def test_opposing_signal_suppressed_when_strategy_bar_not_closed(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(recipe=h01_recipe)
     mid_bar_time = T0 + timedelta(minutes=15)
@@ -254,9 +250,7 @@ async def test_opposing_signal_suppressed_when_position_is_closed(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(recipe=h01_recipe, is_closed=True)
     command = SimpleNamespace(
@@ -361,9 +355,7 @@ async def test_opposing_signal_detected_on_bearish_crossover_for_long_position(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(direction="long", recipe=h01_recipe)
 
@@ -420,9 +412,7 @@ async def test_opposing_signal_ignored_when_same_direction(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(direction="long", recipe=h01_recipe)
 
@@ -479,9 +469,7 @@ async def test_opposing_signal_detected_on_bullish_crossover_for_short_position(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(direction="short", recipe=h01_recipe)
 
@@ -538,9 +526,7 @@ async def test_opposing_signal_ignored_when_short_position_meets_short_signal(
 
     monkeypatch.setattr(pmc, "load_closed_market_bars", fake_bars)
 
-    provider = PostgresPaperDecisionContextProvider(
-        sessions=MagicMock(), workspace_id=WORKSPACE_ID
-    )
+    provider = PostgresPaperDecisionContextProvider(sessions=MagicMock(), workspace_id=WORKSPACE_ID)
     h01_recipe = ExitRecipe("h01-exit-v1", 2.0, opposite_signal_exit=True, max_hold_bars=120)
     position = _make_position(direction="short", recipe=h01_recipe)
 

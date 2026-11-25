@@ -744,10 +744,7 @@ def format_calibrated_confidence(
     else:
         tier = "low"
 
-    label = (
-        f"{pct:.1f}% (KTC 95%: {ci_low_pct:.1f}%–{ci_high_pct:.1f}%, "
-        f"n={report.sample_count})"
-    )
+    label = f"{pct:.1f}% (KTC 95%: {ci_low_pct:.1f}%–{ci_high_pct:.1f}%, n={report.sample_count})"
     return {
         "tier": tier,
         "label": label,

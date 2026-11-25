@@ -191,6 +191,7 @@ async def test_get_trade_chart_returns_window_data_quality_and_close_event() -> 
         repository=lambda _s: _FakeRepo(),
         grants=lambda _s: _FakeGrants(),
     )
+
     class _FakeReport:
         def as_dict(self) -> dict[str, Any]:
             return {"trades": [trade_payload]}
