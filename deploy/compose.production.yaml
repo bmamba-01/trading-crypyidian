@@ -1,0 +1,205 @@
+# Overlay Compose production cách ly hoàn toàn khỏi local/PAPER/Demo (OPS07F / Task 7 / CRY-465).
+#
+# Nguyên tắc bảo mật bắt buộc:
+# 1. Không tự bật Live qua profile mặc định hay env đơn lẻ: mọi service production gắn profile
+#    `production-locked` và khóa `TRADING_BOT_LIVE_DISPATCH_LOCKED=true`.
+# 2. Image bắt buộc phải được pin rõ qua `CRYPIDIAN_PRODUCTION_IMAGE` (khuyến nghị gắn `@sha256:...`).
+# 3. Tách riêng hoàn toàn volume (`*_production_*`) và network (`*_prod`) khỏi local/PAPER/Demo.
+# 4. CHỈ DUY NHẤT `execution-gateway` được gắn mạng `exchange_egress_prod` và mount
+#    `binance_live_api_key` / `binance_live_api_secret`. Mọi service khác đều nằm trong mạng
+#    `backend_prod` (internal: true) hoặc `web_ingress_prod`, tuyệt đối không có egress sàn.
+# 5. Không chứa secret/key thật trong file này; đường dẫn secret được cung cấp từ host/secret store
+#    bên ngoài qua `CRYPIDIAN_LIVE_SECRET_DIR`.
+#
+# Kiểm tra render config mà không khởi động container:
+#   CRYPIDIAN_PUBLIC_HOST=admin.crypidian.example \
+#   TRADING_BOT_ALLOWED_HOSTS=admin.crypidian.example \
+#   TRADING_BOT_TRUSTED_PROXY_IPS=172.28.0.0/16 \
+#   CRYPIDIAN_PRODUCTION_IMAGE=ghcr.io/crypidian/app@sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+#   CRYPIDIAN_LIVE_SECRET_DIR=./.secrets \
+#   docker compose -f compose.yaml -f deploy/compose.tls.yaml -f deploy/compose.production.yaml config
+
+x-production-common-env: &production_common_env
+  TZ: UTC
+  TRADING_BOT_APP_ENV: production
+  TRADING_BOT_TRADING_MODE: ${CRYPIDIAN_PRODUCTION_TRADING_MODE:-PAPER}
+  TRADING_BOT_LIVE_DISPATCH_LOCKED: "true"
+  TRADING_BOT_MAX_CLOCK_DRIFT_MS: "1000"
+
+services:
+  postgres:
+    profiles: ["production-locked"]
+    environment:
+      TZ: UTC
+    volumes: !override
+      - postgres_production_data:/var/lib/postgresql
+    networks: !override
+      backend_prod: {}
+    ports: !reset []
+
+  object-store:
+    profiles: ["production-locked"]
+    volumes: !override
+      - garage_production_data:/var/lib/garage/data
+    networks: !override
+      backend_prod: {}
+    ports: !reset []
+
+  reverse-proxy:
+    profiles: ["production-locked"]
+    networks: !override
+      web_ingress_prod: {}
+
+  admin-web:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: admin-web
+    volumes: !override
+      - mfa_production_secrets:/var/lib/crypidian/mfa:ro
+    networks: !override
+      backend_prod: {}
+      web_ingress_prod: {}
+    secrets: !override
+      - database_admin_web_password
+      - database_admin_report_reader_password
+      - mfa_encryption_key
+      - bootstrap_token
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  migrator:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: migrator
+    networks: !override
+      backend_prod: {}
+    secrets: !override
+      - postgres_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  trading-runtime:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: trading-runtime
+      TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED: "false"
+    networks: !override
+      backend_prod: {}
+    secrets: !override
+      - database_trading_runtime_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  execution-gateway:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: execution-gateway
+      TRADING_BOT_EXCHANGE_HOST_ALLOWLIST: ${CRYPIDIAN_EXCHANGE_HOST_ALLOWLIST:-https://fapi.binance.com,wss://fstream.binance.com}
+      TRADING_BOT_EGRESS_STATIC_IP_TAG: ${CRYPIDIAN_EGRESS_STATIC_IP_TAG:-unassigned-owner-pending}
+    networks: !override
+      backend_prod: {}
+      exchange_egress_prod: {}
+    secrets: !override
+      - source: binance_live_api_key
+        target: /run/secrets/binance_live_api_key
+      - source: binance_live_api_secret
+        target: /run/secrets/binance_live_api_secret
+      - source: database_execution_gateway_password
+        target: /run/secrets/database_execution_gateway_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  ingestion-worker:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: ingestion-worker
+    networks: !override
+      backend_prod: {}
+      source_egress_prod: {}
+    secrets: !override
+      - database_ingestion_worker_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  trainer-worker:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: trainer-worker
+    networks: !override
+      backend_prod: {}
+    secrets: !override
+      - database_trainer_worker_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  backtest-worker:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: backtest-worker
+    networks: !override
+      backend_prod: {}
+    secrets: !override
+      - database_backtest_worker_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  report-reader:
+    image: ${CRYPIDIAN_PRODUCTION_IMAGE:?Can dat CRYPIDIAN_PRODUCTION_IMAGE co digest}
+    profiles: ["production-locked"]
+    environment:
+      <<: *production_common_env
+      TRADING_BOT_PROCESS_ROLE: report-reader
+    networks: !override
+      backend_prod: {}
+    secrets: !override
+      - database_report_reader_password
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  backend_prod:
+    internal: true
+  web_ingress_prod:
+  exchange_egress_prod:
+  source_egress_prod:
+
+volumes:
+  postgres_production_data:
+  garage_production_data:
+  mfa_production_secrets:
+
+secrets:
+  binance_live_api_key:
+    file: ${CRYPIDIAN_LIVE_SECRET_DIR:?Can dat CRYPIDIAN_LIVE_SECRET_DIR}/binance_api_key
+  binance_live_api_secret:
+    file: ${CRYPIDIAN_LIVE_SECRET_DIR:?Can dat CRYPIDIAN_LIVE_SECRET_DIR}/binance_api_secret

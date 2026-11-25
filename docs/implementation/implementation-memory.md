@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-465 [OPS07F/Task7] Profile triển khai production, backup & phục hồi (hoàn tất code/E2E, giữ In Progress chờ host/IP/RPO-RTO thật)
+
+- **Thay đổi:**
+  - `deploy/compose.production.yaml`: overlay production dùng profile `production-locked` (tách khỏi profile mặc định/`paper`), bắt buộc pin `CRYPIDIAN_PRODUCTION_IMAGE`, khóa `TRADING_BOT_LIVE_DISPATCH_LOCKED=true` & `TRADING_BOT_TRADING_MODE=PAPER`, tách riêng volume (`postgres_production_data`, `garage_production_data`, `mfa_production_secrets`) và network (`backend_prod` internal, `web_ingress_prod`, `exchange_egress_prod`, `source_egress_prod`). Dùng `!override` để bảo đảm **chỉ duy nhất `execution-gateway`** có `exchange_egress_prod` và mount secret `binance_live_api_key`/`binance_live_api_secret` qua `CRYPIDIAN_LIVE_SECRET_DIR`. Toàn bộ app service chạy non-root `10001:10001`, `read_only: true`, `cap_drop: ["ALL"]`, `no-new-privileges:true`, `TZ=UTC`.
+  - `tests/e2e/test_live_production_compose.py`: xác minh `docker compose config --format json` cho overlay production, gateway-only egress/secret boundary, cách ly volume, compose mặc định không chứa Live secret/mode, và fail-closed khi thiếu `CRYPIDIAN_PRODUCTION_IMAGE`.
+  - `tests/e2e/test_live_backup_restore.py`: diễn tập backup mã hóa (`run_encrypted_backup` có secret canary check, xóa plaintext dump) và restore sang DB cô lập `crypidian_live_restore_target` (`run_isolated_postgres_restore_drill`), kiểm wrong passphrase fail-closed (`RestoreVerificationError`), khớp row count workspace/trading_account và đo RPO/RTO thực tế.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` & `git diff --check`: 100% clean.
+  - `uv run pytest -q --tb=short tests/e2e/test_live_production_compose.py tests/e2e/test_live_backup_restore.py`: **4 passed in 17.26s**.
+- **Pitfall:** Trong Docker Compose v2, `!reset` trên list/map có giá trị sẽ xóa rỗng thay vì thay thế; phải dùng `!override` cho `networks`/`volumes`/`secrets` và chỉ dùng `!reset []` cho `ports`.
+- **Blocker còn mở (đúng điều kiện CRY-465):** chưa có host production, IP egress tĩnh, secret manager và SLA RPO/RTO production do Owner phê duyệt — giữ ticket `In Progress` và không tự chọn giá trị hạ tầng.
+
 ### 2026-11-25 — CRY-464 [OPS07F/Task6] Triển khai semantics equity, risk window & hard limits Live (chờ chữ ký Risk Owner thật)
 
 - **Đối chiếu WP-02 / WP-02D & semantics Live:**
@@ -46,6 +58,13 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Pitfall & giới hạn còn lại:**
   - Trigger DB tự sinh `bot_instance` khi insert `trading_account`, và `mb05_guard_runtime_lease` giới hạn TTL của `bot_runtime_lease` (dùng 30s).
   - Task này **không tự mở Live**; việc kết nối production thật vẫn khóa sau các gate OPS07F/Task3–4 & G0–G5.
+
+### 2026-11-25 — CRY-241 golden fixture công thức feature
+
+- **Phạm vi:** `tests/unit/test_cry241_golden_feature_formulas.py` 11 test với giá trị tính tay: SMA/EMA seed + warmup, TR/ATR Wilder, +DI/−DI/DX/ADX nến phẳng, RSI flat/tăng, ER/Bollinger/z-score mẫu số 0, realized volatility không annualize, VWAP + reset session, input fail-closed, semantic review `MarketRegime` (TREND/RANGE/HIGH_VOLATILITY/UNKNOWN + reason code). Không đổi `formula_version` hay hash snapshot.
+- **Nguồn:** `docs/research/glossary-vi.md` mục CL — Wilder 1978, Murphy 1999, Kaufman 1998, Bollinger 2001, Andersen 2001; URL TA-Lib (`/functions/ema.md`, `adx.md`, `rsi.md`, `macd.md`) và Investopedia VWAP đã web_extract thành công.
+- **Kiểm chứng:** golden 11 test (vòng 2 bổ sung MACD + zscore inclusive); cùng `test_feature_snapshot.py` + `test_fx6_warmup_3x.py` **30 passed/0,14s**; ruff/diff-check sạch. Tracker **#4886**, **#4887**, **#4894**.
+- **Còn mở:** chữ ký semantic review của owner (không tự ký); phối hợp FX-6; giữ In Progress. Mục CL glossary đã phủ mọi công thức FeatureCalculator.
 
 ### 2026-11-25 — Setup AI module chạy được: warmup 600/768 cho feature vector
 
