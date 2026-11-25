@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-468 [OPS07F/Task10] Hồ sơ readiness G0–G5 & server-side release gate (hoàn tất schema/gate/template/E2E, giữ In Progress chờ đủ evidence dependency G0–G5 thật)
+
+- **Thay đổi:**
+  - `src/trading_bot/domain/execution/live_readiness_dossier.py`: định nghĩa `LiveReadinessDossier` bất biến (`schema_version="ops07f-dossier-v1"`, SHA-256 `compute_dossier_hash()`), `GateEvidenceItem`, `SignedApprovalRecord` (`CODE_RELEASE` tách biệt với `RISK_CAPITAL`), `evaluate_single_gate` (đánh giá độc lập từng gate G0–G5 kèm `actionable_owner`), và `evaluate_live_readiness_gate` (server-side fail-closed cho sai version/hash/scope, hết hạn, bằng chứng thiếu/hết hạn/finding mở, chưa đạt Demo days/samples do Risk Owner quy định, tự duyệt, role bị thu hồi, và `AI_APPROVAL_FORBIDDEN`). Ngay cả khi G0–G5 đều đạt, `live_dispatch_allowed` luôn là `False` chờ quyết định G6 riêng.
+  - `src/trading_bot/adapters/database/repositories/live_readiness_gate.py`: `SqlAlchemyLiveReadinessGateRepository.evaluate_and_record` lưu `dossier_hash` bất biến vào `trade_plan`/`risk_decision` và khóa `bot_runtime_state.readiness='RECOVERY_REQUIRED'` khi bị từ chối.
+  - `docs/operations/live-readiness-dossier-template.md`: mẫu hồ sơ readiness G0–G5 tiếng Việt, ghi rõ bảng trạng thái từng cổng và đánh dấu `BLOCKED / OPEN` cho các mục chờ Owner/dependency thay vì bịa.
+  - `tests/unit/test_live_readiness_dossier.py` & `tests/e2e/test_live_readiness_gate_e2e.py`: kiểm chứng toàn bộ ca denial và PostgreSQL Compose E2E bất biến hash + independent approver.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` & `uv run mypy` trên 2 source files + 2 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_live_readiness_dossier.py tests/e2e/test_live_readiness_gate_e2e.py`: exit code `0`, **5 passed in 20.13s**, 0 skipped.
+- **Blocker còn mở (đúng điều kiện CRY-468):** Các dependency `CRY-459/460/461/462`, `CRY-106`, `CRY-271`, `CRY-17` Demo evidence và chữ ký/ngưỡng Owner thật vẫn đang mở/Blocked — giữ `CRY-468` ở `In Progress` và Live khóa.
+
 ### 2026-11-25 — CRY-467 [OPS07F/Task9] Runbook vận hành, cảnh báo & diễn tập (hoàn tất runbook/drill E2E, giữ In Progress chờ on-call/alert destination/topology thật)
 
 - **Thay đổi:**
