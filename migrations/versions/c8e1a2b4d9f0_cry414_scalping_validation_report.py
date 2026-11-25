@@ -15,6 +15,21 @@ _TABLE = "scalping_validation_report"
 _ADMIN_ROLE = "crypidian_admin_web"
 
 
+def _resolve_admin_role() -> str:
+    has_safe: bool = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'crypidian_admin_web_safe'"
+                ")"
+            )
+        )
+        .scalar_one()
+    )
+    return "crypidian_admin_web_safe" if has_safe else _ADMIN_ROLE
+
+
 def upgrade() -> None:
     op.create_table(
         _TABLE,
@@ -66,7 +81,7 @@ def upgrade() -> None:
     op.execute(
         f'CREATE POLICY workspace_isolation ON "{_TABLE}" USING ({policy}) WITH CHECK ({policy})'
     )
-    op.execute(f"GRANT SELECT, INSERT ON TABLE {_TABLE} TO {_ADMIN_ROLE}")
+    op.execute(f"GRANT SELECT, INSERT ON TABLE {_TABLE} TO {_resolve_admin_role()}")
 
 
 def downgrade() -> None:

@@ -62,7 +62,7 @@ def test_model_registry_schema_is_workspace_scoped_and_least_privilege() -> None
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
-        assert "a3c7e9f1b5d2 (head)" in heads.stdout
+        assert "ab26dde001df (head)" in heads.stdout
         assert "No new upgrade operations detected" in check.stdout + check.stderr
 
         probe_result = compose(

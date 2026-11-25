@@ -73,6 +73,7 @@ from trading_bot.domain.risk.reservations import (
     ReservationStatus as SingleBotReservationStatus,
 )
 from trading_bot.domain.risk.workspace_budget import (
+    AccountRiskState,
     AccountScopeInput,
     BudgetConflictError,
     BudgetOperation,
@@ -245,31 +246,136 @@ async def database_now(session: AsyncSession) -> datetime:
     return value.astimezone(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class AdminPaperPolicyCounts:
+    """Số đếm PAPER an toàn cho guard đổi profile; không mang định danh ledger."""
+
+    active_intents: int
+    open_positions: int
+    active_reservations: int
+
+
+async def load_admin_paper_policy_counts(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    membership_id: UUID,
+) -> AdminPaperPolicyCounts:
+    """Đọc số đếm qua projection DB có kiểm tra membership/role hiện hành."""
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT * FROM public.wp06_admin_paper_policy_snapshot("
+                    "CAST(:workspace_id AS uuid), CAST(:membership_id AS uuid))"
+                ),
+                {"workspace_id": workspace_id, "membership_id": membership_id},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    counts = AdminPaperPolicyCounts(
+        active_intents=int(row["active_intents"]),
+        open_positions=int(row["open_positions"]),
+        active_reservations=int(row["active_reservations"]),
+    )
+    if min(counts.active_intents, counts.open_positions, counts.active_reservations) < 0:
+        raise ValueError("Projection PAPER trả về số đếm âm.")
+    return counts
+
+
+async def load_admin_risk_capacity_states(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    membership_id: UUID,
+    settings: WorkspaceSettings,
+) -> list[AccountRiskState]:
+    """Đọc vốn/exposure tổng hợp theo account qua projection có gate quyền DB.
+
+    Chỉ trả mã bot/account cần cho phép so cap và các giá trị tổng hợp; không trả ID trade/fill.
+    Unknown từ hàm ledger được giữ nguyên để `assess_capacity_after_risk_change` fail-closed.
+    """
+    read_at = await database_now(session)
+    mark_policy = mark_policy_from(settings)
+    result = await session.execute(
+        text(
+            "SELECT * FROM public.wp06_admin_risk_capacity_snapshot("
+            "CAST(:workspace_id AS uuid), CAST(:membership_id AS uuid), "
+            "CAST(:as_of AS timestamptz), CAST(:max_mark_age_seconds AS integer), "
+            "CAST(:mark_source AS text), CAST(:mark_timeframes AS text[]))"
+        ),
+        {
+            "workspace_id": workspace_id,
+            "membership_id": membership_id,
+            "as_of": read_at,
+            "max_mark_age_seconds": settings.risk.max_mark_age_seconds,
+            "mark_source": mark_policy.source,
+            "mark_timeframes": list(mark_policy.timeframes),
+        },
+    )
+
+    states: list[AccountRiskState] = []
+    for row in result.all():
+        (
+            bot_id,
+            account_id,
+            enabled,
+            equity,
+            unknown_equity,
+            open_risk,
+            pending_risk,
+            unknown_exposure,
+        ) = row
+        normalized_equity = None if equity is None else Decimal(str(equity))
+        normalized_open_risk = Decimal(str(open_risk))
+        normalized_pending_risk = Decimal(str(pending_risk))
+        if any(
+            not amount.is_finite()
+            for amount in (normalized_equity, normalized_open_risk, normalized_pending_risk)
+            if amount is not None
+        ):
+            raise ValueError("Projection risk trả về numeric không hữu hạn.")
+        states.append(
+            AccountRiskState(
+                bot_id=str(bot_id),
+                account_id=str(account_id),
+                enabled=bool(enabled),
+                equity_usdt=normalized_equity,
+                equity_known=not bool(unknown_equity),
+                open_risk_usdt=normalized_open_risk,
+                pending_risk_usdt=normalized_pending_risk,
+                exposure_known=not bool(unknown_exposure),
+            )
+        )
+    return states
+
+
 async def assess_risk_capacity(
     session: AsyncSession,
     *,
     workspace_id: UUID,
+    membership_id: UUID,
     settings: WorkspaceSettings,
     account_fraction: Decimal,
 ) -> CapacityAssessment:
-    """Đánh giá breach khi publish root/profile risk (I5, contract §6).
+    """Đánh giá breach qua projection DB và phép tính domain hiện hành (I5, contract §6).
 
-    Caller phải giữ workspace-settings lock rồi workspace-risk lock (cùng khóa với reservation)
-    để exposure đọc được là tổng thứ tự với mọi reservation. Dùng cùng phép tính SQL theo account
-    với runtime (`workspace_account_risk_state`), dưới RLS của role gọi (admin owner/risk_admin
-    thấy mọi bot của workspace), tại đồng hồ DB và chính sách mark của settings mới.
+    Caller phải giữ workspace-settings lock rồi workspace-risk lock như khi reservation được tạo.
+    PostgreSQL kiểm tra session admin, membership ACTIVE và workspace role. Projection chỉ trả
+    tổng theo account, không trả trade/fill ID; phần Python dùng cùng phép tính cap/exposure.
     """
-    states = await AccountEquityRepository(session).load_account_states(
+    states = await load_admin_risk_capacity_states(
+        session,
         workspace_id=workspace_id,
-        as_of=await database_now(session),
-        max_mark_age=timedelta(seconds=settings.risk.max_mark_age_seconds),
-        mark_policy=mark_policy_from(settings),
+        membership_id=membership_id,
+        settings=settings,
     )
-    workspace_fraction = settings.risk.workspace_max_open_risk_fraction
     return assess_capacity_after_risk_change(
-        workspace_fraction=workspace_fraction,
+        workspace_fraction=settings.risk.workspace_max_open_risk_fraction,
         account_fraction=account_fraction,
-        states=[state.to_domain() for state in states],
+        states=states,
     )
 
 

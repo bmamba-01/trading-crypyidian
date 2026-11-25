@@ -1,8 +1,8 @@
 """CLI Run Report AI-1: in JSON báo cáo tất định của các bot ENABLED trong cửa sổ thời gian.
 
-Ví dụ (stack local, chạy trong container admin-web để dùng login DB chỉ đọc báo cáo):
+Ví dụ (stack local, chạy trong service ``report-reader`` để dùng login báo cáo chuyên biệt):
 
-    docker compose -p crypidian-review -f compose.yaml exec -T admin-web \\
+    docker compose --profile manual -p crypidian-review -f compose.yaml run --rm report-reader \\
         python -m trading_bot.cli.run_report --workspace-id <uuid> --hours 24 --label dot-thu-10-bot
 
 Chỉ đọc dữ liệu; không ghi DB, không gọi mạng.

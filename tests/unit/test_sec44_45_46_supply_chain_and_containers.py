@@ -74,6 +74,13 @@ def test_prepare_local_secrets_enforces_0700_dir_and_0600_files_including_existi
     assert (secrets_dir / "binance_api_secret").read_text(encoding="utf-8") == ""
     assert (secrets_dir / "telegram_bot_token").read_text(encoding="utf-8") == ""
     assert len((secrets_dir / "telegram_webhook_secret").read_text(encoding="utf-8")) >= 32
+    assert (
+        len((secrets_dir / "database_admin_report_reader_password").read_text(encoding="utf-8"))
+        >= 32
+    )
+    assert (secrets_dir / "database_admin_report_reader_password").read_text(encoding="utf-8") != (
+        secrets_dir / "database_report_reader_password"
+    ).read_text(encoding="utf-8")
 
     report = verify_secret_inventory_and_permissions(secrets_dir)
     assert report.passed is True
@@ -101,6 +108,7 @@ def test_secret_inventory_declares_all_required_categories_and_rotation_cycles()
         "database_candidate_builder_password",
         "database_backtest_worker_password",
         "database_scorer_history_password",
+        "database_admin_report_reader_password",
     }
     expected_app_secrets = {
         "mfa_encryption_key",
@@ -116,6 +124,14 @@ def test_secret_inventory_declares_all_required_categories_and_rotation_cycles()
     }
     assert expected_db_secrets | expected_app_secrets <= by_name.keys()
     assert by_name["mfa_encryption_key"].requires_key_id is True
+    assert by_name["database_admin_report_reader_password"].owner_services == (
+        "admin-web",
+        "db-provisioner",
+    )
+    assert (
+        "crypidian_admin_report_reader"
+        in by_name["database_admin_report_reader_password"].description_vi
+    )
     for spec in SYSTEM_SECRET_INVENTORY:
         assert spec.max_rotation_days > 0
         assert spec.owner_services
@@ -264,6 +280,8 @@ def test_secret_inventory_runbook_exists_in_vietnamese() -> None:
         "crypidian_admin_web",
         "crypidian_execution_gateway",
         "crypidian_scorer_history",
+        "database_admin_report_reader_password",
+        "crypidian_admin_report_reader",
         "90",
         "365",
     ):

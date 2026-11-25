@@ -3,7 +3,7 @@
 Owner quyết 16/11/2026: engine là CLI agent đã cài trên máy (Claude Code chính, Codex dự phòng),
 mỗi chủ đề (mặc định họ chiến lược ``family:H03``…) một session được lưu và tiếp tục; kết quả chỉ
 là gợi ý, phải backtest trước. Script chạy trên **host** vì credential đăng nhập CLI nằm ở host;
-phần đọc/ghi DB chạy qua container ``migrator`` của project Compose local.
+phần đọc/ghi DB chạy qua service report-reader chuyên biệt của Compose local.
 
 Ví dụ:
 
@@ -549,7 +549,7 @@ def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Trong container migrator (role admin, đọc/ghi DB)
+# Trong service report-reader (đọc dữ liệu và ghi ledger AI append-only)
 # ---------------------------------------------------------------------------
 
 

@@ -48,8 +48,8 @@
 <div class="lx-page lx-research">
 <div class="lx-notice lx-notice--info">
   <span class="lx-notice__icon">{{ icon("database") }}</span>
-  <p><strong>Chỉ quản lý metadata và policy ngoại tuyến. Không tải dữ liệu nguồn.</strong></p>
-  <p class="source-evidence-notice">Evidence tham chiếu do người quản trị cung cấp — chưa được hệ thống xác minh pháp lý</p>
+  <p><strong>Chỉ quản lý siêu dữ liệu và chính sách ngoại tuyến. Không tải dữ liệu nguồn.</strong></p>
+  <p class="source-evidence-notice">Tài liệu quyền do quản trị viên cung cấp — hệ thống chưa thẩm định hiệu lực pháp lý.</p>
 </div>
 
 <section class="lx-kpis" aria-label="Tóm tắt nguồn">
@@ -106,14 +106,14 @@
 </div>
 {% if detail %}
 <dl class="kv-grid source-metadata">
-{% for ico, label, value in [('user','Nhà xuất bản',detail.current.publisher),('link','Địa chỉ nguồn',detail.current.endpoint_url),('activity','Phương thức truy cập',detail.current.access_method),('key','Phạm vi xác thực',detail.current.auth_scope),('file','Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('info','Ghi công',attribution_label(detail.current.attribution)),('database','Lưu giữ',detail.current.retention_ref),('calendar','Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
+{% for ico, label, value in [('user','Nhà xuất bản',detail.current.publisher),('link','Địa chỉ nguồn',detail.current.endpoint_url),('activity','Phương thức truy cập',detail.current.access_method),('key','Phạm vi xác thực',detail.current.auth_scope),('file','Tài liệu quyền tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('info','Ghi công',attribution_label(detail.current.attribution)),('database','Thời hạn lưu giữ',detail.current.retention_ref),('calendar','Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
 <div class="kv kv--text"><dt>{{ icon(ico) }}{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
 </dl>
 {% endif %}
 </div>
 {% if detail %}
 <section class="glass-card lx-card source-quota" aria-labelledby="quota-heading">
-<h3 id="quota-heading">{{ icon("gauge") }}Quota hiện hành</h3>
+<h3 id="quota-heading">{{ icon("gauge") }}Hạn mức hiện tại</h3>
 {% if detail.quota %}
 {% set q = detail.quota %}
 <div class="lx-quota">
@@ -123,7 +123,7 @@
 {% endfor %}
 </div>
 <p class="lx-meta"><span>{{ icon("clock") }}Cửa sổ bắt đầu: {{ q.window_started_at }}</span><span>Tại: {{ q.as_of }}</span><span>Phiên bản {{ q.policy_sequence }}</span></p>
-{% else %}<p class="lx-empty">{{ icon("info") }}Chưa có snapshot sử dụng quota. Giới hạn policy: {{ detail.current.budget.max_requests }} yêu cầu / {{ detail.current.budget.max_bytes }} byte / {{ detail.current.budget.max_cost }} {{ detail.current.budget.cost_unit }} trong {{ detail.current.budget.window_seconds }} giây.</p>{% endif %}
+{% else %}<p class="lx-empty">{{ icon("info") }}Chưa có ảnh chụp số liệu hạn mức. Giới hạn chính sách: {{ detail.current.budget.max_requests }} yêu cầu / {{ detail.current.budget.max_bytes }} byte / {{ detail.current.budget.max_cost }} {{ detail.current.budget.cost_unit }} trong {{ detail.current.budget.window_seconds }} giây.</p>{% endif %}
 </section>
 {% if detail.current.license_scope %}
 <section class="glass-card lx-card license-scope-card" aria-labelledby="license-scope-heading">
@@ -160,7 +160,11 @@
 <p class="lx-help">Tệp chỉ được truyền để máy chủ tính SHA-256 rồi xóa dữ liệu thô. Tên tệp và nội dung không được lưu.</p>
 <div class="lx-form__row lx-form__row--action">
 <div class="lx-field"><label for="license-evidence-file">Chọn PDF, TXT, HTML hoặc DOCX (tối đa 10 MiB)</label>
-<input id="license-evidence-file" type="file" accept="application/pdf,text/plain,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required></div>
+<div class="license-file-picker">
+<input id="license-evidence-file" class="license-file-picker__input" aria-labelledby="license-evidence-file-label" aria-describedby="license-evidence-file-status" type="file" accept="application/pdf,text/plain,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+<label id="license-evidence-file-label" for="license-evidence-file" class="btn btn-outline license-file-picker__button">Chọn tệp</label>
+<span id="license-evidence-file-status" class="license-file-picker__status" aria-live="polite">Chưa chọn tài liệu</span>
+</div></div>
 <button class="btn btn-primary" type="submit">{{ icon("upload") }}Tải lên và tính SHA-256</button>
 </div>
 <p id="license-evidence-status" class="lx-status" role="status" aria-live="polite"></p>
@@ -168,7 +172,7 @@
 </form>
 {% endif %}
 <section class="glass-card lx-card" aria-labelledby="history-heading">
-<h3 id="history-heading">{{ icon("clock") }}Lịch sử policy</h3>
+<h3 id="history-heading">{{ icon("clock") }}Lịch sử chính sách</h3>
 <ol class="lx-timeline source-history">
 {% for revision in detail.revisions | reverse %}<li><article><div class="lx-timeline__head"><h4>Phiên bản {{ revision.sequence }} · {{ state_labels[revision.state] }}</h4>{{ chip(state_labels[revision.state], state_tones.get(revision.state, 'neutral'), state_icons.get(revision.state, 'info')) }}</div><dl class="kv-grid">
 <div class="kv kv--text"><dt>Lý do</dt><dd>{{ revision.reason }}</dd></div><div class="kv"><dt>Người gửi</dt><dd><code class="lx-hash__text" title="{{ revision.actor_id }}">{{ revision.actor_id }}</code></dd></div><div class="kv"><dt>Người duyệt</dt><dd>{% if revision.approved_by %}<code class="lx-hash__text" title="{{ revision.approved_by }}">{{ revision.approved_by }}</code>{% else %}<span class="value-muted">Chưa duyệt</span>{% endif %}</dd></div><div class="kv"><dt>Mã policy</dt><dd><code class="lx-hash__text" title="{{ revision.policy_id }}">{{ revision.policy_id }}</code></dd></div><div class="kv kv--text"><dt>Hết hạn</dt><dd>{{ revision.valid_until or "Không đặt thời hạn" }}</dd></div><div class="kv kv--text"><dt>Thời điểm ghi nhận</dt><dd><time datetime="{{ revision.created_at.isoformat() if revision.created_at.isoformat is defined else revision.created_at }}" title="{{ revision.created_at }}">{{ revision.created_at | local_minute }}</time></dd></div><div class="kv kv--text"><dt>Evidence tham chiếu</dt><dd>{{ revision.evidence_ref or 'Chưa cung cấp' }}</dd></div><div class="kv kv--text"><dt>Mục đích</dt><dd>{% for purpose in revision.allowed_purposes %}{{ purpose_labels[purpose] }}{% if not loop.last %}, {% endif %}{% else %}Chưa cấp quyền{% endfor %}</dd></div>

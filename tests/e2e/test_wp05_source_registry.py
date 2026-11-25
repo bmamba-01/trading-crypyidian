@@ -119,7 +119,20 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         migrate("downgrade", "f6b8d0e2a4c7")
         migrate("upgrade", "head")
         run_probe("registry")
-        run_probe("license_ledger")
+        license_ledger = run_probe("license_ledger")
+        assert license_ledger["scope_identity_denials"] == {
+            "source_id": True,
+            "provider": True,
+            "product": True,
+            "venue": True,
+            "contract": True,
+        }
+        assert license_ledger["immutable_identity_denials"] == {
+            "provider": True,
+            "product": True,
+            "venue": True,
+            "contract": True,
+        }
         evidence_guard = migrate("downgrade", "f6b8d0e2a4c7", success=False)
         assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
             evidence_guard.stdout + evidence_guard.stderr

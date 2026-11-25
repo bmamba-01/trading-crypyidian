@@ -52,7 +52,7 @@ SERVICES = {
     "derivatives_read": "trading-runtime",
     "listings_write": "ingestion-worker",
     "listings_read": "trading-runtime",
-    "run_report": "migrator",
+    "run_report": "report-reader",
     "analyst": "migrator",
     "tg_seed": "migrator",
     "tg_results": "telegram-signal-worker",
@@ -136,12 +136,13 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "a3c7e9f1b5d2 (head)" in heads.stdout
+        assert "ab26dde001df (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
         # lượt quét ghi audit_event và hiện trong nhật ký.
         assert run("scanner") == {
+            "reader_role": "crypidian_admin_report_reader",
             "universe": 1,
             "passed_4h": ["BTCUSDT"],
             "deterministic": True,
@@ -149,10 +150,10 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "runs": 1,
             "run_summary_matches": True,
         }
-        # SIG-6: cảnh báo đồng thuận đo trên nến đã lưu, đọc bằng role admin-web qua RLS; mã
+        # SIG-6: cảnh báo đồng thuận đo trên nến đã lưu, đọc bằng report-reader qua RLS; mã
         # không có nến và workspace khác trả rỗng (không bịa dữ liệu, không rò workspace).
         assert run("card_consensus") == {
-            "role": "crypidian_admin_web",
+            "role": "crypidian_admin_report_reader",
             "enough_bars": True,
             "within_limit": True,
             "positive_prices": True,
@@ -202,9 +203,9 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         marked = run("mark_check")
         assert marked == {"known": True, "reason": None, "open_positions": 1, "mark_refs": 1}
 
-        # CK-7: admin-web đọc đúng vị thế mở (fill, SL kế hoạch, UPnL) và quyết định tại nến.
+        # CK-7: report-reader đọc vị thế/sự kiện theo quyền; admin-web gọi service ghép bảng.
         opened = run("web_read")
-        assert opened["role"] == "crypidian_admin_web"
+        assert opened["role"] == "crypidian_admin_report_reader"
         assert opened["positions"] == [
             {
                 "side": opened["positions"][0]["side"],
@@ -216,7 +217,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         ], opened
         assert opened["decision_status"] == "CANDIDATE"
         assert opened["decision_rows"] >= 1
-        assert opened["hidden_without_membership"] == 0  # RLS admin-web cần membership
+        assert opened["hidden_without_membership"] == 0  # RLS reader cần membership
         # CK-12: chỗ chạy khớp ledger (1 lệnh mở / max_positions 2), giới hạn từ cấu hình hiệu lực.
         assert opened["monitor_slots"] == "1/2", opened
         assert (opened["monitor_daily_limit"], opened["monitor_rolling_limit"]) == (200.0, 500.0)
@@ -310,11 +311,16 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         # AI-1: Run Report tất định từ ledger thật (lệnh lỗ chạm stop → R âm, có MAE).
         report = run("run_report")
         assert report["deterministic"] is True, report
+        assert report["cli_payload_matches"] is True, report
         # CRY-380: lưu lần đầu, lần hai trùng hash bỏ qua; mọi UPDATE/DELETE bị trigger chặn.
         assert report["stored"] == [True, False], report
         assert report["stored_rows"] == 1, report
         assert report["immutable"] == [True, True], report
-        assert report["report_rights"] == [True, False, True], report
+        assert report["report_rights"] == [False, False, True], report
+        assert report["stored_rows"] == 1, report
+        assert report["manual_reader_account_rows"] == 1, report
+        assert report["manual_reader_cross_workspace_rows"] == 0, report
+        assert report["manual_reader_sensitive_account_column_denied"] is True, report
         assert report["closed_trades"] == 1, report
         assert report["r_mean"] is not None, report
         assert Decimal(report["r_mean"]) < 0, report
@@ -325,14 +331,19 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert run("analyst") == {
             "runs": 2,
             "valid_runs": 1,
-            "admin_web_select": True,
+            "admin_web_select": False,
             "admin_web_insert": False,
             "forced_rls": True,
-            # AI-3: kết quả backtest đề xuất chỉ admin_web đọc; runtime không thấy; trùng bị chặn.
-            "backtest_admin_web_select": True,
+            "report_reader_structured_output_select": True,
+            "report_reader_raw_stdout_select": False,
+            "report_reader_analyst_insert": False,
+            # AI-3: admin-web không đọc trực tiếp; reader chỉ nhận cột kết quả cần thiết.
+            "backtest_admin_web_select": False,
             "backtest_admin_web_insert": False,
             "backtest_runtime_select": False,
             "backtest_forced_rls": True,
+            "report_reader_backtest_result_select": True,
+            "report_reader_backtest_insert": False,
             "backtests": 1,
             "backtest_duplicate_rejected": True,
             "context_sql_null": 1,

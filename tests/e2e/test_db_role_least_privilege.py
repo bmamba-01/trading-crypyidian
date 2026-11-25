@@ -1,124 +1,272 @@
-"""SEC-01/SEC-02: quyền DB tối thiểu theo process và PostgreSQL đã vá, trên Compose cô lập."""
+"""Compose E2E cho ranh giới ACL toàn ứng dụng của admin-web."""
 
+from __future__ import annotations
+
+import importlib.util
 import json
 import os
 import subprocess
-import sys
-import uuid
 from pathlib import Path
 
-from scripts.docker_image import build_image_reference, ensure_image_available
+import pytest
+from scripts.docker_image import ensure_image_available
 
-# Bootstrap ngắn đọc gói JSON từ stdin: Windows giới hạn dòng lệnh 32.767 ký tự.
-PROBE_BOOTSTRAP = (
-    "import json,os,sys;p=json.load(sys.stdin);"
-    "os.environ.update(SEC01_PHASE=p['phase'],SEC01_SNAPSHOT=p['snapshot']);"
-    "exec(compile(p['code'],'db_role_least_privilege.py','exec'),{'__name__':'__main__'})"
-)
-# Head trước SEC-01 sau tích hợp: MB-03 (bảng MB-02/MB-03 đã có grant trực tiếp riêng).
-PREVIOUS_HEAD = "e3c5a7b9d2f4"
-WORKER_SERVICES = ("execution-gateway", "ingestion-worker", "trainer-worker")
+from tests.e2e.test_wp06_learning_feature_vector_parity import isolated_compose_resources
 
 
-def test_process_roles_cannot_write_identity_or_config_and_risk_guard_blocks_downgrade() -> None:
-    root = Path(__file__).parents[2]
-    subprocess.run(
-        [sys.executable, "scripts/prepare_local_secrets.py"],
-        check=True,
-        cwd=root,
-        capture_output=True,
+def _report_reader_column_allowlist() -> dict[str, list[str]]:
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations/versions/f0a2c4e6b8e0_wp06_report_reader_column_allowlist.py"
     )
-    project = f"crypidian-sec01-e2e-{uuid.uuid4().hex[:10]}"
-    image = build_image_reference(root)
-    environment = os.environ | {"CRYPIDIAN_APP_IMAGE": image}
-    base = [
-        "docker",
-        "compose",
-        "--profile",
-        "paper",
-        "--project-name",
-        project,
-        "-f",
-        "compose.yaml",
+    spec = importlib.util.spec_from_file_location(
+        "wp06_report_reader_column_allowlist", migration_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return {table: sorted(columns) for table, columns in migration.COLUMN_ALLOWLISTS.items()}
+
+
+def _admin_safe_acl_manifest() -> list[dict[str, object]]:
+    path = Path(__file__).parents[2] / "migrations/wp06_admin_safe_acl_manifest.json"
+    return [
+        row for row in json.loads(path.read_text(encoding="utf-8")) if row["kind"] != "membership"
     ]
 
-    def compose(
-        *args: str, stdin: str | None = None, success: bool = True
-    ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            base + list(args),
-            cwd=root,
-            env=environment,
-            input=stdin,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
-        assert (result.returncode == 0) is success, (
-            args,
-            result.stdout[-12000:],
-            result.stderr[-25000:],
-        )
-        return result
 
-    probe = (root / "tests/e2e/probes/db_role_least_privilege.py").read_text(encoding="utf-8")
-
-    def run_probe(phase: str, service: str = "migrator", snapshot: str = "") -> dict[str, object]:
-        payload = json.dumps({"phase": phase, "snapshot": snapshot, "code": probe})
-        result = compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            service,
-            "python",
-            "-c",
-            PROBE_BOOTSTRAP,
-            stdin=payload,
+def test_admin_web_does_not_inherit_application_or_raw_trade_access(
+    subtests: pytest.Subtests,
+) -> None:
+    root = Path(__file__).parents[2]
+    with isolated_compose_resources(root) as resources:
+        project = f"crypidian-wp06-admin-role-e2e-{resources.run_id}"
+        base = [
+            "docker",
+            "compose",
+            "--project-name",
+            project,
+            "--project-directory",
+            str(root),
+            "-f",
+            str(resources.compose_file),
+        ]
+        environment = os.environ | {"CRYPIDIAN_APP_IMAGE": resources.image}
+        secret = resources.compose_file.parent / ".secrets" / "database_admin_web_password"
+        reader_secret = (
+            resources.compose_file.parent / ".secrets" / "database_admin_report_reader_password"
         )
-        parsed: dict[str, object] = json.loads(result.stdout.strip().splitlines()[-1])
-        return parsed
 
-    def migrate(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
-        return compose("run", "--rm", "--no-deps", "migrator", "alembic", *args, success=success)
+        def compose(*args: str) -> str:
+            result = compose_result(*args)
+            assert result.returncode == 0, (
+                args,
+                result.stdout[-3000:],
+                result.stderr[-6000:],
+            )
+            return result.stdout
 
-    ensure_image_available(root, image)
-    try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
-        compose("run", "--rm", "--no-deps", "db-provisioner")
-        migrate("upgrade", PREVIOUS_HEAD)
-        before_sec01 = run_probe("acl_snapshot")
-        migrate("upgrade", "f4d6b8c0e2a5")
-        migrate("downgrade", PREVIOUS_HEAD)
-        assert run_probe("acl_compare", snapshot=json.dumps(before_sec01))["acl_restored"] is True
-        migrate("upgrade", "e0b2d4f6a8c1")
-        legacy_grant = run_probe("grant_legacy_trigger_execute")
-        assert legacy_grant["execute"] is True
-        migrate("upgrade", "head")
-        migrate("check")
-        assert run_probe("legacy_trigger_execute")["execute"] is False
-        seeded = run_probe("seed")
-        assert int(str(seeded["server_version_num"])) >= 180006
-        run_probe("matrix")
-        for service in WORKER_SERVICES:
-            assert run_probe("worker", service=service)["denied"]
-        assert run_probe("runtime", service="trading-runtime")["denied"]
-        assert run_probe("admin", service="admin-web")["denied"]
-        # Guard bảo mật là rào rollback toàn cục; kiểm schema/ACL không đổi sau lần từ chối.
-        before_guard = run_probe("acl_snapshot")
-        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
-        assert run_probe("acl_compare", snapshot=json.dumps(before_guard))["acl_restored"] is True
-        run_probe("matrix")
-        migrate("check")
-    finally:
-        subprocess.run(
-            [*base, "down", "--volumes", "--remove-orphans"],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            timeout=300,
-            check=False,
-        )
+        def compose_result(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [*base, *args],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=360,
+            )
+
+        image_created = ensure_image_available(root, resources.image)
+        try:
+            compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+            compose("run", "--rm", "--no-deps", "db-provisioner")
+            compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "migrator",
+                "alembic",
+                "upgrade",
+                "f0a2c4e6b8d3",
+            )
+            probe_command = (
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "--volume",
+                f"{root / 'tests'}:/e2e-tests:ro",
+                "migrator",
+                "python",
+                "/e2e-tests/e2e/probes/wp06_admin_acl_rollback.py",
+            )
+            catalog_probe = (*probe_command[:-1], "/e2e-tests/e2e/probes/wp06_admin_acl_catalog.py")
+            before = compose(*catalog_probe, "baseline").strip()
+            for scenario in (
+                "preflight",
+                "isolation",
+                "barrier",
+                "foreign_grant",
+                "reader_membership",
+                "global_writer",
+                "upgrade_fault",
+            ):
+                with subtests.test(scenario=scenario):
+                    compose(*catalog_probe, scenario)
+            compose(*probe_command, "seed")
+            rejected = compose_result(
+                "run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head"
+            )
+            assert rejected.returncode != 0, (rejected.stdout[-3000:], rejected.stderr[-6000:])
+            assert "WP06_ADMIN_ACL_UNCLASSIFIED" in rejected.stdout + rejected.stderr
+            rollback = json.loads(compose(*probe_command, "check").strip().splitlines()[-1])
+            assert rollback == {
+                "app_membership": True,
+                "safe_role_exists": False,
+                "snapshot_exists": False,
+                "direct_grant_preserved": True,
+                "revision": "f0a2c4e6b8d3",
+            }
+
+            compose(*probe_command, "cleanup")
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+            snapshot = json.loads(compose(*probe_command, "snapshot").strip().splitlines()[-1])
+            manifest = _admin_safe_acl_manifest()
+            assert snapshot == {
+                "entries": len(manifest),
+                "transferred": sum(entry["disposition"] == "transfer" for entry in manifest),
+                "revoke_only": sum(entry["disposition"] == "revoke_only" for entry in manifest),
+                "membership_snapshotted": True,
+            }
+
+            def role_probe(*, restored: bool = False) -> tuple[dict[str, object], ...]:
+                arguments = [
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "-T",
+                    "--volume",
+                    f"{root / 'tests'}:/e2e-tests:ro",
+                    "--volume",
+                    f"{secret}:/run/secrets/database_admin_web_password:ro",
+                    "-e",
+                    "WP06_ADMIN_PASSWORD_FILE=/run/secrets/database_admin_web_password",
+                    "migrator",
+                ]
+                if not restored:
+                    arguments[3:3] = [
+                        "--volume",
+                        f"{reader_secret}:/run/secrets/database_admin_report_reader_password:ro",
+                        "-e",
+                        "WP06_ADMIN_REPORT_READER_PASSWORD_FILE="
+                        "/run/secrets/database_admin_report_reader_password",
+                    ]
+                else:
+                    arguments[-1:-1] = ["-e", "WP06_EXPECT_RESTORED_ROLE=1"]
+                output = compose(
+                    *arguments,
+                    "python",
+                    "/e2e-tests/e2e/probes/db_role_least_privilege.py",
+                )
+                return tuple(
+                    json.loads(line)
+                    for line in output.strip().splitlines()[-(1 if restored else 2) :]
+                )
+
+            admin, report_reader = role_probe()
+            assert admin == {
+                "inherits_application_role": False,
+                "can_read_trade_net_pnl": False,
+                "can_read_score_probabilities": False,
+                "can_read_auth_account": True,
+                "can_read_bot_config": True,
+                "can_read_paper_checkpoint": False,
+            }
+            assert report_reader == {
+                "report_reader_can_login": True,
+                "report_reader_has_unsafe_role_attributes": False,
+                "report_reader_inherits_scope_owner": False,
+                "report_reader_can_insert_trade": False,
+                "report_reader_can_select_paper_checkpoint": True,
+                "report_reader_can_insert_paper_checkpoint": False,
+                "report_reader_scope_without_identity": False,
+                "report_reader_unscoped_trade_rows": 0,
+                "report_reader_unscoped_decision_rows": 0,
+                "report_reader_unscoped_paper_checkpoint_rows": 0,
+                "report_reader_table_wide_select": [],
+                "report_reader_selectable_columns": _report_reader_column_allowlist(),
+                "report_reader_columns": {
+                    "trade.net_pnl": True,
+                    "order_intent.quantity": True,
+                    "order_intent.evidence": True,
+                    "order_intent.filled_quantity": True,
+                    "bot_decision.payload": True,
+                    "bot_decision.decision_hash": True,
+                    "shared_signal_evidence.symbol": True,
+                    "shared_signal_evidence.observed_at": True,
+                    "shared_signal_evidence.canonical_json": False,
+                    "shared_signal_evidence.source_refs": False,
+                    "position_event.payload": True,
+                },
+                "report_reader_signal_outcome_dml": {
+                    "insert": False,
+                    "update": False,
+                    "delete": False,
+                    "truncate": False,
+                },
+                "report_reader_telegram_delivery_dml": {
+                    "insert": False,
+                    "update": False,
+                    "delete": False,
+                    "truncate": False,
+                },
+            }
+
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "f0a2c4e6b8d4")
+            for scenario in ("snapshot", "snapshot_writer", "downgrade_fault", "restore_grantor"):
+                with subtests.test(scenario=scenario):
+                    compose(*catalog_probe, scenario)
+            compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "migrator",
+                "alembic",
+                "downgrade",
+                "f0a2c4e6b8d3",
+            )
+            assert compose(*catalog_probe, "baseline").strip() == before
+            (restored_admin,) = role_probe(restored=True)
+            assert restored_admin["inherits_application_role"] is True
+            assert restored_admin["can_read_trade_net_pnl"] is True
+
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+            upgraded_admin, upgraded_reader = role_probe()
+            assert upgraded_admin == admin
+            assert upgraded_reader == report_reader
+        finally:
+            compose("down", "--volumes", "--remove-orphans")
+            for resource in ("container", "volume", "network"):
+                command = [
+                    "docker",
+                    resource,
+                    "ls",
+                    "--quiet",
+                    "--filter",
+                    f"label=com.docker.compose.project={project}",
+                ]
+                if resource == "container":
+                    command.append("--all")
+                assert not subprocess.run(
+                    command, capture_output=True, text=True, check=True
+                ).stdout.strip()
+            if image_created:
+                subprocess.run(
+                    ["docker", "image", "rm", resources.image],
+                    capture_output=True,
+                    check=True,
+                    timeout=120,
+                )

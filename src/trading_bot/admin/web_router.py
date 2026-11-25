@@ -26,6 +26,9 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from trading_bot.adapters.database.repositories.operational_telemetry import (
+    AdminTelemetryScopeDenied,
+)
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
 from trading_bot.admin.form_choices import (
@@ -698,6 +701,7 @@ async def _build_operations_health_data(
     now_utc: datetime,
     request: Request | None = None,
     actor_membership_id: UUID | None = None,
+    hide_scope_denied: bool = False,
 ) -> dict[str, Any]:
     """Tổng hợp ảnh chụp sức khỏe vận hành thật từ runtime và workspace hiện hành."""
     health_service = (
@@ -710,17 +714,25 @@ async def _build_operations_health_data(
         if session_factory is not None:
             health_service = OperationalHealthService(session_factory)
     if health_service is not None:
-        result = cast(
-            "dict[str, Any]",
-            await health_service.load_health_snapshot(
-                workspace_id=UUID(workspace_id),
-                actor_membership_id=actor_membership_id,
-                runtime=runtime,
-                workspace=workspace,
-                correlation_id=correlation_id,
-                now_utc=now_utc,
-            ),
-        )
+        try:
+            result = cast(
+                "dict[str, Any]",
+                await health_service.load_health_snapshot(
+                    workspace_id=UUID(workspace_id),
+                    actor_membership_id=actor_membership_id,
+                    runtime=runtime,
+                    workspace=workspace,
+                    correlation_id=correlation_id,
+                    now_utc=now_utc,
+                ),
+            )
+        except AdminTelemetryScopeDenied as error:
+            if not hide_scope_denied:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Bạn chưa có quyền xem telemetry vận hành trong phạm vi này.",
+                ) from error
+            return {}
         result["workers"] = await _collect_worker_readiness(
             request, workspace_id=UUID(workspace_id)
         )
@@ -923,6 +935,7 @@ async def dashboard(
                 now_utc=report_end,
                 request=request,
                 actor_membership_id=principal.membership_id,
+                hide_scope_denied=True,
             ),
         },
         headers={"Cache-Control": "no-store"},
@@ -1076,6 +1089,7 @@ async def dashboard_realtime(
             now_utc=now_utc,
             request=request,
             actor_membership_id=principal.membership_id,
+            hide_scope_denied=True,
         ),
     }
 
@@ -4896,6 +4910,12 @@ async def operations_breaker_resume(
         raise HTTPException(
             status_code=409,
             detail=str(error),
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except AdminTelemetryScopeDenied as error:
+        raise HTTPException(
+            status_code=403,
+            detail="Quyền telemetry vận hành đã thay đổi; hãy tải lại trang rồi thử lại.",
             headers={"Cache-Control": "no-store"},
         ) from error
     return {

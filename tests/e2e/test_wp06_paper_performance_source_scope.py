@@ -49,7 +49,7 @@ def test_paper_source_rights_denial_does_not_persist_or_disclose_report() -> Non
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "a3c7e9f1b5d2 (head)" in heads.stdout
+            assert "ab26dde001df (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / "database_admin_web_password"
             )
@@ -79,6 +79,7 @@ def test_paper_source_rights_denial_does_not_persist_or_disclose_report() -> Non
                 "missing_report_rights_false": True,
                 "missing_report_gateway_empty": True,
                 "no_paper_report_written": True,
+                "paper_gate_waits_for_source_lock_before_qa_denial": True,
                 "writer_waits_before_member_mutation": True,
             }
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")

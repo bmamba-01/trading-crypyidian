@@ -30,6 +30,7 @@ _REQUIRED_INVENTORY_NAMES: frozenset[str] = frozenset(
         "database_candidate_builder_password",
         "database_backtest_worker_password",
         "database_scorer_history_password",
+        "database_admin_report_reader_password",
         "mfa_encryption_key",
         "telegram_bot_token",
         "telegram_webhook_secret",
@@ -221,6 +222,11 @@ SYSTEM_SECRET_INVENTORY: tuple[SecretInventorySpec, ...] = (
         "scorer_history",
         "admin-web",
         "Mật khẩu role PostgreSQL chỉ đọc lịch sử scorer crypidian_scorer_history.",
+    ),
+    _db_role_spec(
+        "admin_report_reader",
+        "admin-web",
+        "Mật khẩu role PostgreSQL đọc báo cáo PAPER crypidian_admin_report_reader.",
     ),
     SecretInventorySpec(
         name="mfa_encryption_key",

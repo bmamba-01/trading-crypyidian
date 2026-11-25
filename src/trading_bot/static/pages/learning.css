@@ -163,6 +163,7 @@
   .lx-kpis .kpi-card--h { grid-template-columns: 2.1rem minmax(0, 1fr); gap: 0.1rem 0.5rem; padding: 0.55rem 0.6rem; }
   .lx-kpis .kpi-icon { width: 2.1rem; height: 2.1rem; font-size: 1rem; border-radius: 0.6rem; }
   .lx-kpis .kpi-value { font-size: var(--fs-xl); }
+  .lx-kpis .kpi-value--text { font-size: 1rem; line-height: 1.3; }
   .lx-kpis .kpi-card--h .kpi-body { flex-direction: column; align-items: flex-start; gap: 0.05rem; }
 }
 @media (max-width: 379.98px) {
@@ -282,6 +283,14 @@
 .lx-table th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lx-table time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lx-table .lx-sub { display: block; font-size: var(--fs-2xs); color: var(--text-muted); }
+.lx-confusion { display: grid; gap: 0.55rem; margin-block: 1.25rem; }
+.lx-confusion h3 { margin: 0; font-size: var(--fs-md); }
+.lx-confusion__mobile { display: none; }
+.lx-confusion__wrap { min-width: 0; overscroll-behavior-x: contain; }
+.lx-confusion__wrap:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.lx-confusion__table { min-width: 35rem; table-layout: auto; }
+.lx-confusion__table th[scope="row"] { color: var(--text-main); }
+.lx-confusion__table td { font-variant-numeric: tabular-nums; }
 .lx-table--scoring-history { min-width: 0; table-layout: fixed; }
 @media (min-width: 768px) {
   .lx-table--scoring-history { min-width: 1060px; }
@@ -440,6 +449,39 @@
   .paper-entry-block-confirm > summary { width: 100%; }
   .paper-entry-block-form [data-paper-block-cancel] { margin-left: 0; }
   .paper-entry-block-audit { padding: 0.55rem; }
+  .lx-confusion__wrap { display: none; }
+  .lx-confusion__mobile { display: grid; gap: 0.5rem; }
+  .lx-confusion__mobile-row {
+    min-width: 0;
+    padding: 0.55rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 0.65rem;
+    background: var(--glass-bg);
+  }
+  .lx-confusion__mobile-row h4 { margin: 0 0 0.45rem; }
+  .lx-confusion__mobile-row dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.35rem;
+    margin: 0;
+  }
+  .lx-confusion__mobile-row dl > div {
+    min-width: 0;
+    padding: 0.4rem;
+    border-radius: 0.45rem;
+    background: var(--bg-surface-subtle);
+  }
+  .lx-confusion__mobile-row dt {
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    overflow-wrap: anywhere;
+  }
+  .lx-confusion__mobile-row dd {
+    margin: 0.12rem 0 0;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+  }
 }
 
 /* ---------- Biểu mẫu gọn (MFA, lý do) ---------- */
@@ -763,11 +805,56 @@ progress.lx-progress::-moz-progress-bar { background: #22c55e; border-radius: 99
 .lx-kpis .kpi-card--h { min-width: 0; }
 .lx-kpis .kpi-subtext--keep {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 100%;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 .lx-kpis .kpi-card--h { overflow: hidden; }
 .lx-kpis .kpi-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+
+/* Model card scorer: bố cục ưu tiên một cột trên điện thoại, tránh tràn hash dài. */
+.model-card-filter__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) auto;
+  align-items: end;
+}
+.model-card-filter__row > * { min-width: 0; }
+.model-card-filter__submit { min-height: 44px; }
+.model-card-snapshot {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.5rem 1rem;
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.24));
+  border-radius: 0.8rem;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.08));
+}
+.model-card-snapshot p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.model-card-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.model-card-stage { min-width: 0; padding: 1rem; }
+.model-card-stage h3 { margin: 0 0 0.65rem; font-size: var(--fs-md, 1rem); line-height: 1.4; }
+.model-card-stage__support { margin: 0 0 0.8rem; color: var(--text-muted); font-size: var(--fs-sm, 0.875rem); }
+.model-card-percentiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; margin: 0; }
+.model-card-percentiles > div { min-width: 0; padding: 0.7rem; border-radius: 0.65rem; background: var(--surface-muted, rgba(148, 163, 184, 0.08)); }
+.model-card-percentiles dt { color: var(--text-muted); font-size: var(--fs-xs, 0.75rem); }
+.model-card-percentiles dd { margin: 0.25rem 0 0; font-size: clamp(1.15rem, 4vw, 1.6rem); font-weight: 700; font-variant-numeric: tabular-nums; }
+.model-card-stage__insufficient { margin: 0; color: var(--text-muted); }
+.model-card-anomalies { margin-top: 1rem; }
+.model-card-unavailable { margin-top: 1rem; }
+.learning-model-card-link { margin: 1rem 0 0; }
+.learning-model-card-link .btn { min-height: 44px; max-width: 100%; white-space: normal; }
+@media (max-width: 767.98px) {
+  .model-card-filter__row { grid-template-columns: minmax(0, 1fr); }
+  .model-card-stage-grid { grid-template-columns: minmax(0, 1fr); }
+  .model-card-filter__submit { width: 100%; }
+}
 .lx-table code { white-space: nowrap; }
 .lx-page .kv--text .lx-chip, .lx-page .kv-wrap .lx-chip { white-space: normal; }

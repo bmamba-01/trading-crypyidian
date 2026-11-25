@@ -303,7 +303,9 @@ async def run():
                 rejected = await request(
                     "POST", upload_path, raw=body, extra_headers=upload_headers | extra
                 )
-                assert rejected.status_code == code, rejected.text
+                assert rejected.status_code == code, (
+                    f"case={extra!r}, expected={code}, got={rejected.status_code}: {rejected.text}"
+                )
                 assert rejected.headers["cache-control"] == "no-store"
                 assert await evidence_count() == 0
             for actor, csrf, path, code in (
@@ -339,7 +341,8 @@ async def run():
             assert failed_upload.status_code == 500, failed_upload.text
             assert failed_upload.headers["cache-control"] == "no-store"
             assert await evidence_count() == 0
-            body = b"Fixture license"
+            # Vượt giới hạn body chung 1 MiB nhưng vẫn nằm trong quota upload riêng 10 MiB.
+            body = b"f" * (1024 * 1024 + 1)
 
             async def initial_upload():
                 return await request(

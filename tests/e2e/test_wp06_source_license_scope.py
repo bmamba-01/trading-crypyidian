@@ -206,7 +206,7 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         normalized = run_probe("candidate-proof-builder", "normalize", state)
         state = state | normalized
         assert normalized["rights_receipt_set_valid"] is True
-        assert normalized["source_receipt_count"] == state["expected_source_receipt_count"]
+        assert normalized["source_receipt_count"] == state["expected_normalization_receipt_count"]
         assert normalized["retry_is_idempotent"] is True
         assert normalized["source_free_wp02_allowed"] is True
         assert normalized["forged_source_free_outcome_denied"] is True
@@ -231,6 +231,20 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         assert receipts["receipt_update_denied"] is True
         assert receipts["receipt_delete_denied"] is True
 
+        positive_claim = run_probe("trainer-worker", "positive-training-claim", state)
+        assert positive_claim["positive_training_claim_succeeded"] is True, positive_claim
+        assert positive_claim["batch_has_train_and_validation"] is True, positive_claim
+        assert positive_claim["batch_has_no_test_role"] is True, positive_claim
+        positive_receipts = run_probe("admin-web", "inspect-positive-training-claim", state)
+        assert positive_receipts["training_access_receipt_persisted"] is True
+        assert (
+            positive_receipts["training_replay_receipts_persisted"]
+            == state["expected_training_receipt_count"]
+        )
+        assert positive_receipts["training_receipts_bound_to_same_current_rights"] is True
+        assert positive_receipts["training_receipts_bound_to_claim_attempt"] is True
+        assert positive_receipts["positive_claim_is_train_validation_only"] is True
+
         revoked = run_probe("migrator", "revoke", state)
         assert revoked["current_policy_revoked"] is True
         claim = run_probe("trainer-worker", "revoke-before-claim", state)
@@ -239,6 +253,7 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         after_claim = run_probe("admin-web", "inspect-after-claim", state)
         assert after_claim["normalization_receipts_unchanged"] is True
         assert after_claim["no_training_access_receipt"] is True
+        assert after_claim["no_replay_training_receipt_for_denied_attempt"] is True
     finally:
         subprocess.run(
             [

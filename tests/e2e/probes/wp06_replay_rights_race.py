@@ -13,7 +13,8 @@ import json
 import os
 import sys
 import time
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -181,6 +182,96 @@ async def _relicense_with_retention(sessions) -> dict[str, object]:
     return {"relicensed_retention_days": scope.max_retention_days}
 
 
+def _scope_with_uncovered_dimension(name: str):
+    """Tạo quyền QA hợp lệ nhưng hẹp hơn dữ liệu hoặc thao tác bundle yêu cầu."""
+    scope = fixture_license_scope(SOURCE_ID)
+    if name == "symbols":
+        return replace(scope, symbols=("ETHUSDT",))
+    if name == "intervals":
+        return replace(scope, intervals=("15m",))
+    if name == "data_start":
+        return replace(scope, data_start=datetime(2039, 1, 1, tzinfo=UTC))
+    if name == "data_end":
+        return replace(scope, data_end=datetime(2011, 1, 1, tzinfo=UTC))
+    if name == "purpose":
+        return replace(scope, allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH,))
+    if name == "outputs":
+        return replace(scope, allowed_outputs=("aggregate_report",))
+    if name == "derived_use":
+        return replace(scope, derived_use=("aggregate_reporting",))
+    if name == "retention":
+        return replace(scope, max_retention_days=30)
+    raise ValueError(f"Chiều scope chưa hỗ trợ: {name}")
+
+
+async def _relicense_scope_variant(sessions) -> dict[str, object]:
+    """Phát hành quyền QA mới hẹp hơn, qua đúng repository và evidence trigger."""
+    variant = os.environ["WP06_RACE_SCOPE_VARIANT"]
+    scope = _scope_with_uncovered_dimension(variant)
+    policy_prefix = f"{SOURCE_ID}:{variant}:{uuid4().hex[:8]}"
+    evidence_ref = CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+    policy_purposes = frozenset(
+        {SourceUsePurpose.BACKTEST_RESEARCH}
+        if variant == "purpose"
+        else {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
+    )
+    for state in (SourcePolicyState.RIGHTS_PENDING, SourcePolicyState.VERIFIED):
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as unit:
+            repository = SourceRegistryRepository(unit.session)
+            entry = await repository.get_entry(workspace_id=WORKSPACE_ID, source_id=SOURCE_ID)
+            assert entry is not None
+            now = await repository.database_clock(workspace_id=WORKSPACE_ID)
+            common = {
+                "policy_id": f"{policy_prefix}:{state.value.lower()}",
+                "state": state,
+                "actor_id": "scope-matrix-fixture-operator",
+                "at": now,
+                "allowed_purposes": policy_purposes,
+            }
+            if state is SourcePolicyState.RIGHTS_PENDING:
+                candidate = entry.transition(
+                    **common,
+                    reason=f"E2E scope matrix: quyền QA hẹp chiều {variant}.",
+                    **pending_license_kwargs(scope, evidence_ref),
+                )
+            else:
+                candidate = entry.transition(
+                    **common,
+                    approved_by="scope-matrix-fixture-reviewer",
+                    reviewed_at=now,
+                    valid_until=now + timedelta(days=7),
+                    reason=f"E2E scope matrix: phê duyệt QA hẹp chiều {variant}.",
+                    **verified_license_kwargs(scope, evidence_ref, uuid4()),
+                )
+                await append_fixture_license_evidence(
+                    unit.session,
+                    workspace_id=WORKSPACE_ID,
+                    revision=candidate.current,
+                )
+            await repository.append_revision(workspace_id=WORKSPACE_ID, revision=candidate.current)
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as unit:
+            await SourceRegistryRepository(unit.session).finalize_policy(
+                workspace_id=WORKSPACE_ID,
+                source_id=SOURCE_ID,
+                policy_id=candidate.current.policy.policy_id,
+            )
+    await consume_rights_events(sessions, workspace_id=WORKSPACE_ID)
+    return {"scope_variant": variant}
+
+
+async def _training_receipt_count(sessions) -> dict[str, object]:
+    """Kiểm không có receipt TRAINING nào sau khi quyền scope bị từ chối."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as unit:
+        count = await unit.session.scalar(
+            text(
+                "SELECT count(*) FROM public.learning_replay_training_receipt "
+                "WHERE workspace_id = :workspace_id AND access_kind = 'training'"
+            ),
+            {"workspace_id": str(WORKSPACE_ID)},
+        )
+    return {"training_receipt_count": int(count or 0)}
+
+
 async def main() -> dict[str, object]:
     engine = _engine()
     sessions = create_session_factory(engine)
@@ -193,6 +284,10 @@ async def main() -> dict[str, object]:
             return await _writer_revoke(sessions)
         if PHASE == "relicense-retention":
             return await _relicense_with_retention(sessions)
+        if PHASE == "relicense-scope-variant":
+            return await _relicense_scope_variant(sessions)
+        if PHASE == "training-receipt-count":
+            return await _training_receipt_count(sessions)
         raise ValueError(f"Phase chưa hỗ trợ: {PHASE}")
     finally:
         await engine.dispose()

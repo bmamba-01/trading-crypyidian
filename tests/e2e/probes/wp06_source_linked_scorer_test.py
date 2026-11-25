@@ -96,7 +96,9 @@ async def _verify_migration_body_guards(engine):
             a4,
             a4.FUNCTION_SIGNATURE,
             "WP06_SCORER_TEST_HASH_PREIMAGE_UNEXPECTED",
-            ((a4.HASH_PATTERN, 7),),
+            # Proof v3 bổ sung hash vector cho NOT_RUN, nên validator mới có thêm một
+            # predicate SHA-256 so với postimage mà migration a4 từng tạo.
+            ((a4.HASH_PATTERN, 8),),
         ),
         (
             b3,
@@ -606,7 +608,8 @@ async def run(phase):
                         "'public.validate_learning_scorer_test_opportunity_proof()'::regprocedure)"
                     )
                 )
-                assert definition.count("^[0-9a-f]{64}$") == 7
+                # Proof v3 kiểm thêm vector_hash cho NOT_RUN bên cạnh bảy hash của v2.
+                assert definition.count("^[0-9a-f]{64}$") == 8
                 assert "^[0-9a-f]64$" not in definition
                 scorer_row = await unit.session.scalar(
                     select(LearningScorerArtifactRecord).where(
@@ -645,6 +648,8 @@ async def run(phase):
                     attempt_id=UUID(STATE["attempt_id"]),
                 )
                 proof = result.proof
+                assert proof.proof_schema_version == "v3"
+                assert proof.not_run_count == 0
                 assert proof.completeness_verified
                 assert (
                     proof.source_gap_count
@@ -689,6 +694,80 @@ async def run(phase):
                             raise
                     else:
                         raise AssertionError("Trigger phải từ chối stable ID hash không hợp lệ.")
+
+                invalid_reason_row = LearningScorerTestOpportunityProofRecord.from_proof(proof)
+                invalid_reason_row.id = uuid4()
+                invalid_reason_row.evaluation_run_id = uuid4()
+                invalid_reason_payload = json.loads(invalid_reason_row.canonical_proof)
+                invalid_reason_payload["evaluation_run_id"] = str(
+                    invalid_reason_row.evaluation_run_id
+                )
+                excluded_entry = next(
+                    item
+                    for item in invalid_reason_payload["entries"]
+                    if item["status"] == "no_candidate"
+                )
+                excluded_entry["status"] = "input_excluded"
+                excluded_entry["reason_code"] = 123
+                invalid_reason_row.no_candidate_count -= 1
+                invalid_reason_row.input_excluded_count += 1
+                invalid_reason_row.completeness_verified = False
+                invalid_reason_row.canonical_proof = json.dumps(
+                    invalid_reason_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                invalid_reason_row.proof_hash = hashlib.sha256(
+                    invalid_reason_row.canonical_proof.encode()
+                ).hexdigest()
+                try:
+                    async with unit.session.begin_nested():
+                        unit.session.add(invalid_reason_row)
+                        await unit.session.flush()
+                except DBAPIError as error:
+                    invalid_reason_type_rejected = (
+                        error.orig.sqlstate == "P0001"
+                        and error.orig.diag.message_primary
+                        == "WP06_SCORER_TEST_PROOF_ENTRY_INVALID"
+                    )
+                    if not invalid_reason_type_rejected:
+                        raise
+                else:
+                    raise AssertionError("Trigger phải từ chối reason_code không phải chuỗi.")
+
+                invalid_count_row = LearningScorerTestOpportunityProofRecord.from_proof(proof)
+                invalid_count_row.id = uuid4()
+                invalid_count_row.evaluation_run_id = uuid4()
+                invalid_count_row.not_run_count = 1
+                invalid_count_payload = json.loads(invalid_count_row.canonical_proof)
+                invalid_count_payload["evaluation_run_id"] = str(
+                    invalid_count_row.evaluation_run_id
+                )
+                invalid_count_row.canonical_proof = json.dumps(
+                    invalid_count_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                invalid_count_row.proof_hash = hashlib.sha256(
+                    invalid_count_row.canonical_proof.encode()
+                ).hexdigest()
+                try:
+                    async with unit.session.begin_nested():
+                        unit.session.add(invalid_count_row)
+                        await unit.session.flush()
+                except DBAPIError as error:
+                    invalid_count_rejected = (
+                        error.orig.sqlstate == "P0001"
+                        and error.orig.diag.message_primary
+                        == "WP06_SCORER_TEST_PROOF_CANONICAL_INVALID"
+                    )
+                    if not invalid_count_rejected:
+                        raise
+                else:
+                    raise AssertionError("Trigger phải từ chối not_run_count lệch canonical proof.")
+
                 assert {
                     item.stable_id_hash: {
                         "candidate_id_hash": item.candidate_id_hash,
@@ -712,6 +791,8 @@ async def run(phase):
                 "test_proof_id": str(result.record.id),
                 "test_proof_hash": proof.content_hash,
                 "scorer_artifact_id": str(scorer_row.id),
+                "invalid_reason_type_rejected": invalid_reason_type_rejected,
+                "invalid_not_run_count_rejected": invalid_count_rejected,
                 "expected_test_events": proof.expected_opportunity_count,
                 "test_candidates": proof.candidate_count,
                 "test_no_candidates": proof.no_candidate_count,
@@ -882,11 +963,12 @@ async def evaluate(sessions, *, engine, rights_revoked=False):
         assert base.artifact_hash == scorer.base_artifact_hash == STATE["base_artifact_hash"]
 
     payload = STATE["test_proof"].copy()
+    payload["proof_schema_version"] = payload.pop("schema_version").rsplit("-", 1)[-1]
     for name in (
-        "schema_version",
         "candidate_count",
         "no_candidate_count",
         "input_excluded_count",
+        "not_run_count",
         "completeness_verified",
     ):
         payload.pop(name, None)
@@ -2040,7 +2122,17 @@ async def verify_manifest_source_ref_fence_v3(sessions):
 async def verify_inconclusive_denial(sessions):
     """Admin verifier rejects synthetic QA rights and preserves deployment pointer."""
     assert STATE["report_status"] == "INCONCLUSIVE"
+    from trading_bot.adapters.database.repositories.learning_scorer_report_read_model import (
+        LearningScorerReportReadRepository,
+    )
+
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        summary = await LearningScorerReportReadRepository(unit.session).get_latest(
+            workspace_id=WORKSPACE
+        )
+        assert summary is not None
+        assert summary.evaluation_report_id == UUID(STATE["evaluation_report_id"])
+        assert summary.not_run_count == 0
         before = tuple(
             (
                 await unit.session.execute(
@@ -2111,6 +2203,7 @@ async def verify_inconclusive_denial(sessions):
         )
         assert after == before, "QA deployment denial must not mutate event or pointer."
     return {
+        "admin_report_not_run_count": summary.not_run_count,
         "inconclusive_deployment_denied": True,
         "qa_source_deployment_denied": True,
         "qa_denial_side_effect_free": True,

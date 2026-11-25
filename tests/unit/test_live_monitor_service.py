@@ -121,6 +121,7 @@ def _service() -> LiveMonitorService:
     FakeRepository.calls = []
     return LiveMonitorService(
         sessions=object(),  # type: ignore[arg-type]
+        report_reader_sessions=object(),  # type: ignore[arg-type]
         unit_of_work=FakeUnit,
         repository=FakeRepository,
         grants=FakeGrants,

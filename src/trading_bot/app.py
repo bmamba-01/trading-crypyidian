@@ -44,9 +44,7 @@ from trading_bot.admin.audit_router import router as audit_router
 from trading_bot.admin.backtest_replay_router import (
     api_router as scalping_validation_api_router,
 )
-from trading_bot.admin.backtest_replay_router import (
-    router as backtest_replay_router,
-)
+from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_grant_service import BotGrantAdminService
 from trading_bot.admin.bot_grants_router import router as bot_grants_router
@@ -71,6 +69,9 @@ from trading_bot.admin.learning_paper_entry_block_router import (
 )
 from trading_bot.admin.learning_paper_performance_router import (
     router as learning_paper_performance_router,
+)
+from trading_bot.admin.learning_scorer_model_card_router import (
+    router as learning_scorer_model_card_router,
 )
 from trading_bot.admin.learning_scoring_deployment_router import (
     router as learning_scoring_deployment_router,
@@ -123,6 +124,7 @@ from trading_bot.application.learning_observations_admin import (
 )
 from trading_bot.application.learning_paper_entry_block import LearningPaperEntryBlockService
 from trading_bot.application.learning_paper_performance import LearningPaperPerformanceService
+from trading_bot.application.learning_scorer_model_card import ScorerModelCardReadModel
 from trading_bot.application.learning_scorer_report_read_model import ScorerReportReadModel
 from trading_bot.application.learning_scorer_score_event_read_model import (
     ScorerScoreEventReadModel,
@@ -154,6 +156,7 @@ from trading_bot.application.scorer_runtime_policy import (
 )
 from trading_bot.application.signal_outcome_review import SignalOutcomeReviewService
 from trading_bot.application.source_policy_admin import (
+    LICENSE_EVIDENCE_MAX_BYTES,
     SourcePolicyAdminRepository,
     SourcePolicyAdminService,
 )
@@ -270,6 +273,23 @@ def build_scorer_history_database_engine(settings: AppSettings) -> AsyncEngine |
     return create_database_engine(database_url, session_timeouts=admin_web_session_timeouts())
 
 
+def build_admin_report_reader_database_engine(settings: AppSettings) -> AsyncEngine | None:
+    """Engine đọc báo cáo PAPER bằng credential riêng, chỉ dành cho admin-web."""
+    if not (
+        settings.process_role == "admin-web"
+        and settings.admin_report_reader_database_user
+        and settings.admin_report_reader_database_password_file
+    ):
+        return None
+    database_url = database_url_from_secret(
+        username=settings.admin_report_reader_database_user,
+        password_file=settings.admin_report_reader_database_password_file,
+        host=settings.database_host,
+        database=settings.database_name,
+    )
+    return create_database_engine(database_url, session_timeouts=admin_web_session_timeouts())
+
+
 def create_app(
     settings: AppSettings | None = None,
     *,
@@ -306,643 +326,699 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine: AsyncEngine | None = None
         scorer_history_engine: AsyncEngine | None = None
+        admin_report_reader_engine: AsyncEngine | None = None
         active_session_factory = session_factory
         active_scorer_history_sessions = scorer_history_session_factory
         active_secret_provider = secret_provider
-        if active_session_factory is None:
-            engine = build_database_engine(app_settings)
-            if engine is not None:
-                active_session_factory = create_session_factory(engine)
-        if active_scorer_history_sessions is None and admin_web_role:
-            scorer_history_engine = build_scorer_history_database_engine(app_settings)
-            if scorer_history_engine is not None:
-                active_scorer_history_sessions = create_session_factory(scorer_history_engine)
-        application.state.session_factory = active_session_factory
-        if (
-            admin_web_role
-            and isinstance(active_session_factory, async_sessionmaker)
-            and active_session_factory.kw.get("bind") is not None
-            and application.state.login_limiter is default_login_limiter
-            and default_login_limiter.session_factory is None
-        ):
-            default_login_limiter.bind_session_factory(active_session_factory)
-        application.state.database_probe = database_probe
-        application.state.worker_heartbeat_reader = None
-        if admin_web_role and active_session_factory is not None:
-            from trading_bot.application.ingestion_worker_heartbeat import (
-                WorkerHeartbeatReadService,
-            )
-
-            application.state.worker_heartbeat_reader = WorkerHeartbeatReadService(
-                active_session_factory
-            )
-        application.state.scorer_runtime_policy_provider = scorer_policy_provider
-        if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
-            probe_sessions = active_session_factory
-
-            async def _default_probe() -> bool:
-                return await probe_database(probe_sessions)
-
-            application.state.database_probe = _default_probe
-        application.state.scorer_runtime_policy_provider = scorer_policy_provider
-        if active_secret_provider is None:
-            mfa_provider = (
-                LocalMfaSecretProvider(
-                    key_file=app_settings.mfa_encryption_key_file,
-                    storage_directory=app_settings.mfa_secret_directory,
-                )
-                if app_settings.mfa_encryption_key_file and app_settings.mfa_secret_directory
-                else None
-            )
-            telegram_token_provider = (
-                FileTelegramBotSecretProvider(token_file=app_settings.telegram_bot_token_file)
-                if app_settings.telegram_bot_token_file is not None
-                else None
-            )
-            if mfa_provider is not None and telegram_token_provider is not None:
-                active_secret_provider = CompositeSecretProvider(
-                    mfa_provider=mfa_provider,
-                    telegram_provider=telegram_token_provider,
-                )
-            elif mfa_provider is not None:
-                active_secret_provider = mfa_provider
-            elif telegram_token_provider is not None:
-                active_secret_provider = telegram_token_provider
-        if app_settings.auth_test_totp_enabled:
-            logger.warning(
-                "AUTH_TEST_TOTP_ENABLED: chấp nhận mã xác thực cố định; chỉ cho kiểm thử local."
-            )
-        totp_manager = TestModeTotpManager() if app_settings.auth_test_totp_enabled else None
-        application.state.auth_service = (
-            AuthService(
-                active_session_factory,
-                active_secret_provider,
-                totp=totp_manager,
-                idle_timeout=timedelta(minutes=app_settings.session_idle_timeout_minutes),
-            )
-            if active_session_factory is not None and active_secret_provider is not None
-            else None
-        )
-        application.state.account_security_service = (
-            AccountSecurityService(
-                active_session_factory,
-                active_secret_provider,
-                totp=totp_manager,
-            )
-            if active_session_factory is not None and active_secret_provider is not None
-            else None
-        )
-        action_challenge_service = (
-            ActionChallengeService(
-                active_session_factory,
-                active_secret_provider,
-                totp=totp_manager,
-            )
-            if active_session_factory is not None and active_secret_provider is not None
-            else None
-        )
-        require_action_step_up = app_settings.is_action_step_up_required or (
-            app_settings.app_env == "test"
-            and app_settings.action_step_up_required is None
-            and action_challenge_service is not None
-        )
-        application.state.action_challenge_service = action_challenge_service
-        application.state.settings_admin_service = (
-            SettingsAdminService(
-                active_session_factory,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else None
-        )
-        # CRY-428: trang "Khẩu vị rủi ro" dùng chung SettingsAdminService để publish có audit.
-        application.state.risk_appetite_service = (
-            RiskAppetiteService(
-                active_session_factory,
-                application.state.settings_admin_service,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else None
-        )
-        application.state.bot_admin_service = (
-            BotConfigAdminService(
-                active_session_factory,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else None
-        )
-        application.state.bot_grant_service = (
-            BotGrantAdminService(active_session_factory)
-            if admin_web_role and active_session_factory is not None
-            else None
-        )
-        application.state.source_policy_admin_service = (
-            SourcePolicyAdminService(
-                cast(
-                    SourcePolicyAdminRepository,
-                    DatabaseSourcePolicyAdminRepository(active_session_factory),
-                )
-            )
-            if active_session_factory is not None
-            else None
-        )
-        application.state.bot_reporting_service = (
-            BotReportingService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.trade_journal_service = (
-            TradeJournalService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.scalping_validation_report_service = (
-            ScalpingValidationReportService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.live_monitor_service = (
-            LiveMonitorService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.market_scanner_service = (
-            MarketScannerService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.economic_calendar_service = (
-            EconomicCalendarService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.analyst_review_service = (
-            AnalystReviewService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.signal_outcome_review_service = (
-            SignalOutcomeReviewService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.backtest_replay_job_service = (
-            BacktestReplayJobService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.bot_operations_service = (
-            BotOperationsService(
-                active_session_factory,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else None
-        )
-        application.state.operational_health_service = (
-            OperationalHealthService(active_session_factory)
-            if active_session_factory is not None
-            else None
-        )
-        application.state.strategy_card_service = (
-            StrategyCardAdminService(
-                active_session_factory,
-                bars_provider=PostgresCardBarsProvider(active_session_factory),
-            )
-            if active_session_factory is not None
-            else StrategyCardAdminService()
-        )
-        application.state.strategy_release_service = (
-            StrategyReleaseAdminService(
-                active_session_factory,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else StrategyReleaseAdminService()
-        )
-        application.state.flatten_all_service = (
-            FlattenAllService(
-                active_session_factory,
-                snapshot_provider=PostgresFlattenSnapshotProvider(),
-                operations_factory=application.state.bot_operations_service.for_principal,
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None
-            else None
-        )
-        application.state.telegram_binding_service = (
-            TelegramBindingService(
-                DatabaseTelegramStore(active_session_factory),
-                bot_username=app_settings.telegram_bot_username,
-                # TG-4: sender dựng sau trong lifespan; chỉ sender có create_forum_topic dùng được.
-                topic_creator=lambda: _topic_creator(
-                    getattr(application.state, "telegram_sender", None)
-                ),
-                action_challenge_service=action_challenge_service,
-                require_action_step_up=require_action_step_up,
-            )
-            if active_session_factory is not None and app_settings.telegram_bot_username
-            else None
-        )
-        application.state.telegram_signal_subscription_service = (
-            TelegramSignalSubscriptionService(active_session_factory)
-            if admin_web_role and active_session_factory is not None
-            else None
-        )
-        if admin_web_role:
-            application.state.learning_model_registry_service = (
-                LearningModelRegistryService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_scoring_deployment_service = (
-                ScorerDeploymentService(
-                    active_session_factory,
-                    policy_provider=scorer_policy_provider,
-                    active_modes_enabled=app_settings.scorer_active_modes_enabled,
-                )
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_scoring_report_read_model = (
-                ScorerReportReadModel(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            # Fail-closed (CRY-439): không dùng fallback sang active_session_factory của admin_web.
-            application.state.learning_scoring_score_event_read_model = (
-                ScorerScoreEventReadModel(active_scorer_history_sessions)
-                if active_scorer_history_sessions is not None
-                else None
-            )
-            application.state.learning_paper_entry_block_service = (
-                LearningPaperEntryBlockService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_observations_admin_service = (
-                LearningObservationsAdminService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_incident_entry_hold_service = (
-                LearningIncidentEntryHoldService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_paper_performance_service = (
-                LearningPaperPerformanceService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_training_admin_service = (
-                LearningTrainingAdminService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.learning_split_admin_service = (
-                LearningSplitAdminService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-        telegram_sender = _build_telegram_sender(
-            app_settings,
-            secret_provider=active_secret_provider,
-            required=app_settings.process_role == "signal-worker",
-        )
-        application.state.telegram_sender = telegram_sender
-        application.state.telegram_webhook = _build_telegram_webhook(
-            app_settings, active_session_factory, application.state
-        )
-        stopping = asyncio.Event()
-        supervisor_task: asyncio.Task[None] | None = None
-        rights_worker_task: asyncio.Task[None] | None = None
-        live_market_runtime: Any | None = None
-        live_market_task: asyncio.Task[None] | None = None
-        live_event_task: asyncio.Task[None] | None = None
-        live_quote_task: asyncio.Task[None] | None = None
-        ingestion_heartbeat_task: asyncio.Task[None] | None = None
-        market_collector_task: asyncio.Task[None] | None = None
-        macro_calendar_task: asyncio.Task[None] | None = None
-        derivatives_task: asyncio.Task[None] | None = None
-        listings_task: asyncio.Task[None] | None = None
-        signal_worker_task: asyncio.Task[None] | None = None
-        trade_result_worker_task: asyncio.Task[None] | None = None
-        operational_alert_worker_task: asyncio.Task[None] | None = None
-        market_signal_worker_task: asyncio.Task[None] | None = None
-        signal_outcome_task: asyncio.Task[None] | None = None
-        training_supervisor_task: asyncio.Task[None] | None = None
-        if app_settings.process_role == "trading-runtime":
-            supervisor_task = await _start_paper_runtime(
-                application,
-                app_settings=app_settings,
-                session_factory=active_session_factory,
-                bootstrap_factory=paper_runtime_bootstrap_factory,
-                context_provider_factory=paper_decision_context_provider_factory,
-                supervisor_factory=paper_runtime_supervisor_factory,
-                stopping=stopping,
-                clock=clock,
-            )
-        elif app_settings.process_role == "ingestion-worker":
+        try:
             if active_session_factory is None:
-                raise RuntimeError("ingestion-worker cần database session factory.")
-            workspace_id = app_settings.ingestion_workspace_id
-            if workspace_id is None:
-                raise RuntimeError("ingestion-worker cần ingestion_workspace_id.")
-            worker_factory = rights_worker_factory or ResearchRightsMaintenanceWorker
-            rights_worker = worker_factory(
-                session_factory=active_session_factory,
-                workspace_id=workspace_id,
-                worker_id=f"rights-{uuid4().hex}",
-                tick_seconds=app_settings.ingestion_worker_tick_seconds,
-            )
-            application.state.rights_worker = rights_worker
-            rights_worker_task = asyncio.create_task(
-                rights_worker.run(stopping), name="research-rights-maintenance-worker"
-            )
-            application.state.rights_worker_task = rights_worker_task
-            live_subscriptions = app_settings.ingestion_live_subscriptions
-            if live_subscriptions:
-                # Live ingest chỉ đọc market data công khai; không nhận API key hay cổng lệnh.
-                live_factory = live_market_ingestion_factory or build_live_market_ingestion
-                live_market_runtime = live_factory(
-                    session_factory=active_session_factory,
-                    workspace_id=workspace_id,
-                    subscriptions=live_subscriptions,
-                    warmup_bars=app_settings.ingestion_live_warmup_bars,
-                    events=app_settings.ingestion_live_event_kinds,
-                    mark_price_interval_seconds=(
-                        app_settings.ingestion_live_mark_price_interval_seconds
-                    ),
-                    quote_interval_seconds=app_settings.ingestion_live_quote_interval_seconds,
-                )
-                application.state.live_market_worker = live_market_runtime.worker
-                live_market_task = asyncio.create_task(
-                    live_market_runtime.worker.run(stopping), name="live-market-ingestion-worker"
-                )
-                application.state.live_market_task = live_market_task
-                live_event_worker = getattr(live_market_runtime, "event_worker", None)
-                if live_event_worker is not None:
-                    application.state.live_event_worker = live_event_worker
-                    live_event_task = asyncio.create_task(
-                        live_event_worker.run(stopping), name="live-market-event-worker"
+                engine = build_database_engine(app_settings)
+                if engine is not None:
+                    active_session_factory = create_session_factory(engine)
+            if active_scorer_history_sessions is None and admin_web_role:
+                scorer_history_engine = build_scorer_history_database_engine(app_settings)
+                if scorer_history_engine is not None:
+                    active_scorer_history_sessions = create_session_factory(scorer_history_engine)
+            active_admin_report_reader_sessions: async_sessionmaker[AsyncSession] | None = None
+            if admin_web_role:
+                admin_report_reader_engine = build_admin_report_reader_database_engine(app_settings)
+                if admin_report_reader_engine is not None:
+                    active_admin_report_reader_sessions = create_session_factory(
+                        admin_report_reader_engine
                     )
-                    application.state.live_event_task = live_event_task
-                live_quote_worker = getattr(live_market_runtime, "quote_worker", None)
-                if live_quote_worker is not None:
-                    # CK-1: giá mua/bán tốt nhất (route /public), ghi đè bảng giá trực tiếp.
-                    application.state.live_quote_worker = live_quote_worker
-                    live_quote_task = asyncio.create_task(
-                        live_quote_worker.run(stopping), name="live-market-quote-worker"
-                    )
-                    application.state.live_quote_task = live_quote_task
-            if app_settings.market_collector_enabled:
-                market_collector_task = _start_market_collector(
-                    application,
-                    app_settings=app_settings,
-                    session_factory=active_session_factory,
-                    workspace_id=workspace_id,
-                    stopping=stopping,
-                )
-            if app_settings.macro_calendar_enabled:
-                macro_calendar_task = _start_macro_calendar_collector(
-                    application,
-                    session_factory=active_session_factory,
-                    workspace_id=workspace_id,
-                    stopping=stopping,
-                )
-            if app_settings.derivatives_collector_enabled:
-                derivatives_task = _start_derivatives_collector(
-                    application,
-                    app_settings=app_settings,
-                    session_factory=active_session_factory,
-                    workspace_id=workspace_id,
-                    stopping=stopping,
-                )
-            if app_settings.listings_collector_enabled:
-                listings_task = _start_listings_collector(
-                    application,
-                    session_factory=active_session_factory,
-                    workspace_id=workspace_id,
-                    stopping=stopping,
-                )
-            if live_market_runtime is not None:
+            application.state.session_factory = active_session_factory
+            application.state.admin_report_reader_session_factory = (
+                active_admin_report_reader_sessions
+            )
+            if (
+                admin_web_role
+                and isinstance(active_session_factory, async_sessionmaker)
+                and active_session_factory.kw.get("bind") is not None
+                and application.state.login_limiter is default_login_limiter
+                and default_login_limiter.session_factory is None
+            ):
+                default_login_limiter.bind_session_factory(active_session_factory)
+            application.state.database_probe = database_probe
+            application.state.worker_heartbeat_reader = None
+            if admin_web_role and active_session_factory is not None:
                 from trading_bot.application.ingestion_worker_heartbeat import (
-                    IngestionWorkerHeartbeatPublisher,
-                    WorkerHeartbeatSource,
+                    WorkerHeartbeatReadService,
                 )
 
-                sources = [
-                    WorkerHeartbeatSource(
-                        component="live_market_ingestion",
-                        worker=getattr(live_market_runtime, "worker", None),
-                        task=live_market_task,
+                application.state.worker_heartbeat_reader = WorkerHeartbeatReadService(
+                    active_session_factory
+                )
+            application.state.scorer_runtime_policy_provider = scorer_policy_provider
+            if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
+                probe_sessions = active_session_factory
+
+                async def _default_probe() -> bool:
+                    return await probe_database(probe_sessions)
+
+                application.state.database_probe = _default_probe
+            application.state.scorer_runtime_policy_provider = scorer_policy_provider
+            if active_secret_provider is None:
+                mfa_provider = (
+                    LocalMfaSecretProvider(
+                        key_file=app_settings.mfa_encryption_key_file,
+                        storage_directory=app_settings.mfa_secret_directory,
                     )
-                ]
-                event_worker = getattr(live_market_runtime, "event_worker", None)
-                quote_worker = getattr(live_market_runtime, "quote_worker", None)
-                if event_worker is not None:
-                    sources.append(
-                        WorkerHeartbeatSource(
-                            component="live_market_events",
-                            worker=event_worker,
-                            task=live_event_task,
-                        )
+                    if app_settings.mfa_encryption_key_file and app_settings.mfa_secret_directory
+                    else None
+                )
+                telegram_token_provider = (
+                    FileTelegramBotSecretProvider(token_file=app_settings.telegram_bot_token_file)
+                    if app_settings.telegram_bot_token_file is not None
+                    else None
+                )
+                if mfa_provider is not None and telegram_token_provider is not None:
+                    active_secret_provider = CompositeSecretProvider(
+                        mfa_provider=mfa_provider,
+                        telegram_provider=telegram_token_provider,
                     )
-                if quote_worker is not None:
-                    sources.append(
-                        WorkerHeartbeatSource(
-                            component="live_market_quotes",
-                            worker=quote_worker,
-                            task=live_quote_task,
-                        )
+                elif mfa_provider is not None:
+                    active_secret_provider = mfa_provider
+                elif telegram_token_provider is not None:
+                    active_secret_provider = telegram_token_provider
+            if app_settings.auth_test_totp_enabled:
+                logger.warning(
+                    "AUTH_TEST_TOTP_ENABLED: chấp nhận mã xác thực cố định; chỉ cho kiểm thử local."
+                )
+            totp_manager = TestModeTotpManager() if app_settings.auth_test_totp_enabled else None
+            application.state.auth_service = (
+                AuthService(
+                    active_session_factory,
+                    active_secret_provider,
+                    totp=totp_manager,
+                    idle_timeout=timedelta(minutes=app_settings.session_idle_timeout_minutes),
+                )
+                if active_session_factory is not None and active_secret_provider is not None
+                else None
+            )
+            application.state.account_security_service = (
+                AccountSecurityService(
+                    active_session_factory,
+                    active_secret_provider,
+                    totp=totp_manager,
+                )
+                if active_session_factory is not None and active_secret_provider is not None
+                else None
+            )
+            action_challenge_service = (
+                ActionChallengeService(
+                    active_session_factory,
+                    active_secret_provider,
+                    totp=totp_manager,
+                )
+                if active_session_factory is not None and active_secret_provider is not None
+                else None
+            )
+            require_action_step_up = app_settings.is_action_step_up_required or (
+                app_settings.app_env == "test"
+                and app_settings.action_step_up_required is None
+                and action_challenge_service is not None
+            )
+            application.state.action_challenge_service = action_challenge_service
+            application.state.settings_admin_service = (
+                SettingsAdminService(
+                    active_session_factory,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            # CRY-428: trang "Khẩu vị rủi ro" dùng chung SettingsAdminService để publish có audit.
+            application.state.risk_appetite_service = (
+                RiskAppetiteService(
+                    active_session_factory,
+                    application.state.settings_admin_service,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.bot_admin_service = (
+                BotConfigAdminService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.bot_grant_service = (
+                BotGrantAdminService(active_session_factory)
+                if admin_web_role and active_session_factory is not None
+                else None
+            )
+            application.state.source_policy_admin_service = (
+                SourcePolicyAdminService(
+                    cast(
+                        SourcePolicyAdminRepository,
+                        DatabaseSourcePolicyAdminRepository(active_session_factory),
                     )
-                publisher = IngestionWorkerHeartbeatPublisher(
-                    sessions=active_session_factory,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.bot_reporting_service = (
+                BotReportingService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.trade_journal_service = (
+                TradeJournalService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.scalping_validation_report_service = (
+                ScalpingValidationReportService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.live_monitor_service = (
+                LiveMonitorService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.market_scanner_service = (
+                MarketScannerService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.economic_calendar_service = (
+                EconomicCalendarService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.analyst_review_service = (
+                AnalystReviewService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.signal_outcome_review_service = (
+                SignalOutcomeReviewService(
+                    active_session_factory,
+                    report_reader_sessions=active_admin_report_reader_sessions,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.backtest_replay_job_service = (
+                BacktestReplayJobService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.bot_operations_service = (
+                BotOperationsService(
+                    active_session_factory,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.operational_health_service = (
+                OperationalHealthService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.strategy_card_service = (
+                StrategyCardAdminService(
+                    active_session_factory,
+                    bars_provider=(
+                        PostgresCardBarsProvider(active_admin_report_reader_sessions)
+                        if active_admin_report_reader_sessions is not None
+                        else None
+                    ),
+                )
+                if active_session_factory is not None
+                else StrategyCardAdminService()
+            )
+            application.state.strategy_release_service = (
+                StrategyReleaseAdminService(
+                    active_session_factory,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else StrategyReleaseAdminService()
+            )
+            application.state.flatten_all_service = (
+                FlattenAllService(
+                    active_session_factory,
+                    snapshot_provider=PostgresFlattenSnapshotProvider(
+                        active_admin_report_reader_sessions,
+                        require_report_reader=admin_web_role,
+                    ),
+                    operations_factory=application.state.bot_operations_service.for_principal,
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.telegram_binding_service = (
+                TelegramBindingService(
+                    DatabaseTelegramStore(active_session_factory),
+                    bot_username=app_settings.telegram_bot_username,
+                    # TG-4: sender dựng sau trong lifespan; chỉ sender có
+                    # create_forum_topic dùng được.
+                    topic_creator=lambda: _topic_creator(
+                        getattr(application.state, "telegram_sender", None)
+                    ),
+                    action_challenge_service=action_challenge_service,
+                    require_action_step_up=require_action_step_up,
+                )
+                if active_session_factory is not None and app_settings.telegram_bot_username
+                else None
+            )
+            application.state.telegram_signal_subscription_service = (
+                TelegramSignalSubscriptionService(active_session_factory)
+                if admin_web_role and active_session_factory is not None
+                else None
+            )
+            if admin_web_role:
+                application.state.learning_model_registry_service = (
+                    LearningModelRegistryService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_scoring_deployment_service = (
+                    ScorerDeploymentService(
+                        active_session_factory,
+                        policy_provider=scorer_policy_provider,
+                        active_modes_enabled=app_settings.scorer_active_modes_enabled,
+                    )
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_scoring_report_read_model = (
+                    ScorerReportReadModel(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_scorer_model_card_read_model = (
+                    ScorerModelCardReadModel(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                # Fail-closed (CRY-439): không dùng fallback sang
+                # active_session_factory của admin_web.
+                application.state.learning_scoring_score_event_read_model = (
+                    ScorerScoreEventReadModel(active_scorer_history_sessions)
+                    if active_scorer_history_sessions is not None
+                    else None
+                )
+                application.state.learning_paper_entry_block_service = (
+                    LearningPaperEntryBlockService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_observations_admin_service = (
+                    LearningObservationsAdminService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_incident_entry_hold_service = (
+                    LearningIncidentEntryHoldService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_paper_performance_service = (
+                    LearningPaperPerformanceService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_training_admin_service = (
+                    LearningTrainingAdminService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+                application.state.learning_split_admin_service = (
+                    LearningSplitAdminService(active_session_factory)
+                    if active_session_factory is not None
+                    else None
+                )
+            telegram_sender = _build_telegram_sender(
+                app_settings,
+                secret_provider=active_secret_provider,
+                required=app_settings.process_role == "signal-worker",
+            )
+            application.state.telegram_sender = telegram_sender
+            application.state.telegram_webhook = _build_telegram_webhook(
+                app_settings, active_session_factory, application.state
+            )
+            stopping = asyncio.Event()
+            supervisor_task: asyncio.Task[None] | None = None
+            rights_worker_task: asyncio.Task[None] | None = None
+            live_market_runtime: Any | None = None
+            live_market_task: asyncio.Task[None] | None = None
+            live_event_task: asyncio.Task[None] | None = None
+            live_quote_task: asyncio.Task[None] | None = None
+            ingestion_heartbeat_task: asyncio.Task[None] | None = None
+            market_collector_task: asyncio.Task[None] | None = None
+            macro_calendar_task: asyncio.Task[None] | None = None
+            derivatives_task: asyncio.Task[None] | None = None
+            listings_task: asyncio.Task[None] | None = None
+            signal_worker_task: asyncio.Task[None] | None = None
+            trade_result_worker_task: asyncio.Task[None] | None = None
+            operational_alert_worker_task: asyncio.Task[None] | None = None
+            market_signal_worker_task: asyncio.Task[None] | None = None
+            signal_outcome_task: asyncio.Task[None] | None = None
+            training_supervisor_task: asyncio.Task[None] | None = None
+            if app_settings.process_role == "trading-runtime":
+                supervisor_task = await _start_paper_runtime(
+                    application,
+                    app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    bootstrap_factory=paper_runtime_bootstrap_factory,
+                    context_provider_factory=paper_decision_context_provider_factory,
+                    supervisor_factory=paper_runtime_supervisor_factory,
+                    stopping=stopping,
+                    clock=clock,
+                )
+            elif app_settings.process_role == "ingestion-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("ingestion-worker cần database session factory.")
+                workspace_id = app_settings.ingestion_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("ingestion-worker cần ingestion_workspace_id.")
+                worker_factory = rights_worker_factory or ResearchRightsMaintenanceWorker
+                rights_worker = worker_factory(
+                    session_factory=active_session_factory,
                     workspace_id=workspace_id,
-                    sources=sources,
+                    worker_id=f"rights-{uuid4().hex}",
+                    tick_seconds=app_settings.ingestion_worker_tick_seconds,
                 )
-                application.state.ingestion_worker_heartbeat_publisher = publisher
-                ingestion_heartbeat_task = asyncio.create_task(
-                    publisher.run(stopping), name="ingestion-worker-heartbeat"
+                application.state.rights_worker = rights_worker
+                rights_worker_task = asyncio.create_task(
+                    rights_worker.run(stopping), name="research-rights-maintenance-worker"
                 )
-                application.state.ingestion_worker_heartbeat_task = ingestion_heartbeat_task
-        elif app_settings.process_role == "trainer-worker":
-            if active_session_factory is None:
-                raise RuntimeError("trainer-worker cần database session factory.")
-            workspace_id = app_settings.learning_training_workspace_id
-            if workspace_id is None:
-                raise RuntimeError("trainer-worker cần learning_training_workspace_id.")
-            supervisor_factory = training_supervisor_factory or LearningTrainingJobSupervisor
-            training_supervisor = supervisor_factory(
-                worker=LearningTrainingAttemptWorker(active_session_factory),
-                workspace_id=workspace_id,
-                worker_id=f"learning-trainer-{uuid4().hex}",
-                poll_seconds=app_settings.learning_training_worker_poll_seconds,
-                max_backoff_seconds=app_settings.learning_training_worker_max_backoff_seconds,
-            )
-            application.state.learning_training_supervisor = training_supervisor
-            training_supervisor_task = asyncio.create_task(
-                training_supervisor.run(stopping), name="learning-training-job-supervisor"
-            )
-            application.state.learning_training_supervisor_task = training_supervisor_task
-        elif app_settings.process_role == "signal-worker":
-            if active_session_factory is None:
-                raise RuntimeError("signal-worker cần database session factory.")
-            workspace_id = app_settings.signal_workspace_id
-            if workspace_id is None:
-                raise RuntimeError("signal-worker cần signal_workspace_id.")
-            worker_factory = signal_worker_factory or TelegramSignalDeliveryWorker
-            # TG-3: một pacer cho cả tin tín hiệu và kết quả PAPER để mỗi chat cách ≥ 1,1 giây.
-            chat_pacer = ChatPacer()
-            pacer_kwargs: dict[str, Any] = (
-                {"pacer": chat_pacer} if signal_worker_factory is None else {}
-            )
-            # TG-3: ảnh thẻ (PNG + caption) cho tín hiệu, kết quả và tổng kết; dự phòng văn bản.
-            card_senders: dict[str, dict[str, Any]] = {"signal": {}, "trade": {}}
-            if app_settings.telegram_card_images_enabled:
-                from trading_bot.adapters.telegram.card_delivery import (
-                    send_paper_report_card,
-                    send_signal_card,
-                    send_trade_result_card,
-                )
+                application.state.rights_worker_task = rights_worker_task
+                live_subscriptions = app_settings.ingestion_live_subscriptions
+                if live_subscriptions:
+                    # Live ingest chỉ đọc market data công khai; không nhận API key hay cổng lệnh.
+                    live_factory = live_market_ingestion_factory or build_live_market_ingestion
+                    live_market_runtime = live_factory(
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        subscriptions=live_subscriptions,
+                        warmup_bars=app_settings.ingestion_live_warmup_bars,
+                        events=app_settings.ingestion_live_event_kinds,
+                        mark_price_interval_seconds=(
+                            app_settings.ingestion_live_mark_price_interval_seconds
+                        ),
+                        quote_interval_seconds=app_settings.ingestion_live_quote_interval_seconds,
+                    )
+                    application.state.live_market_worker = live_market_runtime.worker
+                    live_market_task = asyncio.create_task(
+                        live_market_runtime.worker.run(stopping),
+                        name="live-market-ingestion-worker",
+                    )
+                    application.state.live_market_task = live_market_task
+                    live_event_worker = getattr(live_market_runtime, "event_worker", None)
+                    if live_event_worker is not None:
+                        application.state.live_event_worker = live_event_worker
+                        live_event_task = asyncio.create_task(
+                            live_event_worker.run(stopping), name="live-market-event-worker"
+                        )
+                        application.state.live_event_task = live_event_task
+                    live_quote_worker = getattr(live_market_runtime, "quote_worker", None)
+                    if live_quote_worker is not None:
+                        # CK-1: giá mua/bán tốt nhất (route /public), ghi đè bảng giá trực tiếp.
+                        application.state.live_quote_worker = live_quote_worker
+                        live_quote_task = asyncio.create_task(
+                            live_quote_worker.run(stopping), name="live-market-quote-worker"
+                        )
+                        application.state.live_quote_task = live_quote_task
+                if app_settings.market_collector_enabled:
+                    market_collector_task = _start_market_collector(
+                        application,
+                        app_settings=app_settings,
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        stopping=stopping,
+                    )
+                if app_settings.macro_calendar_enabled:
+                    macro_calendar_task = _start_macro_calendar_collector(
+                        application,
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        stopping=stopping,
+                    )
+                if app_settings.derivatives_collector_enabled:
+                    derivatives_task = _start_derivatives_collector(
+                        application,
+                        app_settings=app_settings,
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        stopping=stopping,
+                    )
+                if app_settings.listings_collector_enabled:
+                    listings_task = _start_listings_collector(
+                        application,
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        stopping=stopping,
+                    )
+                if live_market_runtime is not None:
+                    from trading_bot.application.ingestion_worker_heartbeat import (
+                        IngestionWorkerHeartbeatPublisher,
+                        WorkerHeartbeatSource,
+                    )
 
-                if signal_worker_factory is None:
-                    card_senders["signal"] = {"signal_send": send_signal_card}
-                card_senders["trade"] = {
-                    "trade_result_send": send_trade_result_card,
-                    "paper_report_send": send_paper_report_card,
-                }
-            signal_worker = worker_factory(
-                session_factory=active_session_factory,
-                workspace_id=workspace_id,
-                sender=telegram_sender,
-                worker_id=f"telegram-signal-{uuid4().hex}",
-                tick_seconds=app_settings.signal_worker_tick_seconds,
-                max_candidate_age=timedelta(
-                    seconds=app_settings.signal_worker_max_candidate_age_seconds
-                ),
-                max_attempts=app_settings.signal_worker_max_attempts,
-                throttle=SignalThrottlePolicy(
-                    cooldown=timedelta(minutes=app_settings.signal_worker_cooldown_minutes),
-                    max_per_hour=app_settings.signal_worker_max_messages_per_hour,
-                ),
-                **pacer_kwargs,
-                **card_senders["signal"],
-            )
-            application.state.telegram_signal_worker = signal_worker
-            signal_worker_task = asyncio.create_task(
-                signal_worker.run(stopping), name="telegram-signal-delivery-worker"
-            )
-            application.state.telegram_signal_worker_task = signal_worker_task
-            report_minutes = app_settings.telegram_report_interval_minutes
-            if app_settings.telegram_trade_results_enabled or report_minutes > 0:
-                trade_result_worker = TelegramTradeResultWorker(
+                    sources = [
+                        WorkerHeartbeatSource(
+                            component="live_market_ingestion",
+                            worker=getattr(live_market_runtime, "worker", None),
+                            task=live_market_task,
+                        )
+                    ]
+                    event_worker = getattr(live_market_runtime, "event_worker", None)
+                    quote_worker = getattr(live_market_runtime, "quote_worker", None)
+                    if event_worker is not None:
+                        sources.append(
+                            WorkerHeartbeatSource(
+                                component="live_market_events",
+                                worker=event_worker,
+                                task=live_event_task,
+                            )
+                        )
+                    if quote_worker is not None:
+                        sources.append(
+                            WorkerHeartbeatSource(
+                                component="live_market_quotes",
+                                worker=quote_worker,
+                                task=live_quote_task,
+                            )
+                        )
+                    publisher = IngestionWorkerHeartbeatPublisher(
+                        sessions=active_session_factory,
+                        workspace_id=workspace_id,
+                        sources=sources,
+                    )
+                    application.state.ingestion_worker_heartbeat_publisher = publisher
+                    ingestion_heartbeat_task = asyncio.create_task(
+                        publisher.run(stopping), name="ingestion-worker-heartbeat"
+                    )
+                    application.state.ingestion_worker_heartbeat_task = ingestion_heartbeat_task
+            elif app_settings.process_role == "trainer-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("trainer-worker cần database session factory.")
+                workspace_id = app_settings.learning_training_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("trainer-worker cần learning_training_workspace_id.")
+                supervisor_factory = training_supervisor_factory or LearningTrainingJobSupervisor
+                training_supervisor = supervisor_factory(
+                    worker=LearningTrainingAttemptWorker(active_session_factory),
+                    workspace_id=workspace_id,
+                    worker_id=f"learning-trainer-{uuid4().hex}",
+                    poll_seconds=app_settings.learning_training_worker_poll_seconds,
+                    max_backoff_seconds=app_settings.learning_training_worker_max_backoff_seconds,
+                )
+                application.state.learning_training_supervisor = training_supervisor
+                training_supervisor_task = asyncio.create_task(
+                    training_supervisor.run(stopping), name="learning-training-job-supervisor"
+                )
+                application.state.learning_training_supervisor_task = training_supervisor_task
+            elif app_settings.process_role == "signal-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("signal-worker cần database session factory.")
+                workspace_id = app_settings.signal_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("signal-worker cần signal_workspace_id.")
+                worker_factory = signal_worker_factory or TelegramSignalDeliveryWorker
+                # TG-3: một pacer cho cả tin tín hiệu và kết quả PAPER để mỗi chat cách ≥ 1,1 giây.
+                chat_pacer = ChatPacer()
+                pacer_kwargs: dict[str, Any] = (
+                    {"pacer": chat_pacer} if signal_worker_factory is None else {}
+                )
+                # TG-3: ảnh thẻ (PNG + caption) cho tín hiệu, kết quả và tổng kết; dự phòng văn bản.
+                card_senders: dict[str, dict[str, Any]] = {"signal": {}, "trade": {}}
+                if app_settings.telegram_card_images_enabled:
+                    from trading_bot.adapters.telegram.card_delivery import (
+                        send_paper_report_card,
+                        send_signal_card,
+                        send_trade_result_card,
+                    )
+
+                    if signal_worker_factory is None:
+                        card_senders["signal"] = {"signal_send": send_signal_card}
+                    card_senders["trade"] = {
+                        "trade_result_send": send_trade_result_card,
+                        "paper_report_send": send_paper_report_card,
+                    }
+                signal_worker = worker_factory(
                     session_factory=active_session_factory,
                     workspace_id=workspace_id,
                     sender=telegram_sender,
-                    worker_id=f"telegram-trade-result-{uuid4().hex}",
+                    worker_id=f"telegram-signal-{uuid4().hex}",
                     tick_seconds=app_settings.signal_worker_tick_seconds,
-                    trade_results_enabled=app_settings.telegram_trade_results_enabled,
-                    max_event_age=timedelta(
-                        minutes=app_settings.telegram_trade_result_max_age_minutes
-                    ),
-                    report_interval=(
-                        timedelta(minutes=report_minutes) if report_minutes > 0 else None
+                    max_candidate_age=timedelta(
+                        seconds=app_settings.signal_worker_max_candidate_age_seconds
                     ),
                     max_attempts=app_settings.signal_worker_max_attempts,
-                    pacer=chat_pacer,
-                    **card_senders["trade"],
+                    throttle=SignalThrottlePolicy(
+                        cooldown=timedelta(minutes=app_settings.signal_worker_cooldown_minutes),
+                        max_per_hour=app_settings.signal_worker_max_messages_per_hour,
+                    ),
+                    **pacer_kwargs,
+                    **card_senders["signal"],
                 )
-                application.state.telegram_trade_result_worker = trade_result_worker
-                trade_result_worker_task = asyncio.create_task(
-                    trade_result_worker.run(stopping), name="telegram-trade-result-worker"
+                application.state.telegram_signal_worker = signal_worker
+                signal_worker_task = asyncio.create_task(
+                    signal_worker.run(stopping), name="telegram-signal-delivery-worker"
                 )
-                application.state.telegram_trade_result_worker_task = trade_result_worker_task
-            if app_settings.operational_alerts_enabled:
-                # CRY-274: consumer outbox cảnh báo vận hành — cùng sender/pacer nhịp với
-                # tin tín hiệu; idempotent qua ConsumerReceipt, dead-letter vẫn thấy trên Admin.
-                alert_consumer = OperationalAlertOutboxConsumer(
-                    active_session_factory,
-                    sender=telegram_sender,
-                    workspace_id=workspace_id,
-                    worker_id=f"telegram-operational-alert-{uuid4().hex}",
-                    admin_base_url=app_settings.admin_public_base_url,
-                    max_attempts=app_settings.operational_alert_max_attempts,
-                    tick_seconds=app_settings.signal_worker_tick_seconds,
-                )
-                application.state.operational_alert_worker = alert_consumer
-                operational_alert_worker_task = asyncio.create_task(
-                    alert_consumer.run(stopping), name="telegram-operational-alert-worker"
-                )
-                application.state.operational_alert_worker_task = operational_alert_worker_task
-        elif app_settings.process_role == "market-signal-worker":
-            if active_session_factory is None:
-                raise RuntimeError("market-signal-worker cần database session factory.")
-            workspace_id = app_settings.market_signal_workspace_id
-            if workspace_id is None:
-                raise RuntimeError("market-signal-worker cần market_signal_workspace_id.")
-            producer_factory = market_signal_worker_factory
-            if producer_factory is None:
-                max_age = timedelta(seconds=app_settings.signal_worker_max_candidate_age_seconds)
-
-                def default_market_signal_worker_factory(**kwargs: Any) -> Any:
-                    scanner = build_market_signal_scanner(
-                        kwargs["session_factory"],
-                        max_observation_age=max_age,
-                        signal_validity=max_age,
-                        scorer_policy_provider=scorer_policy_provider,
+                application.state.telegram_signal_worker_task = signal_worker_task
+                report_minutes = app_settings.telegram_report_interval_minutes
+                if app_settings.telegram_trade_results_enabled or report_minutes > 0:
+                    trade_result_worker = TelegramTradeResultWorker(
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        sender=telegram_sender,
+                        worker_id=f"telegram-trade-result-{uuid4().hex}",
+                        tick_seconds=app_settings.signal_worker_tick_seconds,
+                        trade_results_enabled=app_settings.telegram_trade_results_enabled,
+                        max_event_age=timedelta(
+                            minutes=app_settings.telegram_trade_result_max_age_minutes
+                        ),
+                        report_interval=(
+                            timedelta(minutes=report_minutes) if report_minutes > 0 else None
+                        ),
+                        max_attempts=app_settings.signal_worker_max_attempts,
+                        pacer=chat_pacer,
+                        **card_senders["trade"],
                     )
-                    return MarketSignalProducerWorker(
-                        scanner,
-                        workspace_id=kwargs["workspace_id"],
-                        tick_seconds=kwargs["tick_seconds"],
-                        now=clock,
+                    application.state.telegram_trade_result_worker = trade_result_worker
+                    trade_result_worker_task = asyncio.create_task(
+                        trade_result_worker.run(stopping), name="telegram-trade-result-worker"
+                    )
+                    application.state.telegram_trade_result_worker_task = trade_result_worker_task
+                if app_settings.operational_alerts_enabled:
+                    # CRY-274: consumer outbox cảnh báo vận hành — cùng sender/pacer nhịp với
+                    # tin tín hiệu; idempotent qua ConsumerReceipt, dead-letter vẫn thấy trên Admin.
+                    alert_consumer = OperationalAlertOutboxConsumer(
+                        active_session_factory,
+                        sender=telegram_sender,
+                        workspace_id=workspace_id,
+                        worker_id=f"telegram-operational-alert-{uuid4().hex}",
+                        admin_base_url=app_settings.admin_public_base_url,
+                        max_attempts=app_settings.operational_alert_max_attempts,
+                        tick_seconds=app_settings.signal_worker_tick_seconds,
+                    )
+                    application.state.operational_alert_worker = alert_consumer
+                    operational_alert_worker_task = asyncio.create_task(
+                        alert_consumer.run(stopping), name="telegram-operational-alert-worker"
+                    )
+                    application.state.operational_alert_worker_task = operational_alert_worker_task
+            elif app_settings.process_role == "market-signal-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("market-signal-worker cần database session factory.")
+                workspace_id = app_settings.market_signal_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("market-signal-worker cần market_signal_workspace_id.")
+                producer_factory = market_signal_worker_factory
+                if producer_factory is None:
+                    max_age = timedelta(
+                        seconds=app_settings.signal_worker_max_candidate_age_seconds
                     )
 
-                producer_factory = default_market_signal_worker_factory
-            market_signal_worker = producer_factory(
-                session_factory=active_session_factory,
-                workspace_id=workspace_id,
-                tick_seconds=app_settings.signal_worker_tick_seconds,
-            )
-            application.state.market_signal_worker = market_signal_worker
-            market_signal_worker_task = asyncio.create_task(
-                market_signal_worker.run(stopping), name="market-signal-producer-worker"
-            )
-            application.state.market_signal_worker_task = market_signal_worker_task
-            if app_settings.signal_outcome_tick_seconds > 0:
-                outcome_factory = signal_outcome_worker_factory
-                if outcome_factory is None:
-
-                    def default_signal_outcome_worker_factory(**kwargs: Any) -> Any:
-                        from trading_bot.application.signal_outcomes import SignalOutcomeScorer
-
-                        return SignalOutcomeWorker(
-                            SignalOutcomeScorer(kwargs["session_factory"]),
+                    def default_market_signal_worker_factory(**kwargs: Any) -> Any:
+                        scanner = build_market_signal_scanner(
+                            kwargs["session_factory"],
+                            max_observation_age=max_age,
+                            signal_validity=max_age,
+                            scorer_policy_provider=scorer_policy_provider,
+                        )
+                        return MarketSignalProducerWorker(
+                            scanner,
                             workspace_id=kwargs["workspace_id"],
                             tick_seconds=kwargs["tick_seconds"],
+                            now=clock,
                         )
 
-                    outcome_factory = default_signal_outcome_worker_factory
-                signal_outcome_worker = outcome_factory(
+                    producer_factory = default_market_signal_worker_factory
+                market_signal_worker = producer_factory(
                     session_factory=active_session_factory,
                     workspace_id=workspace_id,
-                    tick_seconds=app_settings.signal_outcome_tick_seconds,
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
                 )
-                application.state.signal_outcome_worker = signal_outcome_worker
-                signal_outcome_task = asyncio.create_task(
-                    signal_outcome_worker.run(stopping), name="signal-outcome-worker"
+                application.state.market_signal_worker = market_signal_worker
+                market_signal_worker_task = asyncio.create_task(
+                    market_signal_worker.run(stopping), name="market-signal-producer-worker"
                 )
-                application.state.signal_outcome_task = signal_outcome_task
+                application.state.market_signal_worker_task = market_signal_worker_task
+                if app_settings.signal_outcome_tick_seconds > 0:
+                    outcome_factory = signal_outcome_worker_factory
+                    if outcome_factory is None:
+
+                        def default_signal_outcome_worker_factory(**kwargs: Any) -> Any:
+                            from trading_bot.application.signal_outcomes import SignalOutcomeScorer
+
+                            return SignalOutcomeWorker(
+                                SignalOutcomeScorer(kwargs["session_factory"]),
+                                workspace_id=kwargs["workspace_id"],
+                                tick_seconds=kwargs["tick_seconds"],
+                            )
+
+                        outcome_factory = default_signal_outcome_worker_factory
+                    signal_outcome_worker = outcome_factory(
+                        session_factory=active_session_factory,
+                        workspace_id=workspace_id,
+                        tick_seconds=app_settings.signal_outcome_tick_seconds,
+                    )
+                    application.state.signal_outcome_worker = signal_outcome_worker
+                    signal_outcome_task = asyncio.create_task(
+                        signal_outcome_worker.run(stopping), name="signal-outcome-worker"
+                    )
+                    application.state.signal_outcome_task = signal_outcome_task
+        except BaseException:
+            for started_engine in (
+                admin_report_reader_engine,
+                scorer_history_engine,
+                engine,
+            ):
+                if started_engine is not None:
+                    with contextlib.suppress(Exception):
+                        await started_engine.dispose()
+            raise
         try:
             yield
         finally:
@@ -965,9 +1041,6 @@ def create_app(
             if live_quote_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(live_quote_task, timeout=10)
-            if ingestion_heartbeat_task is not None:
-                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-                    await asyncio.wait_for(ingestion_heartbeat_task, timeout=10)
             if live_market_runtime is not None:
                 await live_market_runtime.aclose()
             if market_collector_task is not None:
@@ -998,6 +1071,9 @@ def create_app(
                 listings_fetcher = getattr(application.state, "listings_fetcher", None)
                 if listings_fetcher is not None:
                     await listings_fetcher.aclose()
+            if ingestion_heartbeat_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(ingestion_heartbeat_task, timeout=10)
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
@@ -1019,6 +1095,8 @@ def create_app(
             close_sender = getattr(telegram_sender, "aclose", None)
             if callable(close_sender):
                 await close_sender()
+            if admin_report_reader_engine is not None:
+                await admin_report_reader_engine.dispose()
             if scorer_history_engine is not None:
                 await scorer_history_engine.dispose()
             if engine is not None:
@@ -1045,7 +1123,17 @@ def create_app(
         heavy_read_paths=app_settings.heavy_read_path_prefixes,
         session_cookie_names=(session_cookie_name(app_settings),),
     )
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=app_settings.request_body_max_bytes)
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=app_settings.request_body_max_bytes,
+        path_overrides=(
+            (
+                "POST",
+                "/api/v1/research-sources/{source_id}/revisions/{policy_id}/license-evidence",
+                LICENSE_EVIDENCE_MAX_BYTES,
+            ),
+        ),
+    )
     if allowed_hosts:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts, www_redirect=False)
     app.add_middleware(ClientIPMiddleware, trusted_proxies=trusted_proxies)
@@ -1097,6 +1185,7 @@ def create_app(
         app.include_router(learning_incident_entry_hold_router)
         app.include_router(learning_paper_entry_block_router)
         app.include_router(learning_scoring_page_router)
+        app.include_router(learning_scorer_model_card_router)
         app.include_router(learning_training_router)
         app.include_router(learning_training_page_router)
         app.include_router(learning_split_router)

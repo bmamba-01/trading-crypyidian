@@ -9,11 +9,6 @@
 {$CRYPIDIAN_PUBLIC_HOST:localhost} {
 	encode zstd gzip
 
-	# Giới hạn kích thước request body ở tầng proxy (khớp TRADING_BOT_REQUEST_BODY_MAX_BYTES).
-	request_body {
-		max_size 1MB
-	}
-
 	# SEC-36: webhook Telegram chỉ nhận từ hai dải IP chính thức của Telegram Bot API.
 	@telegram_webhook path /api/v1/telegram/webhook*
 	handle @telegram_webhook {
@@ -30,10 +25,34 @@
 		respond 403
 	}
 
+	# Tài liệu quyền được băm trực tuyến; ngoại lệ đúng route/method khớp giới hạn dịch vụ 10 MiB.
+	@license_evidence {
+		method POST
+		path_regexp ^/api/v1/research-sources/[^/]+/revisions/[^/]+/license-evidence$
+	}
+	handle @license_evidence {
+		route {
+			header Cache-Control no-store
+			request_body {
+				max_size 10485760
+			}
+			reverse_proxy admin-web:8000 {
+				header_up -Forwarded
+				header_down -Server
+			}
+		}
+	}
+
 	handle {
-		reverse_proxy admin-web:8000 {
-			header_up -Forwarded
-			header_down -Server
+		# Giới hạn chung 1 MiB; chỉ upload bằng chứng quyền ở route trên được nới tới 10 MiB.
+		route {
+			request_body {
+				max_size 1048576
+			}
+			reverse_proxy admin-web:8000 {
+				header_up -Forwarded
+				header_down -Server
+			}
 		}
 	}
 }

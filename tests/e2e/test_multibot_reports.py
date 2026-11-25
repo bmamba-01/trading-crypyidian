@@ -218,8 +218,17 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
 
     def probe(phase: str, service: str) -> dict[str, Any]:
         payload = json.dumps({"phase": phase, "state": state, "code": probe_code})
+        command = base + ["run", "--rm", "--no-deps", "-T"]
+        if phase in {"reader_scope", "rls"}:
+            command += [
+                "-e",
+                "TRADING_BOT_DATABASE_USER=crypidian_admin_report_reader",
+                "-e",
+                "TRADING_BOT_DATABASE_PASSWORD_FILE="
+                "/run/secrets/database_admin_report_reader_password",
+            ]
         result = run(
-            base + ["run", "--rm", "--no-deps", "-T", service, "python", "-c", PROBE_BOOTSTRAP],
+            command + [service, "python", "-c", PROBE_BOOTSTRAP],
             stdin=payload,
         )
         parsed: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
@@ -272,6 +281,14 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
         assert per_bot[bot_b]["count"] == 2
         assert Decimal(per_bot[bot_a]["net_pnl"]) == Decimal("12")
         assert Decimal(per_bot[bot_b]["net_pnl"]) == Decimal("2.22")
+
+        reader_scope = probe("reader_scope", "admin-web")
+        assert reader_scope == {
+            "identity": "crypidian_admin_report_reader",
+            "can_access": True,
+            "bot_rows": 1,
+            "trade_rows": 4,
+        }
 
         credentials = json.loads(credentials_file.read_text(encoding="utf-8"))["accounts"]
         sessions = {key: _login(port, credentials[key]) for key in MEMBERS}
@@ -417,16 +434,15 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
         # (6) Báo cáo chỉ đọc: ledger không đổi sau mọi lời gọi.
         assert probe("oracle", "migrator") == oracle_before
 
-        # (7) RLS dưới crypidian_admin_web: workspace khác/membership giả không thấy trade.
+        # (7) Reader riêng kiểm quyền từng hàng; admin-web không đọc trực tiếp raw ledger.
         rls = probe("rls", "admin-web")
-        assert rls["identity"] == "crypidian_admin_web"
+        assert rls["identity"] == "crypidian_admin_report_reader"
         assert rls["other_owner@qa_other"] == {"trades": {}, "costs": 0}
         assert rls["other_owner@qa"] == {"trades": {}, "costs": 0}
         assert rls["qa_owner@qa"]["trades"] == {bot_a: 4, bot_b: 2}
         assert rls["qa_analyst@qa"]["trades"] == {bot_a: 4}
-        # Operator thấy hàng bot A ở RLS (có grant bất kỳ) nhưng API vẫn 404 ở (4):
-        # quyền theo hành động do ứng dụng kiểm, RLS chỉ là lớp scope.
-        assert rls["qa_operator@qa"]["trades"] == {bot_a: 4}
+        # Operator thiếu grant REPORT_READ nên cả reader DB lẫn API đều không lộ hàng trade.
+        assert rls["qa_operator@qa"]["trades"] == {}
         # Membership SUSPENDED dù còn role workspace-wide và grant bot A: 0 hàng.
         assert rls["qa_suspended@qa"] == {"trades": {}, "costs": 0}
         snapshot_mode = {"isolation": "repeatable read", "read_only": "on", "write_rejected": True}

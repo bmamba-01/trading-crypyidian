@@ -1,0 +1,131 @@
+{% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
+{% block title %}Thẻ thông tin bộ chấm điểm | Crypidian{% endblock %}
+{% block head_extra %}<meta name="robots" content="noindex, nofollow"><link rel="stylesheet" href="/static/pages/learning.css">{% endblock %}
+{% block heading %}Thẻ thông tin bộ chấm điểm{% endblock %}
+{% block content %}
+  <div class="lx-page" id="learning-scorer-model-card">
+    <section class="lx-notice lx-notice--info" aria-labelledby="model-card-purpose">
+      <span class="lx-notice__icon">{{ icon("info") }}</span>
+      <h2 id="model-card-purpose">Kết quả kiểm định TEST và nhịp xử lý mô phỏng</h2>
+      <p>Trang này ghép một báo cáo kiểm định TEST đã lưu với số liệu tổng hợp về độ trễ của bot PAPER (mô phỏng) đã chọn. Báo cáo là bản ghi lịch sử; trạng thái vận hành hiện tại được xem riêng tại <a href="/admin/learning/scoring">trang điều phối bộ chấm điểm</a>.</p>
+      <p><strong>Độ trễ không chứng minh lợi nhuận, không tự động bật scorer và không tạo hoặc sửa lệnh.</strong></p>
+    </section>
+
+    <section class="glass-card lx-card" aria-labelledby="model-card-deployment-heading">
+      <div class="lx-card__head">
+        <div class="lx-card__title">
+          <h2 id="model-card-deployment-heading">Trạng thái vận hành bộ chấm điểm hiện tại</h2>
+          <p>Trạng thái vận hành hiện tại được trình bày riêng, không suy ra từ báo cáo lịch sử bên dưới.</p>
+        </div>
+      </div>
+      {% if deployment %}
+        <dl class="kv-grid">
+          <div class="kv"><dt>Chế độ hiện tại</dt><dd>{{ deployment_mode_labels[deployment.mode] }}</dd></div>
+          <div class="kv"><dt>Phiên bản triển khai / con trỏ mô hình</dt><dd>{{ deployment.deployment_revision }} / {{ deployment.active_pointer_version }}</dd></div>
+          <div class="kv"><dt>Sức khỏe quyền</dt><dd>{{ deployment_health_labels[deployment.health] }}</dd></div>
+          <div class="kv"><dt>Bộ chấm sẵn sàng hoạt động</dt><dd>{{ "Có" if deployment.runtime_usable else "Không" }}</dd></div>
+        </dl>
+      {% else %}
+        <p class="lx-status" role="status">{% if deployment_unavailable %}Chưa thể xác minh an toàn trạng thái vận hành hiện tại.{% else %}Chưa có ảnh chụp trạng thái vận hành hiện tại.{% endif %}</p>
+      {% endif %}
+    </section>
+
+    <section class="glass-card lx-card" aria-labelledby="model-card-report-heading">
+      <div class="lx-card__head">
+        <div class="lx-card__title">
+          <h2 id="model-card-report-heading">Báo cáo kiểm định TEST</h2>
+          <p>Bản ghi và mã băm lấy từ đúng báo cáo đánh giá đã kiểm tra quyền hiện hành.</p>
+        </div>
+        {% if report.status == "INCONCLUSIVE" %}
+          {{ chip("Chưa kết luận", "warning", "clock") }}
+        {% else %}
+          {{ chip("Đã có kết quả kiểm định", "success", "check-circle") }}
+        {% endif %}
+      </div>
+      {% if report.status == "INCONCLUSIVE" %}
+        <p class="lx-help lx-inconclusive-note" id="model-card-inconclusive-note" role="note"><strong>Báo cáo INCONCLUSIVE — chưa kết luận về chất lượng dự báo.</strong> Trang giữ số đếm và dấu vết kiểm định nhưng ẩn tỷ lệ, điểm chất lượng và ma trận dự báo.</p>
+      {% else %}
+        <div class="stat-strip" aria-label="Chỉ số chất lượng trên TEST">
+          <div class="stat">{{ icon("target") }}<div class="stat__body"><span class="stat__value">{{ "%.1f"|format(report.coverage * 100) }}%</span><span class="stat__label">Độ phủ chấm điểm TEST</span></div></div>
+          <div class="stat">{{ icon("gauge") }}<div class="stat__body"><span class="stat__value">{{ "%.1f"|format(report.expected_calibration_error * 100) }}%</span><span class="stat__label">Sai số hiệu chuẩn kỳ vọng (ECE)</span></div></div>
+          <div class="stat">{{ icon("activity") }}<div class="stat__body"><span class="stat__value">{{ "%.4f"|format(report.log_loss) }}</span><span class="stat__label">Tổn thất logarit</span></div></div>
+          <div class="stat">{{ icon("scale") }}<div class="stat__body"><span class="stat__value">{{ "%.4f"|format(report.brier_score) }}</span><span class="stat__label">Điểm Brier</span></div></div>
+        </div>
+      {% endif %}
+      <dl class="kv-grid">
+        <div class="kv"><dt>Mã báo cáo</dt><dd>{{ report.evaluation_report_id }}</dd></div>
+        <div class="kv"><dt>Thời điểm đánh giá</dt><dd><time datetime="{{ report.evaluated_at.isoformat() }}">{{ report.evaluated_at.strftime("%d/%m/%Y %H:%M UTC") }}</time></dd></div>
+        <div class="kv"><dt>Số mẫu TEST</dt><dd>{{ report.test_sample_count }}</dd></div>
+        <div class="kv"><dt>Mã băm scorer</dt><dd class="kv-hash">{{ hash(report.scorer_artifact_hash, "SHA-256 scorer") }}</dd></div>
+        <div class="kv"><dt>Mã băm mô hình nền</dt><dd class="kv-hash">{{ hash(report.base_artifact_hash, "SHA-256 mô hình nền") }}</dd></div>
+        <div class="kv"><dt>Mã băm chính sách</dt><dd class="kv-hash">{{ hash(report.policy_hash, "SHA-256 chính sách") }}</dd></div>
+        <div class="kv"><dt>Mã băm báo cáo</dt><dd class="kv-hash">{{ hash(report.report_hash, "SHA-256 báo cáo") }}</dd></div>
+        <div class="kv"><dt>Mã băm bằng chứng TEST</dt><dd class="kv-hash">{{ hash(report.proof_hash, "SHA-256 bằng chứng TEST") }}</dd></div>
+      </dl>
+    </section>
+
+    <section class="glass-card lx-card" aria-labelledby="model-card-latency-heading">
+      <div class="lx-card__head">
+        <div class="lx-card__title">
+          <h2 id="model-card-latency-heading">Độ trễ tạo ý định lệnh mô phỏng</h2>
+          <p>Đo từ lúc tín hiệu, bằng chứng hoặc quyết định được ghi nhận tới ý định lệnh trong cùng chuỗi liên kết; chỉ tính khoảng thời gian đã chọn.</p>
+        </div>
+      </div>
+      <form class="lx-form model-card-filter" method="get" action="/admin/learning/model-card">
+        <input type="hidden" name="report_id" value="{{ report.evaluation_report_id }}">
+        <div class="lx-form__row model-card-filter__row">
+          <div class="lx-field">
+            <label for="model-card-bot">Bot PAPER (mô phỏng)</label>
+            <select id="model-card-bot" name="bot_id" required>
+              <option value="">Chọn bot PAPER (mô phỏng)</option>
+              {% for bot in bot_options %}<option value="{{ bot.id }}"{% if selected_bot_id == bot.id %} selected{% endif %}>{{ bot.name }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="lx-field">
+            <label for="model-card-window">Khoảng thời gian</label>
+            <select id="model-card-window" name="window">
+              {% for code, label in {"24h": "24 giờ", "7d": "7 ngày", "30d": "30 ngày"}.items() %}<option value="{{ code }}"{% if window_code == code %} selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </div>
+          <button class="btn btn-primary model-card-filter__submit" type="submit">Xem thống kê độ trễ</button>
+        </div>
+      </form>
+
+      {% if not bot_options %}
+        <p class="lx-empty" role="status">Workspace chưa có bot PAPER mà tài khoản này được quyền đọc.</p>
+      {% elif latency_unavailable %}
+        <p class="lx-status model-card-unavailable" role="status">Chưa thể xác minh quyền dữ liệu hiện hành hoặc tải số liệu tổng hợp về độ trễ. Không hiển thị số liệu một phần.</p>
+      {% elif latency_summary %}
+        <div class="model-card-snapshot" aria-label="Phạm vi ảnh chụp số liệu độ trễ">
+          <p><strong>Bot:</strong> {% for bot in bot_options %}{% if bot.id == selected_bot_id %}{{ bot.name }}{% endif %}{% endfor %}</p>
+          <p><strong>Cửa sổ:</strong> {{ window_label }} · {{ latency_summary.window_start.strftime("%d/%m/%Y %H:%M UTC") }} — {{ latency_summary.as_of.strftime("%d/%m/%Y %H:%M UTC") }}</p>
+          <p><strong>Quyết định qua cổng PAPER được duyệt trong nhóm mẫu:</strong> {{ latency_summary.candidate_decision_count }}</p>
+        </div>
+        <div class="model-card-stage-grid" aria-label="Các chặng độ trễ">
+          {% for stage in latency_summary.stages %}
+            <article class="glass-card model-card-stage">
+              <h3>{{ stage_labels[stage.stage] }}</h3>
+              <p class="model-card-stage__support">Mẫu hợp lệ: <strong>{{ stage.valid_sample_count }}</strong> · Mốc thời gian lỗi: <strong>{{ stage.invalid_timestamp_count }}</strong></p>
+              {% if stage.p50_ms is none %}
+                <p class="model-card-stage__insufficient" role="status">Chưa đủ mẫu để công bố percentile ({{ stage.valid_sample_count }} / 100).</p>
+              {% else %}
+                <dl class="model-card-percentiles">
+                  <div><dt>Trung vị (p50)</dt><dd>{{ stage.p50_ms }} ms</dd></div>
+                  <div><dt>Phân vị thứ 95 (p95)</dt><dd>{{ stage.p95_ms }} ms</dd></div>
+                </dl>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+        <dl class="kv-grid model-card-anomalies">
+          <div class="kv"><dt>Chưa có ý định lệnh tại thời điểm chụp</dt><dd>{{ latency_summary.candidate_no_intent_count }}</dd></div>
+          <div class="kv"><dt>Ý định lệnh có mốc thời gian ở tương lai</dt><dd>{{ latency_summary.future_intent_count }}</dd></div>
+        </dl>
+        <p class="lx-help">“Chưa có ý định lệnh” chỉ mô tả dữ liệu tại thời điểm chụp; không được hiểu là cơ hội bị bỏ lỡ. Mốc thời gian tương lai được tách khỏi mẫu độ trễ và hiển thị riêng.</p>
+      {% else %}
+        <p class="lx-empty" role="status">Chọn bot PAPER (mô phỏng) và khoảng thời gian để tải số liệu độ trễ tổng hợp.</p>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

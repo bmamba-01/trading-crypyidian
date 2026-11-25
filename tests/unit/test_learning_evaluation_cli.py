@@ -42,6 +42,36 @@ def test_proof_roundtrip_rebuilds_identical_proof_and_scope() -> None:
     assert evaluation_scope_from_proof(rebuilt) == scope
 
 
+def test_v3_proof_roundtrip_preserves_not_run_reason_and_schema_version() -> None:
+    from trading_bot.application.learning_scorer_evaluation import ScorerTestOpportunityEntry
+
+    proof = _proof()
+    not_run = ScorerTestOpportunityEntry(
+        stable_id_hash=hashlib.sha256(b"event:not-run").hexdigest(),
+        status="not_run",
+        candidate_id_hash=None,
+        vector_hash=hashlib.sha256(b"not-run-vector").hexdigest(),
+        reason_code="STRATEGY_NOT_RUN",
+    )
+    proof = replace(
+        proof,
+        proof_schema_version="v3",
+        expected_opportunity_count=proof.expected_opportunity_count + 1,
+        entries=tuple(sorted((*proof.entries, not_run), key=lambda entry: entry.stable_id_hash)),
+    )
+
+    rebuilt = opportunity_proof_from_canonical(
+        record_id=proof.record_id,
+        canonical_proof=proof.canonical_json,
+        expected_hash=proof.content_hash,
+    )
+
+    assert rebuilt == proof
+    assert rebuilt.not_run_count == 1
+    assert rebuilt.proof_schema_version == "v3"
+    assert json.loads(rebuilt.canonical_json)["entries"][-1]["reason_code"] == "STRATEGY_NOT_RUN"
+
+
 def test_proof_rejects_hash_mismatch_and_tampered_bytes() -> None:
     proof = _proof()
     with pytest.raises(ValueError, match="Hash proof"):

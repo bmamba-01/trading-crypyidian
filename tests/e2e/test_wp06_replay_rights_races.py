@@ -2,11 +2,13 @@
 
 Khôi phục coverage mất khi kịch bản source-item WP05 thành fail-closed (memory 15/11/2026):
 
-1. Consumer-first: evaluator authorize EVALUATION và giữ khóa nguồn; writer revoke phải chờ
+1. Scope matrix: policy QA hợp lệ nhưng hẹp hơn bundle phải bị từ chối cho symbol, interval,
+   hai biên ngày, purpose, output, derived-use và retention; không ghi training receipt.
+2. Consumer-first: evaluator authorize EVALUATION và giữ khóa nguồn; writer revoke phải chờ
    khóa (≥ 2 s), sau đó consumer mới bị từ chối bằng token hiện hành.
-2. Writer-first: writer giữ khóa rồi revoke; builder authorize TRAINING bị chặn trong lúc chờ
+3. Writer-first: writer giữ khóa rồi revoke; builder authorize TRAINING bị chặn trong lúc chờ
    (≥ 2 s) và sau commit thấy policy đã thu hồi → từ chối, không trả receipt.
-3. Retention: license mới có `max_retention_days` hữu hạn → gate từ chối
+4. Retention: license mới có `max_retention_days` hữu hạn → gate từ chối
    `WP06_TRAINING_REPLAY_SCOPE_NOT_COVERED` (chưa có lifecycle xóa, spec 2026-11-13).
 """
 
@@ -39,7 +41,7 @@ PROFILES = (
 )
 
 
-def test_replay_rights_lock_races_and_retention_fail_closed() -> None:
+def test_replay_rights_scope_matrix_lock_races_and_retention_fail_closed() -> None:
     root = Path(__file__).parents[2]
     subprocess.run(
         [sys.executable, "scripts/prepare_local_secrets.py"],
@@ -116,6 +118,75 @@ def test_replay_rights_lock_races_and_retention_fail_closed() -> None:
         compose("up", "--detach", "--wait", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+
+        # Mỗi policy scope hẹp vẫn có identity/evidence hợp lệ, nhưng phải chặn cùng một bundle.
+        matrix_workspace = str(uuid.uuid4())
+        matrix_bundle = seed(matrix_workspace)
+        baseline = run_json(
+            "candidate-proof-builder",
+            RACE_PROBE,
+            matrix_workspace,
+            {
+                "WP06_RACE_PHASE": "consumer-hold",
+                "WP06_RACE_OPERATION": "training",
+                "WP06_RACE_HOLD_SECONDS": "0",
+                "WP06_RACE_BUNDLE_HASH": matrix_bundle,
+            },
+        )
+        assert baseline["authorized_receipts"] >= 1, baseline
+        scope_matrix: dict[str, bool] = {}
+        for dimension in (
+            "symbols",
+            "intervals",
+            "data_start",
+            "data_end",
+            "purpose",
+            "outputs",
+            "derived_use",
+            "retention",
+        ):
+            relicense = run_json(
+                "migrator",
+                RACE_PROBE,
+                matrix_workspace,
+                {
+                    "WP06_RACE_PHASE": "relicense-scope-variant",
+                    "WP06_RACE_SCOPE_VARIANT": dimension,
+                },
+            )
+            assert relicense["scope_variant"] == dimension, relicense
+            denied = run_json(
+                "candidate-proof-builder",
+                RACE_PROBE,
+                matrix_workspace,
+                {
+                    "WP06_RACE_PHASE": "consumer-denied",
+                    "WP06_RACE_OPERATION": "training",
+                    "WP06_RACE_BUNDLE_HASH": matrix_bundle,
+                },
+            )
+            expected_denial = (
+                "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED"
+                if dimension == "purpose"
+                else "WP06_TRAINING_REPLAY_SCOPE_NOT_COVERED"
+            )
+            scope_matrix[dimension] = denied["denied_token"] == expected_denial
+        assert scope_matrix == {
+            "symbols": True,
+            "intervals": True,
+            "data_start": True,
+            "data_end": True,
+            "purpose": True,
+            "outputs": True,
+            "derived_use": True,
+            "retention": True,
+        }, scope_matrix
+        assert run_json(
+            "migrator",
+            RACE_PROBE,
+            matrix_workspace,
+            {"WP06_RACE_PHASE": "training-receipt-count"},
+        ) == {"training_receipt_count": 0}
 
         # 1) Consumer-first: evaluator giữ khóa nguồn; revoke phải chờ, sau đó bị từ chối.
         consumer_ws = str(uuid.uuid4())

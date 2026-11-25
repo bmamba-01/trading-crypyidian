@@ -4,7 +4,7 @@
   --admin-control-height-touch: 2.75rem;
 }
 
-main :is(button, .btn):not([role="switch"]):not([role="tab"]):not(.theme-switch),
+main :where(button, .btn):where(:not([role="switch"])):where(:not([role="tab"])):where(:not(.theme-switch)),
 main .tabs-bar [role="tab"] {
   min-height: var(--admin-control-height);
   min-width: 0;
@@ -116,7 +116,7 @@ main .tabs-bar [role="tab"]:focus-visible,
   .signal-recent-launch { align-items: flex-start; flex-direction: column; }
 }
 
-@media (pointer: coarse), (max-width: 767px) {
+@media (pointer: coarse), (max-width: 899px) {
   main :is(button, .btn):not([role="switch"]):not([role="tab"]):not(.theme-switch),
   main .tabs-bar [role="tab"],
   main :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select),
@@ -126,6 +126,23 @@ main .tabs-bar [role="tab"]:focus-visible,
     min-height: var(--admin-control-height-touch);
   }
   main .btn--icon { width: var(--admin-control-height-touch); min-width: var(--admin-control-height-touch); }
+}
+
+/* Giữ các trường đăng nhập và nút chọn bot đủ lớn, kể cả khi mật độ desktop thu gọn. */
+main .login-form :is(input):not([type="checkbox"]):not([type="radio"]):not([type="hidden"]) {
+  min-height: 44px;
+}
+main .login-form :is(button, .btn):not([role="switch"]):not([role="tab"]):not(.theme-switch) {
+  min-height: 44px;
+}
+main .dashboard-bot-picker :is(button):not([role="switch"]):not([role="tab"]):not(.theme-switch) {
+  min-height: 44px;
+}
+main .metric-term button.metric-help:not([role="switch"]):not([role="tab"]):not(.theme-switch) {
+  min-height: 44px;
+}
+main .tabs-bar [role="tab"] {
+  min-height: 44px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -22,7 +22,9 @@ from trading_bot.domain.learning.evaluation import EvaluationTrade
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CLASS_LABELS = (-1, 0, 1)
 _STATUS = Literal["ACCEPTED_SHADOW_ONLY", "ACCEPTED_PAPER_GATE_ELIGIBLE", "INCONCLUSIVE"]
-_OPPORTUNITY_STATUS = Literal["candidate", "no_candidate", "input_excluded"]
+_OPPORTUNITY_STATUS = Literal["candidate", "no_candidate", "input_excluded", "not_run"]
+_PROOF_SCHEMA_VERSION = Literal["v2", "v3"]
+_REASON_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,31 +106,48 @@ class ScorerTestOpportunityEntry:
     sample_id_hash: str | None = None
     sample_hash: str | None = None
     vector_hash: str | None = None
+    reason_code: str | None = None
 
     def __post_init__(self) -> None:
         if not _is_sha256(self.stable_id_hash):
             raise ValueError("stable_id_hash phải là SHA-256.")
-        if self.status not in {"candidate", "no_candidate", "input_excluded"}:
+        if self.status not in {"candidate", "no_candidate", "input_excluded", "not_run"}:
             raise ValueError("Trạng thái opportunity TEST không hợp lệ.")
         if self.status == "candidate":
             if not _is_sha256(self.candidate_id_hash):
                 raise ValueError("Candidate opportunity cần candidate_id_hash.")
         elif self.candidate_id_hash is not None:
             raise ValueError("Opportunity không phải candidate không được có candidate ID.")
-        linkage = (
+        if self.status in {"candidate", "no_candidate"} and self.reason_code is not None:
+            raise ValueError("Candidate/no_candidate không lưu reason_code trong proof TEST.")
+        if self.reason_code is not None and (
+            not isinstance(self.reason_code, str)
+            or _REASON_CODE.fullmatch(self.reason_code) is None
+        ):
+            raise ValueError("reason_code proof TEST phải là mã ASCII 1–120 ký tự.")
+        if self.status == "not_run" and self.reason_code is None:
+            raise ValueError("not_run proof TEST cần reason_code.")
+        label_linkage = (
             self.outcome_id_hash,
             self.outcome_hash,
             self.sample_id_hash,
             self.sample_hash,
-            self.vector_hash,
         )
+        linkage = (*label_linkage, self.vector_hash)
         linked_count = sum(value is not None for value in linkage)
-        if self.status != "candidate" and linked_count:
-            raise ValueError("Opportunity không phải candidate không được có label linkage.")
-        if linked_count not in {0, len(linkage)} or any(
-            value is not None and not _is_sha256(value) for value in linkage
-        ):
-            raise ValueError("Candidate linkage cần đủ năm SHA-256 hoặc không có nhãn.")
+        if self.status == "candidate":
+            if linked_count not in {0, len(linkage)} or any(
+                value is not None and not _is_sha256(value) for value in linkage
+            ):
+                raise ValueError("Candidate linkage cần đủ năm SHA-256 hoặc không có nhãn.")
+        else:
+            if any(value is not None for value in label_linkage):
+                raise ValueError("Opportunity không phải candidate không được có outcome linkage.")
+            if self.status == "not_run":
+                if not _is_sha256(self.vector_hash):
+                    raise ValueError("not_run cần giữ vector lineage dạng SHA-256.")
+            elif self.vector_hash is not None:
+                raise ValueError("Opportunity loại/chưa có candidate không được có vector lineage.")
 
     @property
     def has_completed_label(self) -> bool:
@@ -159,6 +178,7 @@ class ScorerTestOpportunityProof:
     membership_mismatch_count: int
     unlabeled_candidate_count: int
     entries: tuple[ScorerTestOpportunityEntry, ...]
+    proof_schema_version: _PROOF_SCHEMA_VERSION = "v2"
 
     def __post_init__(self) -> None:
         if any(
@@ -186,6 +206,8 @@ class ScorerTestOpportunityProof:
                 raise ValueError(f"{name} proof phải là SHA-256.")
         if not isinstance(self.vector_schema_version, str) or not self.vector_schema_version:
             raise ValueError("vector_schema_version proof không được để trống.")
+        if self.proof_schema_version not in {"v2", "v3"}:
+            raise ValueError("proof_schema_version scorer TEST không hợp lệ.")
         if any(
             type(getattr(self, name)) is not int or getattr(self, name) < 0
             for name in (
@@ -200,6 +222,15 @@ class ScorerTestOpportunityProof:
             type(entry) is not ScorerTestOpportunityEntry for entry in self.entries
         ):
             raise ValueError("Opportunity proof cần tuple entry đã typed.")
+        if self.proof_schema_version == "v2" and any(
+            entry.status == "not_run" or entry.reason_code is not None for entry in self.entries
+        ):
+            raise ValueError("Proof v2 không hỗ trợ not_run hoặc reason_code.")
+        if self.proof_schema_version == "v3" and any(
+            entry.status in {"not_run", "input_excluded"} and entry.reason_code is None
+            for entry in self.entries
+        ):
+            raise ValueError("Proof v3 cần reason_code cho trạng thái chưa chạy/bị loại.")
         stable_ids = tuple(entry.stable_id_hash for entry in self.entries)
         if stable_ids != tuple(sorted(set(stable_ids))):
             raise ValueError("Opportunity proof entries phải duy nhất và canonical.")
@@ -235,6 +266,10 @@ class ScorerTestOpportunityProof:
         return sum(entry.status == "input_excluded" for entry in self.entries)
 
     @property
+    def not_run_count(self) -> int:
+        return sum(entry.status == "not_run" for entry in self.entries)
+
+    @property
     def completeness_verified(self) -> bool:
         return (
             len(self.entries) == self.expected_opportunity_count
@@ -242,46 +277,53 @@ class ScorerTestOpportunityProof:
             and self.membership_mismatch_count == 0
             and self.unlabeled_candidate_count == 0
             and self.input_excluded_count == 0
+            and self.not_run_count == 0
         )
 
     @property
     def canonical_json(self) -> str:
         """Bytes proof không chứa feature, nhãn hay outcome payload."""
-        return _canonical(
-            {
-                "schema_version": "wp06-scorer-test-opportunity-proof-v2",
-                "workspace_id": str(self.workspace_id),
-                "evaluation_run_id": str(self.evaluation_run_id),
-                "attempt_id": str(self.attempt_id),
-                "normalized_dataset_id": str(self.normalized_dataset_id),
-                "manifest_hash": self.manifest_hash,
-                "fold_plan_hash": self.fold_plan_hash,
-                "fold_id": self.fold_id,
-                "approval_hash": self.approval_hash,
-                "bundle_hash": self.bundle_hash,
-                "vector_schema_version": self.vector_schema_version,
-                "vector_schema_hash": self.vector_schema_hash,
-                "test_membership_digest": self.test_membership_digest,
-                "source_scope_hash": self.source_scope_hash,
-                "expected_opportunity_count": self.expected_opportunity_count,
-                "source_gap_count": self.source_gap_count,
-                "membership_mismatch_count": self.membership_mismatch_count,
-                "unlabeled_candidate_count": self.unlabeled_candidate_count,
-                "entries": [
-                    {
-                        "stable_id_hash": entry.stable_id_hash,
-                        "status": entry.status,
-                        "candidate_id_hash": entry.candidate_id_hash,
-                        "outcome_id_hash": entry.outcome_id_hash,
-                        "outcome_hash": entry.outcome_hash,
-                        "sample_id_hash": entry.sample_id_hash,
-                        "sample_hash": entry.sample_hash,
-                        "vector_hash": entry.vector_hash,
-                    }
-                    for entry in self.entries
-                ],
-            }
-        )
+        payload: dict[str, object] = {
+            "schema_version": f"wp06-scorer-test-opportunity-proof-{self.proof_schema_version}",
+            "workspace_id": str(self.workspace_id),
+            "evaluation_run_id": str(self.evaluation_run_id),
+            "attempt_id": str(self.attempt_id),
+            "normalized_dataset_id": str(self.normalized_dataset_id),
+            "manifest_hash": self.manifest_hash,
+            "fold_plan_hash": self.fold_plan_hash,
+            "fold_id": self.fold_id,
+            "approval_hash": self.approval_hash,
+            "bundle_hash": self.bundle_hash,
+            "vector_schema_version": self.vector_schema_version,
+            "vector_schema_hash": self.vector_schema_hash,
+            "test_membership_digest": self.test_membership_digest,
+            "source_scope_hash": self.source_scope_hash,
+            "expected_opportunity_count": self.expected_opportunity_count,
+            "source_gap_count": self.source_gap_count,
+            "membership_mismatch_count": self.membership_mismatch_count,
+            "unlabeled_candidate_count": self.unlabeled_candidate_count,
+            "entries": [
+                {
+                    "stable_id_hash": entry.stable_id_hash,
+                    "status": entry.status,
+                    "candidate_id_hash": entry.candidate_id_hash,
+                    "outcome_id_hash": entry.outcome_id_hash,
+                    "outcome_hash": entry.outcome_hash,
+                    "sample_id_hash": entry.sample_id_hash,
+                    "sample_hash": entry.sample_hash,
+                    "vector_hash": entry.vector_hash,
+                    **(
+                        {"reason_code": entry.reason_code}
+                        if self.proof_schema_version == "v3"
+                        else {}
+                    ),
+                }
+                for entry in self.entries
+            ],
+        }
+        if self.proof_schema_version == "v3":
+            payload["not_run_count"] = self.not_run_count
+        return _canonical(payload)
 
     @property
     def content_hash(self) -> str:

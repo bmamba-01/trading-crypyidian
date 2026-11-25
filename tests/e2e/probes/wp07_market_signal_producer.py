@@ -35,6 +35,8 @@ FILTERED_MEMBERSHIP = _id("filter-membership")
 FILTERED_USER = _id("filter-user")
 FILTERED_BINDING = _id("filter-binding")
 FILTERED_SUBSCRIPTION = _id("filter-subscription")
+REVIEWER_MEMBERSHIP = _id("reviewer-membership")
+REVIEWER_USER = _id("reviewer-user")
 
 
 def _connect() -> psycopg.Connection[Any]:
@@ -43,6 +45,22 @@ def _connect() -> psycopg.Connection[Any]:
         host=os.environ.get("TRADING_BOT_DATABASE_HOST", "postgres"),
         dbname=os.environ.get("TRADING_BOT_DATABASE_NAME", "crypidian"),
         user=os.environ["TRADING_BOT_DATABASE_USER"],
+        password=password,
+        autocommit=True,
+    )
+
+
+def _admin_report_reader_connect() -> psycopg.Connection[Any]:
+    """Mở kết nối reader báo cáo để kiểm tra policy PostgreSQL hiện hành."""
+    password = (
+        Path(os.environ["TRADING_BOT_ADMIN_REPORT_READER_DATABASE_PASSWORD_FILE"])
+        .read_text()
+        .strip()
+    )
+    return psycopg.connect(
+        host=os.environ.get("TRADING_BOT_DATABASE_HOST", "postgres"),
+        dbname=os.environ.get("TRADING_BOT_DATABASE_NAME", "crypidian"),
+        user=os.environ["TRADING_BOT_ADMIN_REPORT_READER_DATABASE_USER"],
         password=password,
         autocommit=True,
     )
@@ -81,6 +99,30 @@ def _seed(connection: psycopg.Connection[Any]) -> dict[str, Any]:
         workspace_id=WORKSPACE,
         user_id=owner_user,
         status="ACTIVE",
+    )
+    _insert(
+        connection,
+        "user_account",
+        id=REVIEWER_USER,
+        email_normalized=f"wp07-reviewer-{WORKSPACE.hex[:12]}@example.invalid",
+        password_hash="e2e-unused",
+        status="ACTIVE",
+    )
+    _insert(
+        connection,
+        "user_membership",
+        id=REVIEWER_MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        user_id=REVIEWER_USER,
+        status="ACTIVE",
+    )
+    _insert(
+        connection,
+        "role_binding",
+        id=_id("reviewer-role"),
+        workspace_id=WORKSPACE,
+        membership_id=REVIEWER_MEMBERSHIP,
+        role="analyst_reviewer",
     )
     _insert(
         connection,
@@ -273,6 +315,14 @@ def _seed(connection: psycopg.Connection[Any]) -> dict[str, Any]:
         workspace_id=WORKSPACE,
         user_id=FILTERED_USER,
         status="ACTIVE",
+    )
+    _insert(
+        connection,
+        "role_binding",
+        id=_id("filter-role"),
+        workspace_id=WORKSPACE,
+        membership_id=FILTERED_MEMBERSHIP,
+        role="operator",
     )
     _insert(
         connection,
@@ -1203,7 +1253,7 @@ def _outcome_verify(connection: psycopg.Connection[Any]) -> dict[str, Any]:
 
 
 def _outcome_admin() -> dict[str, Any]:
-    """Trang Admin chạy với role admin-web thật (RLS workspace), danh tính owner giả lập."""
+    """Kiểm tra UI đọc qua reader và admin-web không đọc/sửa raw outcome trực tiếp."""
     from fastapi.testclient import TestClient
 
     from trading_bot.app import create_app
@@ -1229,18 +1279,85 @@ def _outcome_admin() -> dict[str, Any]:
             primary = client.get("/admin/signal-outcomes?horizon=4&period=90")
             gap = client.get("/admin/signal-outcomes?horizon=24&period=90")
             other = client.get("/admin/signal-outcomes?horizon=4&symbol=ETHUSDT")
+            owner_ai_analyses_status = client.get("/admin/ai-analyses").status_code
+            operator = Principal(
+                user_id=FILTERED_USER,
+                membership_id=FILTERED_MEMBERSHIP,
+                workspace_id=WORKSPACE,
+                roles=frozenset({Role.OPERATOR}),
+                mfa_verified_at=None,
+            )
+            app.dependency_overrides[current_identity] = lambda: AuthIdentity(
+                principal=operator, email="operator@example.test"
+            )
+            operator_ai_analyses_status = client.get("/admin/ai-analyses").status_code
+            report_hash = "a" * 64
+            operator_run_report_status = client.get(f"/admin/run-reports/{report_hash}").status_code
+            operator_run_report_json_status = client.get(
+                f"/admin/run-reports/{report_hash}/report.json"
+            ).status_code
+            reviewer = Principal(
+                user_id=REVIEWER_USER,
+                membership_id=REVIEWER_MEMBERSHIP,
+                workspace_id=WORKSPACE,
+                roles=frozenset({Role.ANALYST_REVIEWER}),
+                mfa_verified_at=None,
+            )
+            app.dependency_overrides[current_identity] = lambda: AuthIdentity(
+                principal=reviewer, email="reviewer@example.test"
+            )
+            reviewer_ai_analyses_status = client.get("/admin/ai-analyses").status_code
+            reviewer_run_report_status = client.get(f"/admin/run-reports/{report_hash}").status_code
+            reviewer_run_report_json_status = client.get(
+                f"/admin/run-reports/{report_hash}/report.json"
+            ).status_code
     finally:
         import asyncio
 
         asyncio.run(engine.dispose())
     with _connect() as connection:
         connection.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
-        visible = connection.execute("SELECT count(*) FROM signal_outcome").fetchone()[0]
+        try:
+            connection.execute("SELECT count(*) FROM signal_outcome").fetchone()
+            admin_direct_select_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            admin_direct_select_denied = True
+        try:
+            connection.execute("SELECT count(*) FROM telegram_signal_delivery").fetchone()
+            admin_telegram_delivery_select_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            admin_telegram_delivery_select_denied = True
         try:
             connection.execute("DELETE FROM signal_outcome")
             delete_denied = False
         except psycopg.errors.InsufficientPrivilege:
             delete_denied = True
+        telegram_write_privileges = connection.execute(
+            "SELECT has_table_privilege(current_user, 'public.telegram_signal_delivery', "
+            "'INSERT'), has_table_privilege(current_user, 'public.telegram_signal_delivery', "
+            "'UPDATE'), has_table_privilege(current_user, 'public.telegram_signal_delivery', "
+            "'DELETE')"
+        ).fetchone()
+        admin_telegram_delivery_dml_denied = not any(telegram_write_privileges)
+    reader_role_denials: dict[str, bool] = {}
+    with _admin_report_reader_connect() as reader:
+        reader.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
+        reader.execute("SELECT set_config('app.membership_id', %s, false)", (str(MEMBERSHIP),))
+        owner_workspace_read_allowed = reader.execute(
+            "SELECT public.wp06_admin_report_reader_can_read_workspace_page(%s)",
+            (WORKSPACE,),
+        ).fetchone()[0]
+        for membership_id, role in (
+            (FILTERED_MEMBERSHIP, "operator"),
+            (REVIEWER_MEMBERSHIP, "analyst_reviewer"),
+        ):
+            reader.execute(
+                "SELECT set_config('app.membership_id', %s, false)", (str(membership_id),)
+            )
+            reader_role_denials[role] = not reader.execute(
+                "SELECT public.wp06_admin_report_reader_can_read_workspace_page(%s)",
+                (WORKSPACE,),
+            ).fetchone()[0]
     return {
         "status": [primary.status_code, gap.status_code, other.status_code],
         "primary_hit_rate": ">100.0%<" in primary.text,
@@ -1248,8 +1365,19 @@ def _outcome_admin() -> dict[str, Any]:
         "primary_correct_badge": 'class="badge badge-success">Đúng' in primary.text,
         "gap_badge": "Thiếu nến" in gap.text,
         "filtered_empty": "khớp bộ lọc" in other.text,
-        "admin_visible_rows": visible,
+        "admin_direct_select_denied": admin_direct_select_denied,
+        "admin_telegram_delivery_select_denied": admin_telegram_delivery_select_denied,
+        "admin_telegram_delivery_dml_denied": admin_telegram_delivery_dml_denied,
         "admin_delete_denied": delete_denied,
+        "owner_ai_analyses_status": owner_ai_analyses_status,
+        "operator_ai_analyses_status": operator_ai_analyses_status,
+        "operator_run_report_status": operator_run_report_status,
+        "operator_run_report_json_status": operator_run_report_json_status,
+        "reviewer_ai_analyses_status": reviewer_ai_analyses_status,
+        "reviewer_run_report_status": reviewer_run_report_status,
+        "reviewer_run_report_json_status": reviewer_run_report_json_status,
+        "reader_workspace_role_denials": reader_role_denials,
+        "reader_workspace_owner_allowed": owner_workspace_read_allowed,
     }
 
 

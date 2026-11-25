@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from trading_bot.adapters.database.models import BotInstance
 from trading_bot.adapters.database.models.entities import PaperAccountSeed
@@ -44,6 +45,177 @@ from trading_bot.domain.portfolio.reporting import (
     LedgerTrade,
     PositionTransition,
     ReportBot,
+)
+
+_TRADE_LOAD = (
+    TradeRecord.id,
+    TradeRecord.intent_id,
+    TradeRecord.workspace_id,
+    TradeRecord.bot_id,
+    TradeRecord.account_id,
+    TradeRecord.status,
+    TradeRecord.symbol,
+    TradeRecord.side,
+    TradeRecord.quote_asset,
+    TradeRecord.opened_at,
+    TradeRecord.closed_at,
+    TradeRecord.gross_pnl,
+    TradeRecord.fee_total,
+    TradeRecord.funding_total,
+    TradeRecord.slippage_total,
+    TradeRecord.total_cost,
+    TradeRecord.net_pnl,
+    TradeRecord.settings_version_id,
+    TradeRecord.strategy_release_id,
+    TradeRecord.strategy_release_hash,
+    TradeRecord.feature_snapshot_id,
+    TradeRecord.candidate_id,
+    TradeRecord.risk_decision_id,
+    TradeRecord.risk_reservation_id,
+    TradeRecord.lineage,
+)
+_TRADE_COST_LOAD = (
+    TradeCostRecord.id,
+    TradeCostRecord.workspace_id,
+    TradeCostRecord.bot_id,
+    TradeCostRecord.account_id,
+    TradeCostRecord.trade_id,
+    TradeCostRecord.cost_type,
+    TradeCostRecord.amount,
+    TradeCostRecord.currency,
+)
+_ORDER_INTENT_LOAD = (
+    OrderIntentRecord.id,
+    OrderIntentRecord.workspace_id,
+    OrderIntentRecord.bot_id,
+    OrderIntentRecord.account_id,
+    OrderIntentRecord.mode,
+    OrderIntentRecord.idempotency_key,
+    OrderIntentRecord.plan_hash,
+    OrderIntentRecord.settings_version_id,
+    OrderIntentRecord.risk_decision_id,
+    OrderIntentRecord.risk_reservation_id,
+    OrderIntentRecord.symbol,
+    OrderIntentRecord.quote_asset,
+    OrderIntentRecord.side,
+    OrderIntentRecord.quantity,
+    OrderIntentRecord.filled_quantity,
+    OrderIntentRecord.status,
+    OrderIntentRecord.evidence,
+)
+_BOT_DECISION_LOAD = (
+    BotDecisionRecord.id,
+    BotDecisionRecord.workspace_id,
+    BotDecisionRecord.bot_id,
+    BotDecisionRecord.account_id,
+    BotDecisionRecord.evidence_id,
+    BotDecisionRecord.evidence_hash,
+    BotDecisionRecord.bot_config_version_id,
+    BotDecisionRecord.bot_config_hash,
+    BotDecisionRecord.root_settings_version_id,
+    BotDecisionRecord.model_release_id,
+    BotDecisionRecord.evaluated_at,
+    BotDecisionRecord.status,
+    BotDecisionRecord.reason_code,
+    BotDecisionRecord.candidate_id,
+    BotDecisionRecord.decision_hash,
+    BotDecisionRecord.payload,
+    BotDecisionRecord.created_at,
+)
+_FILL_LOAD = (
+    FillRecord.id,
+    FillRecord.workspace_id,
+    FillRecord.bot_id,
+    FillRecord.account_id,
+    FillRecord.mode,
+    FillRecord.intent_id,
+    FillRecord.fill_role,
+    FillRecord.fill_key,
+    FillRecord.bar_key,
+    FillRecord.fill_policy_version,
+    FillRecord.quantity,
+    FillRecord.price,
+    FillRecord.fee_amount,
+    FillRecord.slippage_amount,
+    FillRecord.occurred_at,
+    FillRecord.lineage,
+    FillRecord.created_at,
+)
+_POSITION_EVENT_LOAD = (
+    PositionEventRecord.id,
+    PositionEventRecord.workspace_id,
+    PositionEventRecord.bot_id,
+    PositionEventRecord.account_id,
+    PositionEventRecord.mode,
+    PositionEventRecord.intent_id,
+    PositionEventRecord.event_key,
+    PositionEventRecord.event_type,
+    PositionEventRecord.quantity,
+    PositionEventRecord.occurred_at,
+    PositionEventRecord.payload,
+    PositionEventRecord.created_at,
+)
+_TRADE_PLAN_LOAD = (
+    TradePlanRecord.id,
+    TradePlanRecord.workspace_id,
+    TradePlanRecord.bot_id,
+    TradePlanRecord.account_id,
+    TradePlanRecord.plan_hash,
+    TradePlanRecord.payload,
+)
+_MARKET_BAR_LOAD = (
+    MarketBar.id,
+    MarketBar.workspace_id,
+    MarketBar.symbol,
+    MarketBar.timeframe,
+    MarketBar.source,
+    MarketBar.open_time,
+    MarketBar.close_time,
+    MarketBar.available_at,
+    MarketBar.is_closed,
+    MarketBar.revision,
+    MarketBar.checksum,
+    MarketBar.open,
+    MarketBar.high,
+    MarketBar.low,
+    MarketBar.close,
+    MarketBar.volume,
+    MarketBar.quote_volume,
+    MarketBar.taker_buy_base_volume,
+)
+_INGESTION_GAP_LOAD = (
+    IngestionGap.id,
+    IngestionGap.workspace_id,
+    IngestionGap.source,
+    IngestionGap.symbol,
+    IngestionGap.timeframe,
+    IngestionGap.gap_start,
+    IngestionGap.gap_end,
+    IngestionGap.detected_at,
+    IngestionGap.resolved_at,
+)
+_LIVE_QUOTE_LOAD = (
+    MarketLiveQuote.workspace_id,
+    MarketLiveQuote.source,
+    MarketLiveQuote.instrument_id,
+    MarketLiveQuote.symbol,
+    MarketLiveQuote.bid_price,
+    MarketLiveQuote.bid_quantity,
+    MarketLiveQuote.ask_price,
+    MarketLiveQuote.ask_quantity,
+    MarketLiveQuote.event_at,
+)
+_MARK_PRICE_LOAD = (
+    MarketMarkPrice.id,
+    MarketMarkPrice.workspace_id,
+    MarketMarkPrice.instrument_id,
+    MarketMarkPrice.source,
+    MarketMarkPrice.event_at,
+    MarketMarkPrice.available_at,
+    MarketMarkPrice.mark_price,
+    MarketMarkPrice.index_price,
+    MarketMarkPrice.funding_rate,
+    MarketMarkPrice.next_funding_time,
 )
 
 
@@ -92,6 +264,7 @@ class BotReportRepository:
         )
         closed = await self._scalars(
             select(TradeRecord)
+            .options(load_only(*_TRADE_LOAD))
             .where(
                 *scope,
                 TradeRecord.status == "CLOSED",
@@ -103,6 +276,7 @@ class BotReportRepository:
         )
         open_rows = await self._scalars(
             select(TradeRecord)
+            .options(load_only(*_TRADE_LOAD))
             .where(
                 *scope,
                 TradeRecord.opened_at < end,
@@ -121,6 +295,7 @@ class BotReportRepository:
         costs = (
             await self._scalars(
                 select(TradeCostRecord)
+                .options(load_only(*_TRADE_COST_LOAD))
                 .where(
                     TradeCostRecord.workspace_id == workspace_id,
                     TradeCostRecord.bot_id == bot_id,
@@ -134,7 +309,9 @@ class BotReportRepository:
         )
         intents = (
             await self._scalars(
-                select(OrderIntentRecord).where(
+                select(OrderIntentRecord)
+                .options(load_only(*_ORDER_INTENT_LOAD))
+                .where(
                     OrderIntentRecord.workspace_id == workspace_id,
                     OrderIntentRecord.bot_id == bot_id,
                     OrderIntentRecord.account_id == account_id,
@@ -146,7 +323,9 @@ class BotReportRepository:
         )
         decisions = (
             await self._scalars(
-                select(BotDecisionRecord).where(
+                select(BotDecisionRecord)
+                .options(load_only(*_BOT_DECISION_LOAD))
+                .where(
                     BotDecisionRecord.workspace_id == workspace_id,
                     BotDecisionRecord.bot_id == bot_id,
                     BotDecisionRecord.status == "CANDIDATE",
@@ -159,6 +338,7 @@ class BotReportRepository:
         fills = (
             await self._scalars(
                 select(FillRecord)
+                .options(load_only(*_FILL_LOAD))
                 .where(
                     FillRecord.workspace_id == workspace_id,
                     FillRecord.bot_id == bot_id,
@@ -173,6 +353,7 @@ class BotReportRepository:
         position_events = (
             await self._scalars(
                 select(PositionEventRecord)
+                .options(load_only(*_POSITION_EVENT_LOAD))
                 .where(
                     PositionEventRecord.workspace_id == workspace_id,
                     PositionEventRecord.bot_id == bot_id,
@@ -236,7 +417,9 @@ class BotReportRepository:
         if not trade_ids:
             return {}
         trades = await self._scalars(
-            select(TradeRecord).where(
+            select(TradeRecord)
+            .options(load_only(TradeRecord.id, TradeRecord.lineage))
+            .where(
                 TradeRecord.workspace_id == workspace_id,
                 TradeRecord.bot_id == bot_id,
                 TradeRecord.account_id == account_id,
@@ -251,7 +434,9 @@ class BotReportRepository:
         if not hashes:
             return {}
         plans = await self._scalars(
-            select(TradePlanRecord).where(
+            select(TradePlanRecord)
+            .options(load_only(*_TRADE_PLAN_LOAD))
+            .where(
                 TradePlanRecord.workspace_id == workspace_id,
                 TradePlanRecord.bot_id == bot_id,
                 TradePlanRecord.account_id == account_id,
@@ -297,6 +482,7 @@ class BotReportRepository:
         """Đọc nến đã đóng và khả dụng tại as_of cho biểu đồ, giữ bản sửa mới nhất."""
         rows = await self._scalars(
             select(MarketBar)
+            .options(load_only(*_MARKET_BAR_LOAD))
             .where(
                 MarketBar.workspace_id == workspace_id,
                 MarketBar.symbol == symbol,
@@ -331,6 +517,7 @@ class BotReportRepository:
         đã được risk gate duyệt của candidate (nếu có) — dùng cho thẻ tín hiệu SIG-3."""
         rows = await self._scalars(
             select(BotDecisionRecord)
+            .options(load_only(*_BOT_DECISION_LOAD))
             .where(
                 BotDecisionRecord.workspace_id == workspace_id,
                 BotDecisionRecord.bot_id == bot_id,
@@ -343,7 +530,9 @@ class BotReportRepository:
         plans: dict[str, dict[str, Any]] = {}
         if candidate_ids:
             plan_rows = await self._scalars(
-                select(TradePlanRecord).where(
+                select(TradePlanRecord)
+                .options(load_only(*_TRADE_PLAN_LOAD))
+                .where(
                     TradePlanRecord.workspace_id == workspace_id,
                     TradePlanRecord.bot_id == bot_id,
                     TradePlanRecord.payload["candidate_id"].astext.in_(candidate_ids),
@@ -380,6 +569,7 @@ class BotReportRepository:
         """Vị thế PAPER đang mở (CK-7): fill ENTRY, SL/TP của kế hoạch đã duyệt, SL đã dời."""
         trades = await self._scalars(
             select(TradeRecord)
+            .options(load_only(*_TRADE_LOAD))
             .where(
                 TradeRecord.workspace_id == workspace_id,
                 TradeRecord.bot_id == bot_id,
@@ -393,6 +583,7 @@ class BotReportRepository:
         intent_ids = [trade.intent_id for trade in trades]
         fills = await self._scalars(
             select(FillRecord)
+            .options(load_only(*_FILL_LOAD))
             .where(
                 FillRecord.workspace_id == workspace_id,
                 FillRecord.bot_id == bot_id,
@@ -403,6 +594,7 @@ class BotReportRepository:
         )
         stops = await self._scalars(
             select(PositionEventRecord)
+            .options(load_only(*_POSITION_EVENT_LOAD))
             .where(
                 PositionEventRecord.workspace_id == workspace_id,
                 PositionEventRecord.bot_id == bot_id,
@@ -412,7 +604,9 @@ class BotReportRepository:
             .order_by(PositionEventRecord.occurred_at)
         )
         plans = await self._scalars(
-            select(TradePlanRecord).where(
+            select(TradePlanRecord)
+            .options(load_only(*_TRADE_PLAN_LOAD))
+            .where(
                 TradePlanRecord.workspace_id == workspace_id,
                 TradePlanRecord.bot_id == bot_id,
                 TradePlanRecord.payload["candidate_id"].astext.in_(
@@ -461,6 +655,7 @@ class BotReportRepository:
         """Quyết định của bot có ``start < evaluated_at <= end`` (CK-7, phân tích tại nến)."""
         rows = await self._scalars(
             select(BotDecisionRecord)
+            .options(load_only(*_BOT_DECISION_LOAD))
             .where(
                 BotDecisionRecord.workspace_id == workspace_id,
                 BotDecisionRecord.bot_id == bot_id,
@@ -527,6 +722,7 @@ class BotReportRepository:
         """Khoảng trống ingest chưa được lấp (``resolved_at`` rỗng) của mã/khung (CK-9)."""
         rows = await self._scalars(
             select(IngestionGap)
+            .options(load_only(*_INGESTION_GAP_LOAD))
             .where(
                 IngestionGap.workspace_id == workspace_id,
                 IngestionGap.symbol == symbol,
@@ -551,6 +747,7 @@ class BotReportRepository:
         row = (
             await self._session.execute(
                 select(MarketLiveQuote)
+                .options(load_only(*_LIVE_QUOTE_LOAD))
                 .where(
                     MarketLiveQuote.workspace_id == workspace_id, MarketLiveQuote.symbol == symbol
                 )
@@ -576,6 +773,7 @@ class BotReportRepository:
         row = (
             await self._session.execute(
                 select(MarketMarkPrice)
+                .options(load_only(*_MARK_PRICE_LOAD))
                 .join(
                     MarketInstrument,
                     (MarketInstrument.workspace_id == MarketMarkPrice.workspace_id)
@@ -619,6 +817,7 @@ class BotReportRepository:
         """
         rows = await self._scalars(
             select(MarketBar)
+            .options(load_only(*_MARKET_BAR_LOAD))
             .where(
                 MarketBar.workspace_id == workspace_id,
                 MarketBar.symbol == symbol,

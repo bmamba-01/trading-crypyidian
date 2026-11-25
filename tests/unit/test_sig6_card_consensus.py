@@ -237,6 +237,7 @@ async def test_postgres_bars_provider_reads_one_source_read_only_in_workspace() 
 
         def __init__(self, _sessions: object, **kwargs: object) -> None:
             calls["uow"] = kwargs
+            calls["sessions"] = _sessions
 
         async def __aenter__(self) -> Unit:
             return self
@@ -269,6 +270,7 @@ async def test_postgres_bars_provider_reads_one_source_read_only_in_workspace() 
         "actor_membership_id": PRINCIPAL.membership_id,
         "snapshot_read_only": True,
     }
+    assert calls["sessions"] is not None
     load = cast(dict[str, object], calls["load"])
     assert (load["limit"], load["symbol"], load["timeframe"]) == (300, "BTCUSDT", "5m")
     assert load["source"] in {"BINANCE_USDM_REST_BACKFILL", "SEED"}

@@ -62,13 +62,16 @@
             {% if report_summary %}<span class="lx-chip lx-chip--{{ 'success' if report_summary.status != 'INCONCLUSIVE' else 'warning' }}">{{ icon('check-circle' if report_summary.status != 'INCONCLUSIVE' else 'clock') }}<span>{{ report_status_label }}</span></span>{% endif %}
           </div>
           {% if report_summary %}
+            {% if report_summary.status == "INCONCLUSIVE" %}
+              <p class="lx-help lx-inconclusive-note" id="learning-scoring-inconclusive-note" role="note"><strong>Báo cáo INCONCLUSIVE.</strong> Chưa đạt điều kiện kết luận theo policy; ẩn tỷ lệ và điểm hiệu năng. Các mục dưới đây chỉ hiển thị số đếm aggregate, không phải kết luận về hiệu quả mô hình.</p>
+            {% else %}
             <div class="stat-strip">
               <div class="stat">{{ icon("target") }}<div class="stat__body"><span class="stat__value">{{ "%.1f"|format(report_summary.coverage * 100) }}%</span><span class="stat__label">Độ phủ chấm điểm</span></div></div>
               <div class="stat">{{ icon("gauge") }}<div class="stat__body"><span class="stat__value">{{ "%.1f"|format(report_summary.expected_calibration_error * 100) }}%</span><span class="stat__label">Sai số hiệu chuẩn kỳ vọng (ECE)</span></div></div>
               <div class="stat">{{ icon("activity") }}<div class="stat__body"><span class="stat__value">{{ "%.4f"|format(report_summary.log_loss) }}</span><span class="stat__label">Tổn thất logarit</span></div></div>
               <div class="stat">{{ icon("scale") }}<div class="stat__body"><span class="stat__value">{{ "%.4f"|format(report_summary.brier_score) }}</span><span class="stat__label">Điểm Brier</span></div></div>
-              <div class="stat">{{ icon("ban") }}<div class="stat__body"><span class="stat__value">{{ "%.1f"|format(report_summary.false_veto_rate * 100) }}%</span><span class="stat__label">Tỷ lệ PnL dương bị chặn</span></div></div>
             </div>
+            {% endif %}
             <dl class="kv-grid">
               <div class="kv"><dt>{{ icon("clock") }}Thời điểm đánh giá</dt><dd><time datetime="{{ report_summary.evaluated_at.isoformat() }}">{{ report_summary.evaluated_at.strftime("%d/%m/%Y %H:%M UTC") }}</time></dd></div>
               <div class="kv"><dt>{{ icon("database") }}Số mẫu kiểm định</dt><dd>{{ report_summary.test_sample_count }}</dd></div>
@@ -76,15 +79,85 @@
               <div class="kv"><dt>{{ icon("minus") }}Lần từ chối chấm (ABSTAIN)</dt><dd>{{ report_summary.abstain_count }}</dd></div>
               <div class="kv"><dt>{{ icon("target") }}Số cơ hội được chấm</dt><dd>{{ report_summary.scored_candidate_count }} / {{ report_summary.candidate_count }}</dd></div>
               <div class="kv"><dt>{{ icon("check") }}Số cơ hội được duyệt</dt><dd>{{ report_summary.approved_candidate_count }}</dd></div>
-              {% if report_summary.candidate_retention is not none %}
+              {% if report_summary.candidate_retention is not none and report_summary.status != "INCONCLUSIVE" %}
                 <div class="kv"><dt>{{ icon("layers") }}Tỷ lệ giữ lại cơ hội</dt><dd>{{ "%.1f"|format(report_summary.candidate_retention * 100) }}%</dd></div>
               {% endif %}
               <div class="kv"><dt>{{ icon("shield") }}Đủ bằng chứng về mọi cơ hội</dt><dd>{% if report_summary.candidate_completeness_verified %}{{ chip("Có", "success", "check") }}{% else %}{{ chip("Chưa", "warning", "clock") }}{% endif %}</dd></div>
               <div class="kv"><dt>{{ icon("shield") }}Đủ độ phủ cơ hội được chấm</dt><dd>{% if report_summary.scored_candidate_coverage_verified %}{{ chip("Có", "success", "check") }}{% else %}{{ chip("Chưa", "warning", "clock") }}{% endif %}</dd></div>
             </dl>
+            <p class="learning-model-card-link"><a class="btn btn-secondary" href="/admin/learning/model-card?report_id={{ report_summary.evaluation_report_id }}">{{ icon("chart") }}Mở thẻ mô hình và độ trễ PAPER</a></p>
+            <section class="lx-confusion lx-confusion__diagnostics" id="learning-scoring-opportunity-counts" aria-labelledby="learning-scoring-opportunity-counts-heading">
+              <h3 id="learning-scoring-opportunity-counts-heading">Trạng thái inventory cơ hội TEST</h3>
+              <dl class="kv-grid">
+                <div class="kv"><dt>Không tạo ứng viên (NO_CANDIDATE)</dt><dd>{{ report_summary.no_candidate_count }}</dd></div>
+                {% if report_summary.not_run_count is none %}
+                  <div class="kv"><dt>Chưa chạy hoặc bị loại (proof v2 gộp)</dt><dd>{{ report_summary.input_excluded_count }}</dd></div>
+                {% else %}
+                <div class="kv"><dt>Đầu vào bị loại (INPUT_EXCLUDED)</dt><dd>{{ report_summary.input_excluded_count }}</dd></div>
+                <div class="kv"><dt>Cơ hội chưa chạy strategy (NOT_RUN)</dt><dd>{{ report_summary.not_run_count }}</dd></div>
+                {% endif %}
+              </dl>
+              {% if report_summary.not_run_count is none %}
+              <p class="lx-help">Đây là số đếm trạng thái trong inventory TEST. NO_CANDIDATE không đồng nghĩa với tín hiệu bị bỏ lỡ, lệnh hoặc trade đã được thực hiện; count này không tạo nhãn PnL. Proof v2 gộp EVALUATED + NOT_RUN và INPUT_EXCLUDED vào một count nên không thể tách riêng đầu vào bị loại. Count này không phải trade hay outcome PnL.</p>
+              {% else %}
+              <p class="lx-help">Đây là số đếm trạng thái trong inventory TEST. NO_CANDIDATE không đồng nghĩa với tín hiệu bị bỏ lỡ, lệnh hoặc trade đã được thực hiện; count này không tạo nhãn PnL. INPUT_EXCLUDED và NOT_RUN cũng không phải trade hay outcome PnL.</p>
+              {% endif %}
+            </section>
             <p class="lx-help"><strong>Phân bố mẫu theo kết quả:</strong>
               {% for label, count in class_support_labels %}{{ count }} {{ label|lower }}{% if not loop.last %} · {% endif %}{% endfor %}
             </p>
+            {% if report_summary.confusion_matrix is not none %}
+            <section class="lx-confusion" aria-labelledby="learning-scoring-confusion-heading">
+              <h3 id="learning-scoring-confusion-heading">Ma trận nhầm lẫn trên mẫu TEST</h3>
+              <p class="lx-help" id="learning-scoring-confusion-help">Mỗi ô là số mẫu; hàng là nhãn kết quả thực tế, cột là lớp mô hình dự đoán. Bảng chỉ mô tả phân lớp, không tự chứng minh cỡ mẫu hoặc quyền dữ liệu đã đủ để kết luận.</p>
+              <div class="lx-table-wrap lx-confusion__wrap" id="learning-scoring-confusion-matrix-wrap"
+                role="region" aria-labelledby="learning-scoring-confusion-heading" tabindex="0">
+                <table class="lx-table lx-confusion__table" id="learning-scoring-confusion-matrix"
+                  aria-describedby="learning-scoring-confusion-help learning-scoring-confusion-policy-note">
+                  <caption class="visually-hidden">Ma trận nhầm lẫn trên mẫu TEST</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Nhãn thực tế ↓ / dự đoán →</th>
+                      {% for label in confusion_matrix_prediction_labels %}<th scope="col" class="num">{{ label }}</th>{% endfor %}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for label, row in confusion_matrix_rows %}
+                      <tr><th scope="row">{{ label }}</th>{% for count in row %}<td class="num">{{ count }}</td>{% endfor %}</tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <div class="lx-confusion__mobile" role="list" aria-label="Ma trận nhầm lẫn TEST">
+                {% for label, row in confusion_matrix_rows %}
+                  <article class="lx-confusion__mobile-row" role="listitem">
+                    <h4>Nhãn thực tế: {{ label }}</h4>
+                    <dl>
+                      {% for prediction_label in confusion_matrix_prediction_labels %}
+                        <div><dt>{{ prediction_label }}</dt><dd>{{ row[loop.index0] }}</dd></div>
+                      {% endfor %}
+                    </dl>
+                  </article>
+                {% endfor %}
+              </div>
+              <p class="lx-help" id="learning-scoring-confusion-policy-note">Cột ABSTAIN nghĩa là scorer không đưa ra lớp dự đoán do độ tin cậy dưới ngưỡng. VETO vẫn có thể mang lớp argmax; vì vậy ma trận này không phải ma trận hành động PAPER.</p>
+            </section>
+            {% else %}
+            <p class="lx-help" id="learning-scoring-confusion-legacy">Ma trận nhầm lẫn chưa có trong báo cáo cũ.</p>
+            {% endif %}
+            <section class="lx-confusion lx-confusion__diagnostics" id="learning-scoring-positive-class-errors" aria-labelledby="learning-scoring-positive-class-errors-heading">
+              <h3 id="learning-scoring-positive-class-errors-heading">Số đếm cho lớp PnL dương</h3>
+              <dl class="kv-grid">
+                {% if report_summary.confusion_matrix is not none %}
+                  <div class="kv"><dt>FP lớp PnL dương</dt><dd>{{ report_summary.positive_class_false_positive_count }}</dd></div>
+                  <div class="kv"><dt>FN lớp PnL dương</dt><dd>{{ report_summary.positive_class_false_negative_count }}</dd></div>
+                {% else %}
+                  <div class="kv"><dt>FP / FN lớp PnL dương</dt><dd class="kv-wrap">Không có ma trận trong báo cáo cũ</dd></div>
+                {% endif %}
+                <div class="kv"><dt>False-veto theo hành động scorer</dt><dd>{{ report_summary.false_veto_count }} / {{ report_summary.positive_class_support }} mẫu PnL dương</dd></div>
+              </dl>
+              <p class="lx-help">FP/FN là số đếm phân lớp one-vs-rest, không phải quyết định APPROVE/VETO. FN gồm cả trường hợp ABSTAIN. False-veto đếm nhãn PnL dương không được APPROVE; VETO và ABSTAIN không đồng nghĩa với lỗi phân lớp.</p>
+            </section>
             <details class="glass-card lx-details">
               <summary>{{ icon("hash") }}Siêu dữ liệu dấu vết nguồn (hash rút gọn)</summary>
               <dl class="kv-grid">

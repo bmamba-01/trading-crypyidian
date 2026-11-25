@@ -933,25 +933,53 @@ async def _license_ledger() -> dict[str, object]:
                 {"workspace": workspace_id, "source": source_id},
             )
             assert sql_fingerprint == source_rights_hash(result.revision)
+            scope_identity_denials: dict[str, bool] = {}
+            for field in ("source_id", "provider", "product", "venue", "contract"):
+                mismatched_scope = json.loads(canonical_scope_json(scope))
+                mismatched_scope[field] = "other-source" if field == "source_id" else "OTHER"
+                invalid_values = policy_values | {
+                    "policy_id": f"{source_id}:policy:scope-mismatch:{field}",
+                    "sequence": 4,
+                    "state": "rights_pending",
+                    "approved_by": None,
+                    "reviewed_at": None,
+                    "valid_until": None,
+                    "license_evidence_id": None,
+                    "license_digest": None,
+                    "license_scope_hash": None,
+                    "license_scope": mismatched_scope,
+                }
+                await reject(
+                    session,
+                    insert(SourcePolicyRevisionRecord).values(**invalid_values),
+                    {},
+                    "WP06_LICENSE_POLICY_SCOPE_MISMATCH",
+                    f"scope-identity-{field}",
+                )
+                scope_identity_denials[field] = True
+
             # Raw INSERT không được làm mất hoặc đổi identity đã set.
-            revoke_values = policy_values | {
-                "policy_id": f"{source_id}:policy:4",
-                "sequence": 4,
-                "state": "revoked",
-                "approved_by": None,
-                "provider": "OTHER",
-                "license_scope": None,
-                "license_evidence_id": None,
-                "license_digest": None,
-                "license_scope_hash": None,
-            }
-            await reject(
-                session,
-                insert(SourcePolicyRevisionRecord).values(**revoke_values),
-                {},
-                "WP06_LICENSE_IDENTITY_IMMUTABLE",
-                "immutable-identity",
-            )
+            immutable_identity_denials: dict[str, bool] = {}
+            for field in ("provider", "product", "venue", "contract"):
+                revoke_values = policy_values | {
+                    "policy_id": f"{source_id}:policy:4:{field}",
+                    "sequence": 4,
+                    "state": "revoked",
+                    "approved_by": None,
+                    "license_scope": None,
+                    "license_evidence_id": None,
+                    "license_digest": None,
+                    "license_scope_hash": None,
+                    field: "OTHER",
+                }
+                await reject(
+                    session,
+                    insert(SourcePolicyRevisionRecord).values(**revoke_values),
+                    {},
+                    "WP06_LICENSE_IDENTITY_IMMUTABLE",
+                    f"immutable-identity-{field}",
+                )
+                immutable_identity_denials[field] = True
             await session.execute(
                 text("SELECT set_config('app.workspace_id', :workspace, true)"),
                 {"workspace": STATE["other_workspace_id"]},
@@ -1060,7 +1088,12 @@ async def _license_ledger() -> dict[str, object]:
                 assert legacy.license_evidence_id is None
         finally:
             await owner.dispose()
-        return {"license_ledger": True, "rejected": rejected}
+        return {
+            "license_ledger": True,
+            "rejected": rejected,
+            "scope_identity_denials": scope_identity_denials,
+            "immutable_identity_denials": immutable_identity_denials,
+        }
     finally:
         await engine.dispose()
 

@@ -2,9 +2,16 @@
 (() => {
   const form = document.getElementById("license-evidence-upload");
   if (form) {
+    const fileInput = form.querySelector('input[type="file"]');
+    const fileSelectionStatus = form.querySelector("#license-evidence-file-status");
+    fileInput.addEventListener("change", () => {
+      fileSelectionStatus.textContent = fileInput.files.length
+        ? "Đã chọn tài liệu để tải lên"
+        : "Chưa chọn tài liệu";
+    });
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const fileInput = form.querySelector('input[type="file"]');
       const status = form.querySelector("[role='status']");
       const errorBox = document.getElementById("license-evidence-error");
       const button = form.querySelector("button[type='submit']");

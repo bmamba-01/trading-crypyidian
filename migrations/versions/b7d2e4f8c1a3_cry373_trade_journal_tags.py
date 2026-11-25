@@ -14,6 +14,21 @@ depends_on: str | Sequence[str] | None = None
 _ADMIN_ROLE = "crypidian_admin_web"
 
 
+def _resolve_admin_role() -> str:
+    has_safe: bool = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'crypidian_admin_web_safe'"
+                ")"
+            )
+        )
+        .scalar_one()
+    )
+    return "crypidian_admin_web_safe" if has_safe else _ADMIN_ROLE
+
+
 def _apply_workspace_rls(table: str) -> None:
     policy = "workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid"
     op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')
@@ -101,10 +116,9 @@ def upgrade() -> None:
         "trade_journal_entry",
         ["workspace_id", "expires_at"],
     )
+    admin_role = _resolve_admin_role()
     _apply_workspace_rls("trade_journal_entry")
-    op.execute(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE trade_journal_entry TO {_ADMIN_ROLE}"
-    )
+    op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE trade_journal_entry TO {admin_role}")
 
     op.create_table(
         "trade_journal_attachment",
@@ -140,7 +154,7 @@ def upgrade() -> None:
     )
     _apply_workspace_rls("trade_journal_attachment")
     op.execute(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE trade_journal_attachment TO {_ADMIN_ROLE}"
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE trade_journal_attachment TO {admin_role}"
     )
 
     op.create_table(
@@ -176,7 +190,7 @@ def upgrade() -> None:
         ["workspace_id", "trade_id", "created_at"],
     )
     _apply_workspace_rls("trade_journal_audit")
-    op.execute(f"GRANT SELECT, INSERT ON TABLE trade_journal_audit TO {_ADMIN_ROLE}")
+    op.execute(f"GRANT SELECT, INSERT ON TABLE trade_journal_audit TO {admin_role}")
 
 
 def downgrade() -> None:

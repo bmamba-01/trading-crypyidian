@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -226,6 +226,48 @@ def _not_found() -> BotReportError:
     return BotReportError(404, "REPORT_NOT_FOUND", NOT_FOUND_MESSAGE)
 
 
+class AdminReportReadUnitOfWork:
+    """Ghép transaction kiểm quyền admin với transaction đọc ledger bằng login riêng.
+
+    RLS của PostgreSQL trên reader vẫn phải kiểm quyền hiện hành theo từng hàng; grant check ở
+    session admin phục vụ phản hồi API nhất quán, không thay thế hàng rào DB trong reader.
+    """
+
+    def __init__(
+        self,
+        authorization_sessions: async_sessionmaker[AsyncSession],
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None,
+        *,
+        unit_of_work: Callable[..., Any],
+        **scope: Any,
+    ) -> None:
+        if report_reader_sessions is None:
+            raise RuntimeError("ADMIN_REPORT_READER_UNAVAILABLE")
+        self._authorization_unit = unit_of_work(authorization_sessions, **scope)
+        self._reader_unit = unit_of_work(report_reader_sessions, **scope)
+        self.authorization_session: AsyncSession
+        self.session: AsyncSession
+
+    async def __aenter__(self) -> Self:
+        await self._authorization_unit.__aenter__()
+        try:
+            await self._reader_unit.__aenter__()
+        except BaseException as error:
+            await self._authorization_unit.__aexit__(type(error), error, error.__traceback__)
+            raise
+        self.authorization_session = self._authorization_unit.session
+        self.session = self._reader_unit.session
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        try:
+            await self._reader_unit.__aexit__(exc_type, exc, traceback)
+        except BaseException as error:
+            await self._authorization_unit.__aexit__(type(error), error, error.__traceback__)
+            raise
+        await self._authorization_unit.__aexit__(exc_type, exc, traceback)
+
+
 class BotReportingService:
     """Dựng báo cáo từ ledger; factory tiêm được để test không cần PostgreSQL."""
 
@@ -233,16 +275,26 @@ class BotReportingService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         unit_of_work: Callable[..., Any] = UnitOfWork,
         repository: Callable[[Any], Any] = BotReportRepository,
         grants: Callable[[Any], Any] = BotGrantRepository,
         bot_config_loader: Callable[..., Any] | None = None,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._bot_config_loader = bot_config_loader
         self._unit_of_work = unit_of_work
         self._repository = repository
         self._grants = grants
+
+    def _read_unit(self, **scope: Any) -> AdminReportReadUnitOfWork:
+        return AdminReportReadUnitOfWork(
+            self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=self._unit_of_work,
+            **scope,
+        )
 
     async def get_bot_report(self, query: BotReportQuery, principal: Principal) -> BotReport:
         """Báo cáo một bot; chỉ trade của đúng workspace/bot/account trong ``[start, end)``."""
@@ -258,8 +310,7 @@ class BotReportingService:
         if query.workspace_id != principal.workspace_id:
             raise _not_found()
         bot_id = query.bot_id
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -267,7 +318,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -289,8 +340,7 @@ class BotReportingService:
             raise BotReportError(422, "BOT_ID_REQUIRED", "Kế hoạch trade cần scope=bot rõ ràng.")
         if query.workspace_id != principal.workspace_id:
             raise _not_found()
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=query.bot_id,
             actor_membership_id=principal.membership_id,
@@ -298,7 +348,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -322,8 +372,7 @@ class BotReportingService:
             raise BotReportError(422, "BOT_ID_REQUIRED", "Vốn ban đầu cần scope=bot rõ ràng.")
         if query.workspace_id != principal.workspace_id:
             raise _not_found()
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=query.bot_id,
             actor_membership_id=principal.membership_id,
@@ -331,7 +380,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -381,8 +430,7 @@ class BotReportingService:
             chart_start = opened_at - interval * 20
             chart_notice = None
         chart_end = closed_at + interval * 20
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=query.bot_id,
             actor_membership_id=principal.membership_id,
@@ -390,7 +438,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -428,8 +476,7 @@ class BotReportingService:
         """Thẻ tín hiệu (SIG-3) từ quyết định CANDIDATE gần nhất đã xác minh hash, cùng quyết định
         gần nhất (có thể là không vào lệnh) và checklist của nó. Kiểm ``REPORT_READ`` như báo cáo.
         """
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -437,7 +484,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -462,8 +509,7 @@ class BotReportingService:
         Quyết định được đánh giá khi nến đóng nên cửa sổ là ``(bar_open, bar_open + interval]``.
         Chỉ trả quyết định khớp hash; ``None`` khi bot không đánh giá ở nến đó.
         """
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -471,7 +517,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -507,8 +553,7 @@ class BotReportingService:
                 422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
             )
         instant = now or datetime.now(UTC)
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -516,7 +561,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -575,8 +620,7 @@ class BotReportingService:
             raise ValueError("Trang nhật ký quyết định nằm ngoài giới hạn.")
         from trading_bot.application.bot_dispatcher import BotDecision
 
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -584,7 +628,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -676,8 +720,7 @@ class BotReportingService:
         instant = now or datetime.now(UTC)
         board: list[dict[str, Any]] = []
         for bot_id, bot_name in bots:
-            async with self._unit_of_work(
-                self._sessions,
+            async with self._read_unit(
                 workspace_id=principal.workspace_id,
                 bot_id=bot_id,
                 actor_membership_id=principal.membership_id,
@@ -685,7 +728,7 @@ class BotReportingService:
             ) as unit:
                 repository = self._repository(unit.session)
                 try:
-                    await self._grants(unit.session).require(
+                    await self._grants(unit.authorization_session).require(
                         principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                     )
                 except PermissionError:
@@ -699,7 +742,11 @@ class BotReportingService:
                     workspace_id=principal.workspace_id, bot_id=bot_id, limit=20
                 )
                 protection = await self._bot_protection(
-                    unit.session, repository, principal=principal, bot_id=bot_id, now=instant
+                    unit.authorization_session,
+                    repository,
+                    principal=principal,
+                    bot_id=bot_id,
+                    now=instant,
                 )
             progress = build_setup_progress(rows, bonus=bonus, now=instant)
             board.append(
@@ -771,8 +818,7 @@ class BotReportingService:
         Nến thị trường là dữ liệu chung của workspace; chart yêu cầu người xem có quyền đọc
         báo cáo của ít nhất bot đang chọn để không mở dữ liệu cho người ngoài phạm vi bot.
         """
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -780,7 +826,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -820,8 +866,7 @@ class BotReportingService:
             )
         if not 1 <= limit <= MARKET_CHART_MAX_LIMIT:
             raise BotReportError(422, "CHART_LIMIT_INVALID", "Số nến yêu cầu không hợp lệ.")
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -829,7 +874,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -882,8 +927,7 @@ class BotReportingService:
             )
         instant = now or datetime.now(UTC)
         frames = [timeframe, *(frame for frame, _ in MTF_ROLES if frame != timeframe)]
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
@@ -891,7 +935,7 @@ class BotReportingService:
         ) as unit:
             repository = self._repository(unit.session)
             try:
-                await self._grants(unit.session).require(
+                await self._grants(unit.authorization_session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
                 )
             except PermissionError as error:
@@ -966,15 +1010,14 @@ class BotReportingService:
         _validate_query(query)
         if query.workspace_id != principal.workspace_id:
             raise _not_found()
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=None,
             actor_membership_id=principal.membership_id,
             snapshot_read_only=True,
         ) as unit:
             repository = self._repository(unit.session)
-            grants = self._grants(unit.session)
+            grants = self._grants(unit.authorization_session)
             bots = await repository.list_bots(
                 workspace_id=principal.workspace_id, limit=MAX_BOTS_PER_WORKSPACE_REPORT + 1
             )
@@ -1023,15 +1066,14 @@ class BotReportingService:
                 "WORKSPACE_REPORT_FORBIDDEN",
                 "Tổng hợp workspace cần role workspace có quyền bot:report:read.",
             )
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=None,
             actor_membership_id=principal.membership_id,
             snapshot_read_only=True,
         ) as unit:
             repository = self._repository(unit.session)
-            grants = self._grants(unit.session)
+            grants = self._grants(unit.authorization_session)
             bots = await repository.list_bots(
                 workspace_id=principal.workspace_id, limit=MAX_BOTS_PER_WORKSPACE_REPORT + 1
             )

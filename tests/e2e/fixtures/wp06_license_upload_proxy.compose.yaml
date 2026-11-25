@@ -1,0 +1,20 @@
+secrets:
+  wp06_proxy_telegram_token:
+    file: ${WP06_PROXY_TELEGRAM_TOKEN_FILE:?Can dat WP06_PROXY_TELEGRAM_TOKEN_FILE}
+
+services:
+  admin-web:
+    environment:
+      TRADING_BOT_TELEGRAM_BOT_TOKEN_REFERENCE: telegram-bot-token
+      TRADING_BOT_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/wp06_proxy_telegram_token
+    secrets:
+      - wp06_proxy_telegram_token
+  reverse-proxy:
+    ports: !override
+      - "127.0.0.1:${WP06_PROXY_PORT:?Can dat WP06_PROXY_PORT}:443"
+
+networks:
+  web_ingress:
+    ipam:
+      config:
+        - subnet: ${TRADING_BOT_TRUSTED_PROXY_IPS:?Can dat TRADING_BOT_TRUSTED_PROXY_IPS}

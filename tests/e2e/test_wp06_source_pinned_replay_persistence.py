@@ -116,9 +116,17 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
             )
-            assert _function_definition_hashes(
+            # Migration f0a2 thay validator proof TEST để đọc v2/v3; các function hash còn lại
+            # tiếp tục phải đúng postimage lịch sử. Hành vi validator mới được E2E bên dưới kiểm
+            # qua insert v3 hợp lệ và hai trường hợp payload/count sai.
+            observed_functions = _function_definition_hashes(
                 root, project, environment, volume, workspace_id
-            ) == _migration_hashes(root, "postimage")
+            )
+            expected_functions = _migration_hashes(root, "postimage")
+            proof_validator = "public.validate_learning_scorer_test_opportunity_proof()"
+            observed_functions.pop(proof_validator)
+            expected_functions.pop(proof_validator)
+            assert observed_functions == expected_functions
             assert _migration_body_guard(root, project, environment, volume, workspace_id) == {
                 "altered_function_bodies_rejected": True
             }
@@ -174,9 +182,8 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
             _run_source_linked_test(root, project, environment, volume, result, case=case)
             if case != "source-linked-test":
                 return
-            # Từ b7d9f1a3c5e8 (14/11/2026) receipt replay TRAINING đã ghi chặn mọi downgrade đi
-            # qua nó, trước guard QA của 8ac4e2f6b0d1 và roundtrip e8f0a2c4d6b8; guard bị che được
-            # kiểm tĩnh bằng unit (test_wp06_first_party_qa_source_downgrade_migration.py).
+            # Proof v3 đã persist nên guard của chính migration proof chặn downgrade trước các
+            # guard receipt TRAINING/QA phía dưới; các revision cũ vẫn có kiểm thử riêng.
             for target in ("c3f5a7b9d1e3", "e8f0a2c4d6b8"):
                 denied = _compose_expected_failure(
                     root,
@@ -191,7 +198,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
                     target,
                 )
                 assert denied.returncode != 0
-                assert "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED" in (
+                assert "WP06_SCORER_TEST_PROOF_V3_DOWNGRADE_POPULATED_DENIED" in (
                     denied.stdout + denied.stderr
                 )
             current = _compose(
@@ -205,14 +212,19 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
                 "alembic",
                 "current",
             )
-            assert "a3c7e9f1b5d2 (head)" in current.stdout
+            assert "ab26dde001df (head)" in current.stdout
             assert (
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
             )
-            assert _function_definition_hashes(
+            observed_functions = _function_definition_hashes(
                 root, project, environment, volume, workspace_id
-            ) == _migration_hashes(root, "postimage")
+            )
+            expected_functions = _migration_hashes(root, "postimage")
+            proof_validator = "public.validate_learning_scorer_test_opportunity_proof()"
+            observed_functions.pop(proof_validator)
+            expected_functions.pop(proof_validator)
+            assert observed_functions == expected_functions
             check = _compose(
                 root,
                 project,
@@ -380,9 +392,12 @@ def _run_source_linked_test(root, project, environment, volume, state, *, case):
         "deployment_caller_denied",
         "worker_execute_granted",
         "execution_table_privileges_absent",
+        "invalid_reason_type_rejected",
+        "invalid_not_run_count_rejected",
     ):
         assert state[name] is True
     assert state["report_status"] == "INCONCLUSIVE"
+    assert state["admin_report_not_run_count"] == 0
     assert state["sample_support_block"] == {
         "sample_count": 9,
         "minimum_sample_count": 1000,

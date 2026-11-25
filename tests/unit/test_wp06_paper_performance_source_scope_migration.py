@@ -293,6 +293,66 @@ def test_rights_policy_projection_uses_only_columns_granted_to_source_rights_rea
         assert required in authorizer
 
 
+def test_paper_source_scope_sql_checks_and_hashes_every_use_dimension() -> None:
+    sql = _upgrade_sql()
+    guard_start = sql.index(
+        "IF policy_row.license_scope->>'source_id' IS DISTINCT FROM group_row.source_id"
+    )
+    guard_end = sql.index(
+        "RAISE EXCEPTION 'WP06_PAPER_PERFORMANCE_CURRENT_RIGHTS_DENIED';", guard_start
+    )
+    guard = sql[guard_start:guard_end]
+
+    for predicate in (
+        "policy_row.license_scope->>'provider' IS DISTINCT FROM policy_row.provider",
+        "policy_row.license_scope->>'product' IS DISTINCT FROM policy_row.product",
+        "policy_row.license_scope->>'venue' IS DISTINCT FROM policy_row.venue",
+        "policy_row.license_scope->>'contract' IS DISTINCT FROM policy_row.contract",
+        "policy_row.license_scope->'symbols'",
+        "pg_catalog.jsonb_build_array(group_row.symbol)",
+        "policy_row.license_scope->'intervals'",
+        "pg_catalog.jsonb_build_array(group_row.timeframe)",
+        "(policy_row.license_scope->>'data_start')::timestamptz > group_row.data_start",
+        "(policy_row.license_scope->>'data_end')::timestamptz < group_row.data_end",
+        "policy_row.license_scope->'allowed_purposes'",
+        "'[\"paper_demo\"]'::jsonb",
+        "policy_row.license_scope->'allowed_outputs'",
+        "'[\"aggregate_report\"]'::jsonb",
+        "policy_row.license_scope->'derived_use'",
+        "'[\"aggregate_reporting\"]'::jsonb",
+        "policy_row.license_scope->'max_retention_days' <> 'null'::jsonb",
+    ):
+        assert predicate in guard
+
+    scope_start = sql.index("current_scope := pg_catalog.jsonb_build_object(", guard_end)
+    scope_end = sql.index("current_scope_hash :=", scope_start)
+    current_scope = sql[scope_start:scope_end]
+    function_end = sql.index(
+        "ALTER FUNCTION public.wp06_authorize_paper_performance_decision_source_scope(",
+        scope_start,
+    )
+    authorizer = sql[guard_start:function_end]
+    for scope_component in (
+        "'source_id', group_row.source_id",
+        "'provider', policy_row.provider",
+        "'product', policy_row.product",
+        "'venue', policy_row.venue",
+        "'contract', policy_row.contract",
+        "'symbols', pg_catalog.jsonb_build_array(group_row.symbol)",
+        "'intervals', pg_catalog.jsonb_build_array(group_row.timeframe)",
+        "'data_start', pg_catalog.to_char(",
+        "'data_end', pg_catalog.to_char(",
+        "'purpose', 'paper_demo'",
+        "'outputs', pg_catalog.jsonb_build_array('aggregate_report')",
+        "'derived_use', pg_catalog.jsonb_build_array('aggregate_reporting')",
+        "'retention_days', NULL",
+    ):
+        assert scope_component in current_scope
+
+    assert "current_scope_hash := pg_catalog.encode(" in authorizer
+    assert "public.wp06_license_canonical_json(current_scope)" in authorizer
+
+
 def test_report_payload_is_only_returned_through_current_rights_gateway() -> None:
     sql = _upgrade_sql()
     start = sql.index("CREATE FUNCTION public.wp06_read_paper_performance_report(")

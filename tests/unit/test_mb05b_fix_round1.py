@@ -222,11 +222,31 @@ def test_runtime_app_wires_lease_lost_callback_to_audited_registry_path() -> Non
 def test_flat_guard_takes_workspace_l1_before_counting() -> None:
     from trading_bot.application.bot_lifecycle_guard import BotLifecycleGuard
 
-    session = RecordingSession(scalar_results=[object(), 0, 0, 0])
+    class ProjectionResult:
+        def mappings(self) -> ProjectionResult:
+            return self
+
+        def one(self) -> dict[str, int | bool]:
+            return {
+                "bot_exists": True,
+                "open_positions": 0,
+                "open_orders": 0,
+                "held_reservations": 0,
+            }
+
+    class GuardSession(RecordingSession):
+        async def execute(self, statement: Any, params: Any = None) -> Any:
+            result = await super().execute(statement, params)
+            if "wp06_admin_bot_lifecycle_snapshot" in str(statement):
+                return ProjectionResult()
+            return result
+
+    session = GuardSession()
 
     asyncio.run(BotLifecycleGuard(session).ensure_flat_for_disable(uuid4(), uuid4()))  # type: ignore[arg-type]
 
     assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "wp06_admin_bot_lifecycle_snapshot" in session.statements[1]
     assert session.events[0] == "execute"
 
 

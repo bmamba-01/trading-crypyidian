@@ -25,6 +25,7 @@ _DERIVED_PROOF_FIELDS = (
     "candidate_count",
     "no_candidate_count",
     "input_excluded_count",
+    "not_run_count",
     "completeness_verified",
 )
 _SCOPE_FIELDS = (
@@ -54,6 +55,10 @@ _ENTRY_FIELDS = frozenset(
         "vector_hash",
     }
 )
+_PROOF_SCHEMA_VERSIONS = {
+    "wp06-scorer-test-opportunity-proof-v2": "v2",
+    "wp06-scorer-test-opportunity-proof-v3": "v3",
+}
 
 _PROOF_FIELDS = frozenset(
     field.name for field in fields(ScorerTestOpportunityProof) if field.name != "record_id"
@@ -71,15 +76,27 @@ def opportunity_proof_from_canonical(
     payload: dict[str, Any] = json.loads(canonical_proof)
     if not isinstance(payload, dict):
         raise ValueError("Proof TEST phải là JSON object.")
+    schema_name = payload.get("schema_version")
+    if not isinstance(schema_name, str):
+        raise ValueError("Proof TEST sai schema.")
+    proof_schema_version = _PROOF_SCHEMA_VERSIONS.get(schema_name)
+    if proof_schema_version is None:
+        raise ValueError("Proof TEST sai schema.")
     values = {key: value for key, value in payload.items() if key not in _DERIVED_PROOF_FIELDS}
+    values["proof_schema_version"] = proof_schema_version
     if set(values) != _PROOF_FIELDS:
         raise ValueError("Proof TEST sai schema.")
     try:
         for name in ("workspace_id", "evaluation_run_id", "attempt_id", "normalized_dataset_id"):
             values[name] = UUID(str(values[name]))
         entries = []
+        entry_fields = (
+            _ENTRY_FIELDS | frozenset({"reason_code"})
+            if proof_schema_version == "v3"
+            else _ENTRY_FIELDS
+        )
         for item in values.pop("entries"):
-            if not isinstance(item, dict) or set(item) != _ENTRY_FIELDS:
+            if not isinstance(item, dict) or set(item) != entry_fields:
                 raise ValueError("Entry proof TEST sai schema.")
             entries.append(ScorerTestOpportunityEntry(**item))
         proof = ScorerTestOpportunityProof(record_id=record_id, entries=tuple(entries), **values)

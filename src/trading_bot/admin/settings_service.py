@@ -8,16 +8,13 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import (
     RiskProfileVersion,
-    TradingAccount,
     WorkspaceSettingsVersion,
 )
-from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
-from trading_bot.adapters.database.models.risk_entities import RiskReservationRecord
 from trading_bot.adapters.database.repositories.workspace_settings import (
     SettingsReferenceNotFound,
     SettingsVersionConflict,
@@ -29,7 +26,10 @@ from trading_bot.application.runtime_risk_profile import (
     risk_limits_from_profile,
 )
 from trading_bot.application.strategy_catalog import strategy_registry
-from trading_bot.application.workspace_risk import assess_risk_capacity
+from trading_bot.application.workspace_risk import (
+    assess_risk_capacity,
+    load_admin_paper_policy_counts,
+)
 from trading_bot.auth.action_challenge import (
     ACTION_SETTINGS_PUBLISH,
     ACTION_SETTINGS_ROLLBACK,
@@ -527,6 +527,7 @@ class SettingsAdminService:
         assessment = await assess_risk_capacity(
             unit.session,
             workspace_id=principal.workspace_id,
+            membership_id=principal.membership_id,
             settings=settings,
             account_fraction=account_fraction,
         )
@@ -567,34 +568,12 @@ class SettingsAdminService:
             raise SettingsAdminError(
                 403, "Cần role có quyền xem toàn bộ bot để đổi PAPER execution profile."
             )
-        active_intents = await unit.session.scalar(
-            select(func.count(OrderIntentRecord.id)).where(
-                OrderIntentRecord.workspace_id == workspace_id,
-                OrderIntentRecord.mode == "PAPER",
-                OrderIntentRecord.status.in_(("ACCEPTED", "PARTIALLY_FILLED", "UNKNOWN")),
-            )
+        snapshot = await load_admin_paper_policy_counts(
+            unit.session,
+            workspace_id=workspace_id,
+            membership_id=principal.membership_id,
         )
-        open_trades = await unit.session.scalar(
-            select(func.count(TradeRecord.id)).where(
-                TradeRecord.workspace_id == workspace_id,
-                TradeRecord.mode == "PAPER",
-                TradeRecord.status == "OPEN",
-            )
-        )
-        active_reservations = await unit.session.scalar(
-            select(func.count(RiskReservationRecord.id))
-            .join(
-                TradingAccount,
-                (TradingAccount.workspace_id == RiskReservationRecord.workspace_id)
-                & (TradingAccount.id == RiskReservationRecord.account_id),
-            )
-            .where(
-                RiskReservationRecord.workspace_id == workspace_id,
-                TradingAccount.mode == "PAPER",
-                RiskReservationRecord.status.in_(("RESERVED", "UNKNOWN")),
-            )
-        )
-        if active_intents or open_trades or active_reservations:
+        if snapshot.active_intents or snapshot.open_positions or snapshot.active_reservations:
             raise SettingsAdminError(
                 409,
                 "Không thể đổi PAPER execution/recovery profile khi còn intent, trade hoặc "

@@ -11,12 +11,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models.bot_entities import BotInstance
-from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
-from trading_bot.adapters.database.models.risk_entities import RiskReservationRecord
+from trading_bot.adapters.database.repositories.admin_lifecycle_guard import (
+    AdminLifecycleGuardRepository,
+)
 from trading_bot.adapters.database.repositories.workspace_settings import (
     WorkspaceSettingsRepository,
 )
@@ -60,41 +59,17 @@ class BotLifecycleGuard:
         # L1 trước khi đếm (fix round 1, M7): entry/fill đang chạy giữ L1 nên không thể mở vị
         # thế/reservation mới giữa lúc đếm và lúc đường disable commit.
         await WorkspaceSettingsRepository(self._session).lock_workspace(workspace_id)
-        bot = await self._session.scalar(
-            select(BotInstance.id).where(
-                BotInstance.workspace_id == workspace_id, BotInstance.id == bot_id
-            )
+        snapshot = await AdminLifecycleGuardRepository(self._session).load_snapshot(
+            workspace_id=workspace_id,
+            bot_id=bot_id,
         )
-        if bot is None:
+        if not snapshot.bot_exists:
             raise BotNotFlatError("BOT_NOT_FOUND")
-        positions = await self._session.scalar(
-            select(func.count())
-            .select_from(TradeRecord)
-            .where(
-                TradeRecord.workspace_id == workspace_id,
-                TradeRecord.bot_id == bot_id,
-                TradeRecord.status == "OPEN",
-            )
+        counts = (
+            snapshot.open_positions,
+            snapshot.open_orders,
+            snapshot.held_reservations,
         )
-        orders = await self._session.scalar(
-            select(func.count())
-            .select_from(OrderIntentRecord)
-            .where(
-                OrderIntentRecord.workspace_id == workspace_id,
-                OrderIntentRecord.bot_id == bot_id,
-                OrderIntentRecord.status.in_(sorted(OPEN_ORDER_STATUSES)),
-            )
-        )
-        reservations = await self._session.scalar(
-            select(func.count())
-            .select_from(RiskReservationRecord)
-            .where(
-                RiskReservationRecord.workspace_id == workspace_id,
-                RiskReservationRecord.bot_id == bot_id,
-                RiskReservationRecord.status.in_(sorted(HELD_RESERVATION_STATUSES)),
-            )
-        )
-        counts = (int(positions or 0), int(orders or 0), int(reservations or 0))
         if any(counts):
             raise BotNotFlatError(
                 "BOT_NOT_FLAT",

@@ -64,6 +64,8 @@ Ngày nghiên cứu: 16/11/2026. Bối cảnh: owner quyết định AI-2 không
 ```python
 class AnalystEngine(Protocol):
     def analyze(self, req: AnalysisRequest) -> AnalysisResult: ...
+
+
 # AnalysisRequest: topic_key, run_report_path, schema_path, session_ref|None, timeout_s, budget
 # AnalysisResult: structured_output, raw_stdout, session_id, engine, cli_version, model, usage, cost_usd, exit_code
 ```

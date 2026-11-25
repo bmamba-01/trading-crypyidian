@@ -519,7 +519,7 @@ def test_batch3_postgres_e2e_roles_rls_breaker_block_and_signal_dataset() -> Non
             capture_output=True,
             text=True,
         )
-        assert "a3c7e9f1b5d2 (head)" in alembic_heads.stdout
+        assert "ab26dde001df (head)" in alembic_heads.stdout
 
         result = subprocess.run(
             [

@@ -30,5 +30,20 @@ class ScorerReportReadModel:
                 workspace_id=workspace_id
             )
 
+    async def load_report_summary(
+        self, workspace_id: UUID, report_id: UUID
+    ) -> ScorerReportSummary | None:
+        """Đọc report scorer theo ID cụ thể sau current-rights recheck."""
+        if type(workspace_id) is not UUID or type(report_id) is not UUID:
+            raise ValueError("Workspace và report phải là UUID.")
+        async with UnitOfWork(
+            self._sessions,
+            workspace_id=workspace_id,
+        ) as unit:
+            return await LearningScorerReportReadRepository(unit.session).get_by_id(
+                workspace_id=workspace_id,
+                report_id=report_id,
+            )
+
 
 __all__ = ["ScorerReportReadModel"]

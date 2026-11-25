@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,12 +26,15 @@ from trading_bot.adapters.database.models import (
     CandidateUniverseProofRecord,
     DatasetManifestRecord,
     LearningAttemptEventRecord,
+    LearningFoldResourceProfileRecord,
     LearningReplayTrainingReceiptRecord,
     LearningSplitApprovalRecord,
     LearningSplitCandidateRecord,
     LearningTrainingAccessReceiptRecord,
     LearningTrainingAttemptRecord,
+    NormalizedFoldAssignmentRecord,
     NormalizedLearningDatasetRecord,
+    NormalizedLearningSampleRecord,
 )
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.learning_training_batches import (
@@ -39,6 +43,12 @@ from trading_bot.adapters.database.repositories.learning_training_batches import
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
 from trading_bot.application.learning_cpu_trainer import CPU_TRAINER_VERSION
+from trading_bot.application.learning_fold_samples import (
+    NormalizedFoldAssignment,
+    NormalizedLearningDataset,
+    NormalizedLearningSample,
+    normalized_learning_dataset_hash,
+)
 from trading_bot.application.learning_split_candidate import SPLIT_POLICY_VERSION
 from trading_bot.application.learning_training_input import (
     LearningTrainingInputRequest,
@@ -494,18 +504,46 @@ async def _prepare_manifest() -> dict[str, Any]:
                 workspace_id=workspace_id,
                 trial_record_id=trial_id,
             )
-            outcome = next(row for row in outcomes.rows if row.trade.has_entry_provenance)
+            eligible_outcomes = sorted(
+                (
+                    row
+                    for row in outcomes.rows
+                    if row.trade.has_entry_provenance
+                    and row.trade.entry_decision_at is not None
+                    and row.trade.entry_feature_schema_hash is not None
+                ),
+                key=lambda row: row.trade.entry_decision_at,
+            )
+            outcome_pair = next(
+                (
+                    (first, second)
+                    for first_index, first in enumerate(eligible_outcomes)
+                    for second in eligible_outcomes[first_index + 1 :]
+                    if first.trade.closed_at <= second.trade.entry_decision_at
+                    and first.trade.entry_feature_schema_hash
+                    == second.trade.entry_feature_schema_hash
+                ),
+                None,
+            )
+            assert outcome_pair is not None, "QA replay cần hai outcome train/validation tuần tự."
+            training_outcome, validation_outcome = outcome_pair
             lineage = await BacktestOutcomeRepository(session).load_training_bundle_lineage(
                 workspace_id=workspace_id,
                 trial_record_id=trial_id,
                 outcomes=outcomes.rows,
             )
-            trade = outcome.trade
-            decision_at = trade.entry_decision_at
-            assert decision_at is not None
-            assert trade.entry_features_hash is not None
-            data_start = decision_at - timedelta(days=1)
-            data_end = trade.closed_at + timedelta(days=1)
+            source_outcomes = (training_outcome, validation_outcome)
+            first_trade = training_outcome.trade
+            second_trade = validation_outcome.trade
+            assert first_trade.entry_decision_at is not None
+            assert second_trade.entry_decision_at is not None
+            assert first_trade.entry_features_hash is not None
+            assert second_trade.entry_features_hash is not None
+            data_start = first_trade.entry_decision_at - timedelta(days=1)
+            data_end = second_trade.closed_at + timedelta(days=1)
+            lineage_set_hash = _source_lineage_set_hash(
+                [item.canonical_payload for item in lineage.source_use_lineage]
+            )
             manifest = DatasetManifest(
                 workspace_id=workspace_id,
                 query_hash=hashlib.sha256(b"wp06-source-license-query").hexdigest(),
@@ -518,31 +556,47 @@ async def _prepare_manifest() -> dict[str, Any]:
                 label_version="wp06-e2e-label-v1",
                 sample_schema_version="wp06-e2e-sample-v1",
                 split_policy_version=SPLIT_POLICY_VERSION,
-                samples=(
+                samples=tuple(
                     DatasetSample(
                         sample_id=str(outcome.record_id),
-                        decision_at=decision_at,
-                        feature_available_at=decision_at,
-                        outcome_start=trade.opened_at,
-                        outcome_end=trade.closed_at,
-                        feature_snapshot_hash=trade.entry_features_hash,
+                        decision_at=outcome.trade.entry_decision_at,
+                        feature_available_at=outcome.trade.entry_decision_at,
+                        outcome_start=outcome.trade.opened_at,
+                        outcome_end=outcome.trade.closed_at,
+                        feature_snapshot_hash=outcome.trade.entry_features_hash,
                         outcome_id=str(outcome.record_id),
                         outcome_hash=outcome.outcome_hash,
-                        label_hash=hashlib.sha256(b"wp06-e2e-label").hexdigest(),
-                        label_value=(trade.net_pnl > 0) - (trade.net_pnl < 0),
+                        label_hash=hashlib.sha256(
+                            f"wp06-e2e-label:{outcome.record_id}".encode()
+                        ).hexdigest(),
+                        label_value=(outcome.trade.net_pnl > 0) - (outcome.trade.net_pnl < 0),
                         label_version="wp06-e2e-label-v1",
-                        split=DatasetSplit.TRAIN,
+                        split=(DatasetSplit.TRAIN if index == 0 else DatasetSplit.VALIDATION),
                         source_dependent=True,
                         source_rights_hashes=(),
                         source_revision_refs=(),
                         source_replay_bundle_hash=lineage.bundle_hash,
                         source_use_lineage=lineage.source_use_lineage,
-                    ),
+                    )
+                    for index, outcome in enumerate(source_outcomes)
                 ),
                 exclusions=(),
                 holdout_sealed_at=None,
                 retention_policy_ref="fixture-retain-metadata-only",
                 manifest_version="dataset-manifest-v4",
+            )
+            manifest = replace(
+                manifest,
+                samples=tuple(
+                    replace(
+                        sample,
+                        source_use_lineage=(),
+                        source_use_lineage_set_hash=lineage_set_hash,
+                    )
+                    for sample in manifest.samples
+                ),
+                manifest_version="dataset-manifest-v5",
+                source_use_lineage=lineage.source_use_lineage,
             )
             proof_row = await session.scalar(
                 select(CandidateUniverseProofRecord).where(
@@ -551,32 +605,34 @@ async def _prepare_manifest() -> dict[str, Any]:
                 )
             )
             assert proof_row is not None
-            source_lineage = [item.canonical_payload for item in lineage.source_use_lineage]
             payload = json.loads(manifest.canonical_json)
-            payload["manifest_version"] = "dataset-manifest-v5"
-            payload["source_use_lineage"] = source_lineage
-            lineage_set_hash = _source_lineage_set_hash(source_lineage)
-            for item in payload["samples"]:
-                item["source_replay_bundle_hash"] = lineage.bundle_hash
-                item["source_use_lineage_set_hash"] = lineage_set_hash
-                item.pop("source_use_lineage", None)
             manifest_hash, normalized_id = await _persist_manifest(
                 session,
                 payload,
                 proof_id=proof_row.id,
                 proof_hash=proof_row.proof_hash,
                 trial_id=trial_id,
+                persist_normalized_header=False,
             )
 
         return STATE | {
             "proof_record_id": str(proof.record_id),
             "manifest_hash": manifest_hash,
-            "normalized_dataset_id": str(normalized_id),
+            "normalized_dataset_id": str(normalized_id) if normalized_id else None,
             "fold_plan_hash": FOLD_HASH,
-            "outcome_id": str(outcome.record_id),
+            "fold_id": FOLD_HASH,
+            "outcome_id": str(training_outcome.record_id),
+            "feature_schema_hashes": {
+                str(item.record_id): item.trade.entry_feature_schema_hash
+                for item in source_outcomes
+            },
             "manifest": payload,
             "source_lineage_set_hash": lineage_set_hash,
             "expected_source_receipt_count": len(lineage.source_use_lineage),
+            "expected_normalization_receipt_count": len(lineage.source_use_lineage)
+            * len(source_outcomes),
+            "expected_training_receipt_count": len(lineage.source_use_lineage)
+            * len(source_outcomes),
         }
     finally:
         await engine.dispose()
@@ -733,7 +789,8 @@ async def _persist_manifest(
     proof_hash: str,
     trial_id: UUID,
     fold_hash: str = FOLD_HASH,
-) -> tuple[str, UUID]:
+    persist_normalized_header: bool = True,
+) -> tuple[str, UUID | None]:
     """Ghi manifest fixture, candidate và normalized header theo thứ tự FK/trigger."""
     canonical = json.dumps(
         payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
@@ -765,7 +822,7 @@ async def _persist_manifest(
         )
     )
     await session.flush()
-    approval_hash = _seed_synthetic_split_approval(manifest_hash)
+    approval_hash = _seed_synthetic_split_approval(manifest_hash, fold_plan_hash=fold_hash)
     session.add(
         DatasetManifestRecord(
             id=uuid4(),
@@ -793,25 +850,30 @@ async def _persist_manifest(
             canonical_manifest=canonical,
         )
     )
-    normalized_id = uuid4()
-    session.add(
-        NormalizedLearningDatasetRecord(
-            id=normalized_id,
-            workspace_id=WORKSPACE_ID,
-            manifest_hash=manifest_hash,
-            split_policy_version=SPLIT_POLICY_VERSION,
-            fold_plan_hash=fold_hash,
-            approval_hash=approval_hash,
-            content_hash=hashlib.sha256(f"normalized:{manifest_hash}".encode()).hexdigest(),
-            sample_count=max(len(samples), 1),
-            assignment_count=1,
+    normalized_id = uuid4() if persist_normalized_header else None
+    if normalized_id is not None:
+        session.add(
+            NormalizedLearningDatasetRecord(
+                id=normalized_id,
+                workspace_id=WORKSPACE_ID,
+                manifest_hash=manifest_hash,
+                split_policy_version=SPLIT_POLICY_VERSION,
+                fold_plan_hash=fold_hash,
+                approval_hash=approval_hash,
+                content_hash=hashlib.sha256(f"normalized:{manifest_hash}".encode()).hexdigest(),
+                sample_count=max(len(samples), 1),
+                assignment_count=1,
+            )
         )
-    )
     await session.flush()
     return manifest_hash, normalized_id
 
 
-def _seed_synthetic_split_approval(manifest_hash: str) -> str:
+def _seed_synthetic_split_approval(
+    manifest_hash: str,
+    *,
+    fold_plan_hash: str = FOLD_HASH,
+) -> str:
     """Nối approval fixture tới candidate; không đại diện cho duyệt sản phẩm thật."""
     engine = create_engine(
         URL.create(
@@ -827,7 +889,7 @@ def _seed_synthetic_split_approval(manifest_hash: str) -> str:
         workspace_id=WORKSPACE_ID,
         manifest_hash=manifest_hash,
         split_policy_version=SPLIT_POLICY_VERSION,
-        fold_plan_hash=FOLD_HASH,
+        fold_plan_hash=fold_plan_hash,
         actor_membership_id=uuid4(),
         idempotency_key=uuid4(),
         reason="Approval fixture chỉ phục vụ tích hợp E2E.",
@@ -1025,17 +1087,20 @@ async def _normalize() -> dict[str, object]:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session, session.begin():
         await _set_workspace(session)
+        normalized_dataset_id = await _persist_training_dataset(session)
         rights_diagnostics = _training_rights_diagnostics()
         assert rights_diagnostics["receipt_set_matches"] is True, rights_diagnostics
         await _call_normalize(
             session,
             manifest_hash=STATE["manifest_hash"],
-            normalized_dataset_id=STATE["normalized_dataset_id"],
+            normalized_dataset_id=str(normalized_dataset_id),
+            fold_plan_hash=STATE["fold_plan_hash"],
         )
         await _call_normalize(
             session,
             manifest_hash=STATE["manifest_hash"],
-            normalized_dataset_id=STATE["normalized_dataset_id"],
+            normalized_dataset_id=str(normalized_dataset_id),
+            fold_plan_hash=STATE["fold_plan_hash"],
         )
         await _call_normalize(
             session,
@@ -1071,11 +1136,20 @@ async def _normalize() -> dict[str, object]:
             legacy_denied = legacy_denied and "LEGACY_LINEAGE_DENIED" in error
         assert "SOURCE_FREE_FORGED" in forged_error
     await engine.dispose()
-    attempt_id = await _seed_queued_attempt()
+    fold_plan_hash = STATE["fold_plan_hash"]
+    fold_id = STATE["fold_id"]
+    attempt_id = await _seed_queued_attempt(normalized_dataset_id, fold_plan_hash, fold_id)
+    positive_attempt_id = await _seed_queued_attempt(
+        normalized_dataset_id,
+        fold_plan_hash,
+        fold_id,
+    )
     return {
+        "normalized_dataset_id": str(normalized_dataset_id),
         "attempt_id": str(attempt_id),
+        "positive_training_attempt_id": str(positive_attempt_id),
         "rights_receipt_set_valid": True,
-        "source_receipt_count": STATE["expected_source_receipt_count"],
+        "source_receipt_count": STATE["expected_normalization_receipt_count"],
         "retry_is_idempotent": True,
         "source_free_wp02_allowed": True,
         "forged_source_free_outcome_denied": True,
@@ -1274,7 +1348,94 @@ def _training_rights_diagnostics() -> dict[str, Any]:
     return diagnostics
 
 
-async def _seed_queued_attempt() -> UUID:
+async def _persist_training_dataset(session) -> UUID:
+    """Ghi đúng hai hàng QA train/validation cho claim, không seed role test."""
+    manifest_record = await session.scalar(
+        select(DatasetManifestRecord).where(
+            DatasetManifestRecord.workspace_id == WORKSPACE_ID,
+            DatasetManifestRecord.manifest_hash == STATE["manifest_hash"],
+        )
+    )
+    approval = await session.scalar(
+        select(LearningSplitApprovalRecord).where(
+            LearningSplitApprovalRecord.workspace_id == WORKSPACE_ID,
+            LearningSplitApprovalRecord.manifest_hash == STATE["manifest_hash"],
+            LearningSplitApprovalRecord.split_policy_version == SPLIT_POLICY_VERSION,
+            LearningSplitApprovalRecord.fold_plan_hash == FOLD_HASH,
+        )
+    )
+    assert manifest_record is not None
+    assert approval is not None
+    manifest = manifest_record.to_domain()
+    selected_samples = tuple(sorted(manifest.samples, key=lambda item: item.sample_id))
+    assert len(selected_samples) == 2
+    assert {sample.split for sample in selected_samples} == {
+        DatasetSplit.TRAIN,
+        DatasetSplit.VALIDATION,
+    }
+    samples = tuple(
+        NormalizedLearningSample(
+            sample_id=sample.sample_id,
+            outcome_id=sample.outcome_id,
+            outcome_hash=sample.outcome_hash,
+            feature_snapshot_hash=sample.feature_snapshot_hash,
+            feature_schema_hash=STATE["feature_schema_hashes"][sample.sample_id],
+            label_hash=sample.label_hash,
+            label_value=sample.label_value,
+            features=(("fixture_feature", float(index + 1)),),
+        )
+        for index, sample in enumerate(selected_samples)
+    )
+    assignments = tuple(
+        NormalizedFoldAssignment(
+            fold_id=FOLD_HASH,
+            sample_id=sample.sample_id,
+            role="train" if sample.split is DatasetSplit.TRAIN else "validation",
+        )
+        for sample in selected_samples
+    )
+    dataset = NormalizedLearningDataset(
+        workspace_id=WORKSPACE_ID,
+        manifest_hash=manifest.content_hash,
+        split_policy_version=manifest.split_policy_version,
+        fold_plan_hash=FOLD_HASH,
+        samples=samples,
+        assignments=assignments,
+        content_hash="",
+    )
+    dataset = replace(dataset, content_hash=normalized_learning_dataset_hash(dataset))
+    record = NormalizedLearningDatasetRecord.from_domain(
+        dataset,
+        approval_hash=approval.approval_hash,
+    )
+    record.id = uuid4()
+    session.add(record)
+    await session.flush()
+    session.add_all(
+        NormalizedLearningSampleRecord.from_domain(dataset, sample) for sample in samples
+    )
+    await session.flush()
+    session.add_all(
+        NormalizedFoldAssignmentRecord.from_domain(dataset, assignment)
+        for assignment in assignments
+    )
+    await session.flush()
+    session.add(
+        LearningFoldResourceProfileRecord.from_dataset(
+            dataset,
+            normalized_dataset_id=record.id,
+            fold_id=FOLD_HASH,
+        )
+    )
+    await session.flush()
+    return record.id
+
+
+async def _seed_queued_attempt(
+    normalized_dataset_id: UUID,
+    fold_plan_hash: str,
+    fold_id: str,
+) -> UUID:
     """Tạo attempt tổng hợp để đi qua claim gateway; không chạy trainer/model."""
     engine = _engine()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -1285,7 +1446,7 @@ async def _seed_queued_attempt() -> UUID:
                 LearningSplitApprovalRecord.workspace_id == WORKSPACE_ID,
                 LearningSplitApprovalRecord.manifest_hash == STATE["manifest_hash"],
                 LearningSplitApprovalRecord.split_policy_version == SPLIT_POLICY_VERSION,
-                LearningSplitApprovalRecord.fold_plan_hash == FOLD_HASH,
+                LearningSplitApprovalRecord.fold_plan_hash == fold_plan_hash,
             )
         )
         assert approval is not None
@@ -1307,12 +1468,12 @@ async def _seed_queued_attempt() -> UUID:
         idempotency_key=uuid4(),
         manifest_hash=STATE["manifest_hash"],
         split_policy_version=SPLIT_POLICY_VERSION,
-        fold_plan_hash=FOLD_HASH,
+        fold_plan_hash=fold_plan_hash,
         approval_hash=approval_hash,
         parameter_family_hash=hashlib.sha256(uuid4().bytes).hexdigest(),
         trial_index=0,
         trial_count=1,
-        fold_id=FOLD_HASH,
+        fold_id=fold_id,
         seed=17,
         trainer_version=CPU_TRAINER_VERSION,
         dependency_fingerprint=hashlib.sha256(b"wp06-source-rights-gateway-e2e").hexdigest(),
@@ -1322,7 +1483,7 @@ async def _seed_queued_attempt() -> UUID:
     )
     attempt_record = LearningTrainingAttemptRecord.from_domain(
         attempt,
-        normalized_dataset_id=UUID(STATE["normalized_dataset_id"]),
+        normalized_dataset_id=normalized_dataset_id,
     )
     initial_event = LearningAttemptEventRecord.from_domain(
         workspace_id=WORKSPACE_ID,
@@ -1416,6 +1577,148 @@ async def _revoke_before_claim() -> dict[str, object]:
     }
 
 
+async def _positive_training_claim() -> dict[str, object]:
+    """Claim source-QA train/validation qua đúng service của trainer worker."""
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    service = LearningTrainingInputService(sessions)
+    batch = await service.claim_batch(
+        LearningTrainingInputRequest(
+            workspace_id=WORKSPACE_ID,
+            attempt_id=UUID(STATE["positive_training_attempt_id"]),
+        )
+    )
+    await engine.dispose()
+    roles = tuple(sample.role for sample in batch.samples)
+    return {
+        "positive_training_claim_succeeded": batch.workspace_id == WORKSPACE_ID,
+        "batch_has_train_and_validation": set(roles) == {"train", "validation"},
+        "batch_has_no_test_role": all(role in {"train", "validation"} for role in roles),
+        "batch_sample_count": len(batch.samples),
+    }
+
+
+async def _inspect_positive_training_claim() -> dict[str, object]:
+    """Đối chiếu training receipt với cùng quyền hiện hành và đúng attempt claim."""
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    attempt_id = UUID(STATE["positive_training_attempt_id"])
+    normalized_dataset_id = UUID(STATE["normalized_dataset_id"])
+    async with sessions() as session, session.begin():
+        await _set_workspace(session)
+        access_receipt = await session.scalar(
+            select(LearningTrainingAccessReceiptRecord).where(
+                LearningTrainingAccessReceiptRecord.workspace_id == WORKSPACE_ID,
+                LearningTrainingAccessReceiptRecord.attempt_id == attempt_id,
+            )
+        )
+        attempt = await session.scalar(
+            select(LearningTrainingAttemptRecord).where(
+                LearningTrainingAttemptRecord.workspace_id == WORKSPACE_ID,
+                LearningTrainingAttemptRecord.id == attempt_id,
+            )
+        )
+        assert access_receipt is not None
+        assert attempt is not None
+        training_receipts = (
+            await session.scalars(
+                select(LearningReplayTrainingReceiptRecord).where(
+                    LearningReplayTrainingReceiptRecord.workspace_id == WORKSPACE_ID,
+                    LearningReplayTrainingReceiptRecord.access_kind == "training",
+                    LearningReplayTrainingReceiptRecord.access_id == attempt_id,
+                    LearningReplayTrainingReceiptRecord.normalized_dataset_id
+                    == normalized_dataset_id,
+                )
+            )
+        ).all()
+        normalization_receipts = (
+            await session.scalars(
+                select(LearningReplayTrainingReceiptRecord).where(
+                    LearningReplayTrainingReceiptRecord.workspace_id == WORKSPACE_ID,
+                    LearningReplayTrainingReceiptRecord.access_kind == "normalization",
+                    LearningReplayTrainingReceiptRecord.access_id == normalized_dataset_id,
+                    LearningReplayTrainingReceiptRecord.normalized_dataset_id
+                    == normalized_dataset_id,
+                )
+            )
+        ).all()
+        training_rights = {
+            (
+                row.sample_id,
+                row.bundle_hash,
+                row.child_dataset_hash,
+                row.source_id,
+                row.provider,
+                row.product,
+                row.venue,
+                row.contract,
+                row.symbol,
+                row.interval,
+                row.data_start,
+                row.data_end,
+                row.bar_identity_hash,
+                row.policy_fingerprint,
+                row.current_policy_fingerprint,
+                row.scope_hash,
+                row.policy_id,
+                row.policy_sequence,
+                row.license_evidence_id,
+                row.evidence_digest,
+                row.license_scope_hash,
+            )
+            for row in training_receipts
+        }
+        normalization_rights = {
+            (
+                row.sample_id,
+                row.bundle_hash,
+                row.child_dataset_hash,
+                row.source_id,
+                row.provider,
+                row.product,
+                row.venue,
+                row.contract,
+                row.symbol,
+                row.interval,
+                row.data_start,
+                row.data_end,
+                row.bar_identity_hash,
+                row.policy_fingerprint,
+                row.current_policy_fingerprint,
+                row.scope_hash,
+                row.policy_id,
+                row.policy_sequence,
+                row.license_evidence_id,
+                row.evidence_digest,
+                row.license_scope_hash,
+            )
+            for row in normalization_receipts
+        }
+        assert training_receipts
+        assert all(row.purpose == "training" for row in training_receipts)
+        assert all(row.access_id == attempt_id for row in training_receipts)
+        assert all(row.manifest_hash == attempt.manifest_hash for row in training_receipts)
+        assert all(row.fold_plan_hash == attempt.fold_plan_hash for row in training_receipts)
+        assert access_receipt.normalized_dataset_id == normalized_dataset_id
+        assert access_receipt.purpose == "trainer-input"
+        assert access_receipt.actor_principal == "crypidian_trainer_worker"
+        assert access_receipt.manifest_hash == attempt.manifest_hash
+        assert access_receipt.fold_plan_hash == attempt.fold_plan_hash
+        assert access_receipt.request_fingerprint == attempt.content_hash
+        assert access_receipt.training_samples == 1
+        assert access_receipt.validation_samples == 1
+        assert access_receipt.sample_count == 2
+        assert training_rights == normalization_rights
+    await engine.dispose()
+    return {
+        "training_access_receipt_persisted": True,
+        "training_replay_receipts_persisted": len(training_receipts),
+        "training_receipts_bound_to_same_current_rights": True,
+        "training_receipts_bound_to_claim_attempt": True,
+        "positive_claim_is_train_validation_only": True,
+    }
+
+
 async def _inspect_after_claim() -> dict[str, object]:
     """Xác minh claim bị từ chối không tạo receipt và không đổi receipt chuẩn hóa."""
     engine = _engine()
@@ -1440,11 +1743,21 @@ async def _inspect_after_claim() -> dict[str, object]:
                 == UUID(STATE["normalized_dataset_id"]),
             )
         )
+        denied_replay_receipt_count = await session.scalar(
+            select(func.count())
+            .select_from(LearningReplayTrainingReceiptRecord)
+            .where(
+                LearningReplayTrainingReceiptRecord.workspace_id == WORKSPACE_ID,
+                LearningReplayTrainingReceiptRecord.access_kind == "training",
+                LearningReplayTrainingReceiptRecord.access_id == UUID(STATE["attempt_id"]),
+            )
+        )
     await engine.dispose()
     return {
         "no_training_access_receipt": training_receipt_count == 0,
+        "no_replay_training_receipt_for_denied_attempt": denied_replay_receipt_count == 0,
         "normalization_receipts_unchanged": (
-            normalization_receipt_count == STATE["expected_source_receipt_count"]
+            normalization_receipt_count == STATE["expected_normalization_receipt_count"]
         ),
     }
 
@@ -1498,7 +1811,7 @@ async def _inspect_receipts() -> dict[str, object]:
                 == UUID(STATE["normalized_dataset_id"]),
             )
         )
-        assert count == STATE["expected_source_receipt_count"]
+        assert count == STATE["expected_normalization_receipt_count"]
         receipt = await session.scalar(
             select(LearningReplayTrainingReceiptRecord).where(
                 LearningReplayTrainingReceiptRecord.workspace_id == WORKSPACE_ID,
@@ -1581,6 +1894,10 @@ async def main() -> None:
         result = await _check_evaluator_gate_acl_phase()
     elif PHASE == "revoke":
         result = await _revoke_current_policy()
+    elif PHASE == "positive-training-claim":
+        result = await _positive_training_claim()
+    elif PHASE == "inspect-positive-training-claim":
+        result = await _inspect_positive_training_claim()
     elif PHASE == "revoke-before-claim":
         result = await _revoke_before_claim()
     elif PHASE == "inspect-after-claim":

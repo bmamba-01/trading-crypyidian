@@ -227,10 +227,12 @@ class RiskAppetiteService:
         sessions: async_sessionmaker[AsyncSession],
         settings_service: SettingsAdminService | None = None,
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         action_challenge_service: ActionChallengeService | None = None,
         require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._action_challenge_service = action_challenge_service
         self._require_action_step_up = require_action_step_up
         self._settings = settings_service or SettingsAdminService(
@@ -371,7 +373,7 @@ class RiskAppetiteService:
         rows: list[dict[str, Any]] = []
         policy = drawdown_policy_for(settings.risk.max_drawdown_fraction)
         provider = PostgresPaperDecisionContextProvider(
-            self._sessions, workspace_id=principal.workspace_id
+            self._report_reader_sessions, workspace_id=principal.workspace_id
         )
         for bot, account in await BotInstanceRepository(session).list_with_accounts(
             workspace_id=principal.workspace_id
@@ -419,13 +421,32 @@ class RiskAppetiteService:
                         for name in BOT_EFFECTIVE_FIELDS
                         if getattr(limits, name) != getattr(root_limits, name)
                     ]
-            await self._breaker_status(session, provider, row, bot, account, settings, policy, now)
+            if self._report_reader_sessions is None:
+                logger.warning("Không có report-reader để đọc trạng thái PAPER của bot %s", bot.id)
+            else:
+                async with UnitOfWork(
+                    self._report_reader_sessions,
+                    workspace_id=principal.workspace_id,
+                    bot_id=bot.id,
+                    actor_membership_id=principal.membership_id,
+                    snapshot_read_only=True,
+                ) as reader_unit:
+                    await self._breaker_status(
+                        reader_unit.session,
+                        provider,
+                        row,
+                        bot,
+                        account,
+                        settings,
+                        policy,
+                        now,
+                    )
             rows.append(row)
         return rows
 
     @staticmethod
     async def _breaker_status(
-        session: AsyncSession,
+        reader_session: AsyncSession,
         provider: PostgresPaperDecisionContextProvider,
         row: dict[str, Any],
         bot: Any,
@@ -437,16 +458,16 @@ class RiskAppetiteService:
         """Lỗ hôm nay/24 giờ và drawdown bằng đúng hàm runtime; lỗi đọc chỉ làm ô "không rõ"."""
         ref = _AccountRef(account_id=account.id, bot_id=bot.id)
         try:
-            async with session.begin_nested():
+            async with reader_session.begin_nested():
                 losses = await provider._loss_windows(
-                    session,
+                    reader_session,
                     ref,
                     as_of=now,
                     policy=loss_window_policy_for(settings.risk.loss_window_timezone),
                 )
                 row["loss_today"] = _text(losses.realized_loss_today)
                 row["loss_rolling"] = _text(losses.realized_loss_rolling)
-                equity = await AccountEquityRepository(session).load_paper_equity_snapshot(
+                equity = await AccountEquityRepository(reader_session).load_paper_equity_snapshot(
                     workspace_id=bot.workspace_id,
                     bot_id=bot.id,
                     account_id=account.id,
@@ -457,7 +478,7 @@ class RiskAppetiteService:
                 )
                 if equity.known and equity.seed_capital:
                     state = await provider._drawdown_breaker(
-                        session,
+                        reader_session,
                         ref,
                         as_of=now,
                         equity=equity.equity_amount,

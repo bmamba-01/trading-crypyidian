@@ -89,6 +89,27 @@ def _sessions() -> tuple[Any, Any]:
     return engine, create_session_factory(engine)
 
 
+def _admin_report_reader_sessions() -> tuple[Any, Any]:
+    """Mở session reader PAPER riêng do admin-web được cấp để đọc báo cáo."""
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        create_session_factory,
+        database_url_from_secret,
+    )
+
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_ADMIN_REPORT_READER_DATABASE_USER"],
+            password_file=Path(
+                os.environ["TRADING_BOT_ADMIN_REPORT_READER_DATABASE_PASSWORD_FILE"]
+            ),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    return engine, create_session_factory(engine)
+
+
 def _insert(connection: psycopg.Connection[Any], table: str, **values: Any) -> None:
     values.setdefault("id", uuid4())
     connection.execute(
@@ -152,11 +173,11 @@ def _history(connection: psycopg.Connection[Any], timeframe: str, count: int) ->
     closes = (
         [300.0 - index * 0.1 for index in range(count - 1)] + [300.0 - (count - 2) * 0.1 + 50.0]
         if h1
-        else [200.0 + index * 0.5 for index in range(count)]
+        else [200.0 + index * 0.5 + ((index % 7) - 3) * 0.1 for index in range(count)]
     )
     for index, close in enumerate(closes):
         previous = closes[index - 1] if index > 0 else close
-        open_price = previous if h1 and index > 0 else close
+        open_price = previous
         _bar(
             connection,
             timeframe=timeframe,
@@ -164,8 +185,8 @@ def _history(connection: psycopg.Connection[Any], timeframe: str, count: int) ->
             opened=first_open + index * interval,
             interval=interval,
             open_price=open_price,
-            high=max(open_price, close) + 1.0,
-            low=min(open_price, close) - 1.0,
+            high=max(open_price, close) + 1.0 + (index % 3) * 0.1,
+            low=min(open_price, close) - 1.0 - (index % 5) * 0.1,
             close=close,
         )
     return closes[-1]
@@ -610,18 +631,27 @@ async def mark_check() -> dict[str, Any]:
 
 
 async def web_read() -> dict[str, Any]:
-    """CK-7: admin-web (role thật, RLS thật) đọc vị thế mở và quyết định tại nến cho chart."""
+    """CK-7: report-reader đọc ledger; admin-web kiểm quyền và ghi vận hành."""
     from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
     from trading_bot.application.bot_reporting import build_latest_signal_view
     from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.auth.policy import Principal, Role
     from trading_bot.domain.portfolio.position_overlay import position_overlay
 
     bot_id = UUID(STATE["bot_id"])
     engine, sessions = _sessions()
+    reader_engine, reader_sessions = _admin_report_reader_sessions()
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
     try:
-        # Như BotReportingService: RLS của admin-web yêu cầu membership đang hoạt động có quyền.
+        # Đọc ledger qua reader với membership hiện hành; admin-web không có SELECT raw.
         async with UnitOfWork(
-            sessions,
+            reader_sessions,
             workspace_id=WORKSPACE,
             bot_id=bot_id,
             actor_membership_id=MEMBERSHIP,
@@ -649,31 +679,20 @@ async def web_read() -> dict[str, Any]:
             )
             role = await uow.session.scalar(text("SELECT current_user"))
         async with UnitOfWork(
-            sessions, workspace_id=WORKSPACE, bot_id=bot_id, snapshot_read_only=True
+            reader_sessions, workspace_id=WORKSPACE, bot_id=bot_id, snapshot_read_only=True
         ) as uow:
             hidden = await BotReportRepository(uow.session).open_positions(
                 workspace_id=WORKSPACE, bot_id=bot_id, symbol="BTCUSDT"
             )
-    finally:
-        await engine.dispose()
-    # CK-12: bảng giám sát bot qua service thật (giới hạn từ cấu hình hiệu lực, chỗ chạy từ ledger).
-    from trading_bot.application.bot_reporting import BotReportingService
-    from trading_bot.auth.policy import Principal, Role
+        # CK-12: admin-web kiểm quyền, còn số liệu PAPER đi qua report-reader.
+        from trading_bot.application.bot_reporting import BotReportingService
 
-    owner = Principal(
-        user_id=_id("owner"),
-        membership_id=MEMBERSHIP,
-        workspace_id=WORKSPACE,
-        roles=frozenset({Role.OWNER}),
-        mfa_verified_at=NOW,
-    )
-    engine, sessions = _sessions()
-    try:
-        (board,) = await BotReportingService(sessions).get_setup_board(
-            owner, bots=[(bot_id, "RT1 bot")], bonus=[]
-        )
+        (board,) = await BotReportingService(
+            sessions, report_reader_sessions=reader_sessions
+        ).get_setup_board(owner, bots=[(bot_id, "RT1 bot")], bonus=[])
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
     protection = board["protection"]
     latest = build_latest_signal_view(decisions)["latest_decision"]
     views = []
@@ -797,7 +816,9 @@ async def calendar() -> dict[str, Any]:
 
 
 async def scanner() -> dict[str, Any]:
-    """CK-11: bộ quét đọc nến 4h đã lưu bằng role admin-web và ghi nhật ký vào audit_event."""
+    """CK-11: report-reader đọc nến; admin-web chỉ ghi nhật ký lượt quét."""
+    from sqlalchemy import text
+
     from trading_bot.application.market_scanner import MarketScannerService
     from trading_bot.auth.policy import Principal, Role
     from trading_bot.domain.market.scanner import ScanCriteria
@@ -810,8 +831,11 @@ async def scanner() -> dict[str, Any]:
         mfa_verified_at=NOW,
     )
     engine, sessions = _sessions()
+    reader_engine, reader_sessions = _admin_report_reader_sessions()
     try:
-        service = MarketScannerService(sessions)
+        async with reader_sessions() as session:
+            reader_role = await session.scalar(text("SELECT current_user"))
+        service = MarketScannerService(sessions, report_reader_sessions=reader_sessions)
         criteria = ScanCriteria(min_quote_volume_24h=0.0)
         first = await service.scan(owner, timeframe="4h", criteria=criteria, record=True)
         again = await service.scan(owner, timeframe="4h", criteria=criteria, now=None)
@@ -819,7 +843,9 @@ async def scanner() -> dict[str, Any]:
         runs = await service.recent_runs(owner)
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
     return {
+        "reader_role": reader_role,
         "universe": first["universe"],
         "passed_4h": [row["symbol"] for row in first["rows"]],
         "deterministic": [row["symbol"] for row in first["movers_7d"]]
@@ -831,7 +857,7 @@ async def scanner() -> dict[str, Any]:
 
 
 async def card_consensus_phase() -> dict[str, Any]:
-    """SIG-6: nguồn nến của cảnh báo đồng thuận đọc market_bar bằng role admin-web (RLS)."""
+    """SIG-6: nguồn nến của cảnh báo đồng thuận đọc market_bar bằng report-reader (RLS)."""
     from sqlalchemy import text
 
     from trading_bot.application.strategy_card_bars import PostgresCardBarsProvider
@@ -853,7 +879,7 @@ async def card_consensus_phase() -> dict[str, Any]:
         roles=frozenset({Role.OWNER}),
         mfa_verified_at=NOW,
     )
-    engine, sessions = _sessions()
+    engine, sessions = _admin_report_reader_sessions()
     try:
         async with sessions() as session:
             role = await session.scalar(text("SELECT current_user"))
@@ -976,8 +1002,9 @@ async def exit_draft() -> dict[str, Any]:
     owner = _owner_now()
     bot_id = UUID(STATE["bot_id"])
     engine, sessions = _sessions()
+    reader_engine, reader_sessions = _admin_report_reader_sessions()
     try:
-        service = BotConfigAdminService(sessions)
+        service = BotConfigAdminService(sessions, report_reader_sessions=reader_sessions)
         bot = await service.get_bot(owner, bot_id=bot_id)
         head = bot["current_config"]
         base = dict(head["overlay"])
@@ -1041,6 +1068,7 @@ async def exit_draft() -> dict[str, Any]:
             forged = "denied" if "permission denied" in str(error) else str(error)[:200]
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
     return {
         "invalid_errors": [item["field"] for item in invalid_check["errors"]],
         "draft_id": draft["id"],
@@ -1063,8 +1091,9 @@ async def exit_publish() -> dict[str, Any]:
     owner = _owner_now()
     bot_id = UUID(STATE["bot_id"])
     engine, sessions = _sessions()
+    reader_engine, reader_sessions = _admin_report_reader_sessions()
     try:
-        service = BotConfigAdminService(sessions)
+        service = BotConfigAdminService(sessions, report_reader_sessions=reader_sessions)
         check = await service.validate_draft(
             owner, bot_id=bot_id, draft_id=UUID(STATE["exit_draft_id"])
         )
@@ -1088,6 +1117,7 @@ async def exit_publish() -> dict[str, Any]:
             ).all()
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
     owner_rows = [row for row in listed if row["source"] == "OWNER_DRAFT"]
     return {
         "warnings": [item.get("code") for item in check["warnings"]],
@@ -1124,7 +1154,7 @@ async def exit_resolve() -> dict[str, Any]:
 
 
 async def risk_appetite() -> dict[str, Any]:
-    """CRY-428: trang Khẩu vị rủi ro qua service thật bằng role admin-web (RLS, audit, MFA)."""
+    """CRY-428: admin-web ghi policy; report-reader đọc ledger PAPER với RLS hiện hành."""
     from decimal import Decimal
 
     from sqlalchemy import select
@@ -1153,8 +1183,9 @@ async def risk_appetite() -> dict[str, Any]:
         mfa_verified_at=datetime.now(UTC) - timedelta(days=1),
     )
     engine, sessions = _sessions()
+    reader_engine, reader_sessions = _admin_report_reader_sessions()
     try:
-        service = RiskAppetiteService(sessions)
+        service = RiskAppetiteService(sessions, report_reader_sessions=reader_sessions)
         before = await service.overview(owner, symbol="BTCUSDT")
         limits = before["profile"]["limits"]
         form = {name: str(value) for name, value in limits.items()} | {
@@ -1207,6 +1238,7 @@ async def risk_appetite() -> dict[str, Any]:
             )
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
     [bot_row] = after["bots"]
     return {
         "before_drawdown": before["settings"]["max_drawdown_fraction"],
@@ -1231,7 +1263,10 @@ async def risk_appetite() -> dict[str, Any]:
 
 
 async def run_report() -> dict[str, Any]:
-    """AI-1: Run Report tất định từ ledger thật của bot RT-1 (role admin của migrator)."""
+    """AI-1: Run Report tất định qua credential chuyên biệt của report-reader."""
+    import subprocess
+    import sys
+
     from trading_bot.application.run_report import load_run_report
 
     engine, sessions = _sessions()
@@ -1250,6 +1285,25 @@ async def run_report() -> dict[str, Any]:
             end=NOW + timedelta(days=1),
             run_label="rt1-e2e",
         )
+        cli = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "trading_bot.cli.run_report",
+                "--workspace-id",
+                str(WORKSPACE),
+                "--start",
+                (NOW - timedelta(days=3)).isoformat(),
+                "--end",
+                (NOW + timedelta(days=1)).isoformat(),
+                "--label",
+                "rt1-e2e",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        cli_payload = json.loads(cli.stdout)
         # CRY-380: lưu bất biến, idempotent theo hash.
         from trading_bot.application.outbox import UnitOfWork
         from trading_bot.application.run_report import persist_run_report
@@ -1274,8 +1328,23 @@ async def run_report() -> dict[str, Any]:
                 connection.execute(statement)
             blocked.append(False)
         except Exception as error:  # noqa: BLE001
-            blocked.append("RUN_REPORT_IMMUTABLE" in str(error))
+            blocked.append(
+                isinstance(error, psycopg.errors.InsufficientPrivilege)
+                or "RUN_REPORT_IMMUTABLE" in str(error)
+            )
     with _connect() as connection:
+        connection.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
+        account_rows = connection.execute(
+            "SELECT count(*) FROM trading_account WHERE workspace_id = %s", (WORKSPACE,)
+        ).fetchone()[0]
+        cross_workspace_account_rows = connection.execute(
+            "SELECT count(*) FROM trading_account WHERE workspace_id <> %s", (WORKSPACE,)
+        ).fetchone()[0]
+        try:
+            connection.execute("SELECT max_notional FROM trading_account LIMIT 1").fetchone()
+            sensitive_account_column_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            sensitive_account_column_denied = True
         report_rights = connection.execute(
             "SELECT has_table_privilege('crypidian_admin_web', 'run_report', 'SELECT'), "
             "has_table_privilege('crypidian_admin_web', 'run_report', 'INSERT'), "
@@ -1289,7 +1358,11 @@ async def run_report() -> dict[str, Any]:
         "immutable": blocked,
         "report_rights": [bool(report_rights[0]), bool(report_rights[1]), bool(report_rights[2])],
         "stored_rows": int(report_rights[3]),
+        "manual_reader_account_rows": int(account_rows),
+        "manual_reader_cross_workspace_rows": int(cross_workspace_account_rows),
+        "manual_reader_sensitive_account_column_denied": sensitive_account_column_denied,
         "deterministic": first.report_hash == second.report_hash,
+        "cli_payload_matches": cli_payload == first.payload,
         "closed_trades": bot["performance"]["closed_trades"],
         "r_mean": bot["performance"]["r_multiple"]["mean"],
         "mae_mean": bot["performance"]["mae_r"]["mean"],
@@ -1445,6 +1518,14 @@ async def analyst() -> dict[str, Any]:
             "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'INSERT'), "
             "has_table_privilege('crypidian_trading_runtime', 'proposal_backtest', 'SELECT'), "
             "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'proposal_backtest'), "
+            "has_column_privilege('crypidian_admin_report_reader', 'analyst_run', "
+            "'structured_output', 'SELECT'), "
+            "has_column_privilege('crypidian_admin_report_reader', 'analyst_run', "
+            "'raw_stdout', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_report_reader', 'analyst_run', 'INSERT'), "
+            "has_column_privilege('crypidian_admin_report_reader', 'proposal_backtest', "
+            "'result', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_report_reader', 'proposal_backtest', 'INSERT'), "
             "(SELECT count(*) FROM proposal_backtest), "
             "(SELECT count(*) FROM analyst_run WHERE context IS NULL), "
             "(SELECT count(*) FROM analyst_run WHERE context->'macro_calendar' IS NOT NULL)"
@@ -1459,10 +1540,15 @@ async def analyst() -> dict[str, Any]:
         "backtest_admin_web_insert": bool(admin_web_can_select[4]),
         "backtest_runtime_select": bool(admin_web_can_select[5]),
         "backtest_forced_rls": bool(admin_web_can_select[6]),
-        "backtests": int(admin_web_can_select[7]),
+        "report_reader_structured_output_select": bool(admin_web_can_select[7]),
+        "report_reader_raw_stdout_select": bool(admin_web_can_select[8]),
+        "report_reader_analyst_insert": bool(admin_web_can_select[9]),
+        "report_reader_backtest_result_select": bool(admin_web_can_select[10]),
+        "report_reader_backtest_insert": bool(admin_web_can_select[11]),
+        "backtests": int(admin_web_can_select[12]),
         "backtest_duplicate_rejected": duplicate_rejected,
-        "context_sql_null": int(admin_web_can_select[8]),
-        "context_stored": int(admin_web_can_select[9]),
+        "context_sql_null": int(admin_web_can_select[13]),
+        "context_stored": int(admin_web_can_select[14]),
     }
 
 

@@ -437,11 +437,16 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
             "learning-shadow-observer", "assess-after-rights-revocation", state_value=state
         )
         assert rights_denial["current_rights_receipt_missing"] is True
-        assert rights_denial["eligible_cohort_rejected"] is True
-        assert rights_denial["assessment_count_unchanged"] is True
+        assert rights_denial["assessment_inconclusive_without_metrics"] is True
+        assert rights_denial["proposal_created"] is False
+        assert rights_denial["assessment_appended"] is True
         assert rights_denial["eligible_member_count"] >= 1
+        assert rights_denial["assessment_member_count"] >= 1
+        assert rights_denial["assessment_eligible_count"] == 0
         assert rights_denial["assessment_count_before"] >= 1
-        assert rights_denial["assessment_count_after"] == rights_denial["assessment_count_before"]
+        assert (
+            rights_denial["assessment_count_after"] == rights_denial["assessment_count_before"] + 1
+        )
         assert run_probe("migrator", "execution-snapshot", state_value=state) == restarted_snapshot
 
         migration_probe = subprocess.run(
@@ -465,10 +470,11 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         )
         migration_output = migration_probe.stdout + migration_probe.stderr
         assert migration_probe.returncode != 0
-        # Journey đã ghi receipt replay TRAINING (bắt buộc từ b7d9f1a3c5e8), nên guard đó nằm trên
-        # chặn trước guard bounded drift; guard bị che được kiểm tĩnh trong
-        # tests/unit/test_wp06_bounded_drift_downgrade_migration.py.
-        assert "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED" in migration_output
+        # Journey đã ghi Shadow/Drift ledger nên guard source-rights hash là blocker đầu tiên;
+        # các guard của replay receipt và proof được kiểm bằng suite migration riêng.
+        assert "WP06_DRIFT_SOURCE_RIGHTS_HASH_DOWNGRADE_POPULATED_DENIED" in migration_output, (
+            migration_output[-12_000:]
+        )
         migrate("check")
         heads = migrate("heads")
         assert heads.stdout.count("(head)") == 1, heads.stdout

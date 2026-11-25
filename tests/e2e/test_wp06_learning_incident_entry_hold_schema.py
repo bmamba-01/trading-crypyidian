@@ -28,7 +28,10 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
         environment = os.environ | {"CRYPIDIAN_APP_IMAGE": resources.image}
         image_created = ensure_image_available(root, resources.image)
 
-        def compose(*args: str, failure_marker: str | None = None):
+        def compose(
+            *args: str,
+            failure_marker: str | tuple[str, ...] | None = None,
+        ):
             result = subprocess.run(
                 [*base, *args],
                 cwd=root,
@@ -40,7 +43,10 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
             output = result.stdout + result.stderr
             if failure_marker:
                 assert result.returncode != 0, output[-7000:]
-                assert failure_marker in output, output[-7000:]
+                failure_markers = (
+                    (failure_marker,) if isinstance(failure_marker, str) else failure_marker
+                )
+                assert any(marker in output for marker in failure_markers), output[-7000:]
             else:
                 assert result.returncode == 0, output[-9000:]
             return result
@@ -52,7 +58,7 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "f4a6c8e0b2d5")
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-            assert "a3c7e9f1b5d2 (head)" in heads.stdout
+            assert "ab26dde001df (head)" in heads.stdout
             assert heads.stdout.count("(head)") == 1
             mounts = []
             for role in (
@@ -99,10 +105,13 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
                 "alembic",
                 "downgrade",
                 "f4a6c8e0b2d5",
-                failure_marker="WP06_INCIDENT_POPULATED_DOWNGRADE_DENIED",
+                failure_marker=(
+                    "WP06_INCIDENT_POPULATED_DOWNGRADE_DENIED",
+                    "WP06_DRIFT_SOURCE_RIGHTS_HASH_DOWNGRADE_POPULATED_DENIED",
+                ),
             )
             current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-            assert "a3c7e9f1b5d2 (head)" in current.stdout
+            assert "ab26dde001df (head)" in current.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
         finally:

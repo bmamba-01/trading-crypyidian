@@ -55,6 +55,89 @@ VALID_FORM = {
 }
 
 
+@pytest.mark.asyncio
+async def test_risk_appetite_breaker_reads_ledger_with_report_reader_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import trading_bot.admin.risk_appetite_service as risk_module
+
+    class SessionContext:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class Session:
+        def __init__(self) -> None:
+            self.nested_calls = 0
+
+        def begin_nested(self) -> SessionContext:
+            self.nested_calls += 1
+            return SessionContext()
+
+    class EquityRepository:
+        def __init__(self, session: object) -> None:
+            observed_sessions.append(session)
+
+        async def load_paper_equity_snapshot(self, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                known=True,
+                seed_capital=Decimal("1000"),
+                equity_amount=Decimal("987.5"),
+            )
+
+    admin_session = Session()
+    reader_session = Session()
+    observed_sessions: list[object] = []
+    observed_ledger_sessions: list[object] = []
+
+    class Provider:
+        async def _loss_windows(self, session: object, *_args: object, **_kwargs: object):
+            observed_ledger_sessions.append(session)
+            return SimpleNamespace(
+                realized_loss_today=Decimal("12.5"),
+                realized_loss_rolling=Decimal("12.5"),
+            )
+
+        async def _drawdown_breaker(self, session: object, *_args: object, **_kwargs: object):
+            observed_ledger_sessions.append(session)
+            return SimpleNamespace(
+                drawdown_fraction=Decimal("0.0125"),
+                peak_equity=Decimal("1000"),
+                current_equity=Decimal("987.5"),
+                tripped=False,
+            )
+
+    monkeypatch.setattr(risk_module, "AccountEquityRepository", EquityRepository)
+    monkeypatch.setattr(risk_module, "mark_policy_from", lambda _settings: object())
+
+    row: dict[str, Any] = {}
+    bot = SimpleNamespace(id=uuid4(), workspace_id=uuid4())
+    account = SimpleNamespace(id=uuid4())
+    settings = SimpleNamespace(
+        risk=SimpleNamespace(max_equity_age_seconds=30, max_mark_age_seconds=30)
+    )
+    await risk_module.RiskAppetiteService._breaker_status(
+        reader_session,
+        Provider(),
+        row,
+        bot,
+        account,
+        settings,
+        object(),
+        datetime.now(UTC),
+    )
+
+    assert admin_session.nested_calls == 0
+    assert reader_session.nested_calls == 1
+    assert observed_ledger_sessions == [reader_session, reader_session]
+    assert observed_sessions == [reader_session]
+    assert row["loss_today"] == "12.5"
+    assert row["loss_rolling"] == "12.5"
+    assert row["drawdown"]["fraction"] == "0.0125"
+
+
 # --- Ngưỡng drawdown cấu hình ---------------------------------------------------------------
 
 

@@ -77,6 +77,8 @@ class AppSettings(BaseSettings):
     backtest_replay_database_password_file: Path | None = None
     scorer_history_database_user: str | None = None
     scorer_history_database_password_file: Path | None = None
+    admin_report_reader_database_user: str | None = None
+    admin_report_reader_database_password_file: Path | None = None
     # Lease một writer theo bot (MB-05): TTL ≤ 300 giây (khớp trigger DB), tick supervisor
     # phải ngắn hơn TTL để kịp gia hạn trước khi hết hạn.
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
@@ -504,6 +506,24 @@ class AppSettings(BaseSettings):
                 raise ValueError("Cần đủ user và password_file cho scorer-history.")
             if self.scorer_history_database_user != "crypidian_scorer_history":
                 raise ValueError("Credential scorer-history phải dùng crypidian_scorer_history.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_admin_report_reader_identity(self) -> AppSettings:
+        """Credential report reader chỉ hợp lệ trên admin-web với role riêng đã định danh."""
+        configured = (
+            self.admin_report_reader_database_user,
+            self.admin_report_reader_database_password_file,
+        )
+        if any(value is not None for value in configured):
+            if self.process_role != "admin-web":
+                raise ValueError("Admin report-reader credential chỉ được gắn vào admin-web.")
+            if any(value is None for value in configured):
+                raise ValueError("Cần đủ user và password_file cho admin report-reader.")
+            if self.admin_report_reader_database_user != "crypidian_admin_report_reader":
+                raise ValueError(
+                    "Credential admin report-reader phải dùng crypidian_admin_report_reader."
+                )
         return self
 
     @model_validator(mode="after")

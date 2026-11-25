@@ -9,11 +9,26 @@ from sqlalchemy.dialects import postgresql
 revision: str = "0095c0fdba8f"
 down_revision: str | None = "a3c7e9f1b5d2"
 branch_labels: str | Sequence[str] | None = None
-depends_on: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = ("f0a2c4e6b8e0",)
 
 _TABLE = "worker_heartbeat"
 _WRITER = "crypidian_ingestion_worker"
 _READER = "crypidian_admin_web"
+
+
+def _resolve_admin_role() -> str:
+    has_safe: bool = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'crypidian_admin_web_safe'"
+                ")"
+            )
+        )
+        .scalar_one()
+    )
+    return "crypidian_admin_web_safe" if has_safe else _READER
 
 
 def upgrade() -> None:
@@ -56,12 +71,12 @@ def upgrade() -> None:
         f'CREATE POLICY workspace_isolation ON "{_TABLE}" USING ({policy}) WITH CHECK ({policy})'
     )
     op.execute(f"GRANT SELECT, INSERT, UPDATE ON TABLE {_TABLE} TO {_WRITER}")
-    op.execute(f"GRANT SELECT ON TABLE {_TABLE} TO {_READER}")
+    op.execute(f"GRANT SELECT ON TABLE {_TABLE} TO {_resolve_admin_role()}")
 
 
 def downgrade() -> None:
     op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_WRITER}")
-    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_READER}")
+    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_resolve_admin_role()}")
     op.execute(f'DROP POLICY workspace_isolation ON "{_TABLE}"')
     op.drop_index("ix_worker_heartbeat_latest", table_name=_TABLE)
     op.drop_table(_TABLE)

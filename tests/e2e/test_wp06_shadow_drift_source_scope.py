@@ -47,7 +47,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "a3c7e9f1b5d2 (head)" in heads.stdout
+            assert "ab26dde001df (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / ("database_admin_web_password")
             )
@@ -76,6 +76,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
             outcome = json.loads(probe.stdout.strip().splitlines()[-1])
             assert outcome == {
                 "app_role_cannot_execute_scope_gates": True,
+                "caller_clock_internal_gate_is_private": True,
                 "drift_qa_source_denied": True,
                 "missing_assessment_recheck_false": True,
                 "missing_decision_denied": True,
@@ -86,13 +87,20 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
                 "nonempty_qa_assessment_has_no_performance_result": True,
                 "nonempty_qa_assessment_retry_is_idempotent": True,
                 "nonempty_qa_member_is_ineligible_without_fingerprint": True,
+                "mixed_lineage_cohort_keeps_all_members_inconclusive": True,
                 "observer_can_execute_shadow_source_gate": True,
                 "observer_drift_qa_source_denied": True,
                 "observer_qa_source_is_explicit": True,
                 "observer_shadow_qa_source_denied": True,
+                "past_caller_clock_cannot_bypass_qa_denial": True,
                 "qa_source_is_explicit": True,
                 "shadow_guard_can_execute_current_scope_and_digest": True,
                 "shadow_qa_source_denied": True,
+                "shadow_application_persists_qa_abstain_metadata": True,
+                "shadow_application_retry_is_idempotent": True,
+                "shadow_application_exact_qa_source_is_denied": True,
+                "shadow_application_leaves_decision_order_and_score_ledgers_unchanged": True,
+                "future_caller_clock_cannot_bypass_qa_denial": True,
             }
         finally:
             compose("down", "--volumes", "--remove-orphans")

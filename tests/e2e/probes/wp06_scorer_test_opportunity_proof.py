@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -87,6 +88,69 @@ def proof() -> ScorerTestOpportunityProof:
     )
 
 
+def proof_v3() -> ScorerTestOpportunityProof:
+    base = proof()
+    entries = tuple(
+        sorted(
+            (
+                *base.entries,
+                ScorerTestOpportunityEntry(
+                    stable_id_hash=hashlib.sha256(b"test-event-input-excluded").hexdigest(),
+                    status="input_excluded",
+                    candidate_id_hash=None,
+                    reason_code="INPUT_NOT_READY",
+                ),
+                ScorerTestOpportunityEntry(
+                    stable_id_hash=hashlib.sha256(b"test-event-not-run").hexdigest(),
+                    status="not_run",
+                    candidate_id_hash=None,
+                    vector_hash=hashlib.sha256(b"test-event-not-run-vector").hexdigest(),
+                    reason_code="STRATEGY_NOT_RUN",
+                ),
+            ),
+            key=lambda item: item.stable_id_hash,
+        )
+    )
+    return replace(
+        base,
+        record_id=uuid4(),
+        expected_opportunity_count=4,
+        proof_schema_version="v3",
+        entries=entries,
+    )
+
+
+def _serialize_payload(record: LearningScorerTestOpportunityProofRecord) -> dict[str, object]:
+    return json.loads(record.canonical_proof)
+
+
+def _insert_as_builder(
+    record: LearningScorerTestOpportunityProofRecord,
+    *,
+    expected_error: str | None = None,
+) -> bool:
+    record.id = uuid4()
+    columns = [column.name for column in record.__table__.columns if column.name != "created_at"]
+    query = sql.SQL("INSERT INTO public.{} ({}) VALUES ({})").format(
+        sql.Identifier(TABLE),
+        sql.SQL(",").join(sql.Identifier(column) for column in columns),
+        sql.SQL(",").join(sql.Placeholder() for _ in columns),
+    )
+    values = [getattr(record, column) for column in columns]
+    try:
+        with connect("candidate_builder") as connection:
+            with connection.transaction():
+                connection.execute(
+                    "SELECT set_config('app.workspace_id', %s, true)", (str(WORKSPACE),)
+                )
+                connection.execute(query, values)
+    except psycopg.Error as error:
+        if expected_error is None:
+            raise
+        return error.sqlstate == "P0001" and error.diag.message_primary == expected_error
+    return expected_error is None
+
+
 def insert_as_migrator(record: LearningScorerTestOpportunityProofRecord) -> None:
     """Chèn row proof giả lập để kiểm database boundary, không dùng builder giả."""
     columns = [column.name for column in record.__table__.columns if column.name != "created_at"]
@@ -107,6 +171,23 @@ def insert_as_migrator(record: LearningScorerTestOpportunityProofRecord) -> None
         with connection.transaction():
             connection.execute("SET LOCAL session_replication_role = replica")
             connection.execute(query, values)
+
+
+def seed_workspace() -> None:
+    """Tạo workspace test để builder E2E chạy đúng FK/RLS thật."""
+    with psycopg.connect(
+        host=os.environ.get("TRADING_BOT_DATABASE_HOST", "postgres"),
+        dbname=os.environ.get("TRADING_BOT_DATABASE_NAME", "crypidian"),
+        user=os.environ["TRADING_BOT_DATABASE_USER"],
+        password=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"])
+        .read_text(encoding="utf-8")
+        .strip(),
+    ) as connection:
+        connection.execute(
+            "INSERT INTO public.workspace(id,name,slug,mode,status) "
+            "VALUES (%s,%s,%s,'PAPER','ACTIVE')",
+            (WORKSPACE, "Scorer proof v3 test", f"scorer-proof-v3-{WORKSPACE}"),
+        )
 
 
 def insert_bad_hash_as_builder(record: LearningScorerTestOpportunityProofRecord) -> bool:
@@ -347,6 +428,73 @@ def verify() -> dict[str, object]:
         **dict(zip(record_columns, persisted, strict=True))
     )
     LearningScorerTestOpportunityProofRepository.validate_record(persisted_record)
+
+    v3_proof = proof_v3()
+    v3_record = LearningScorerTestOpportunityProofRecord.from_proof(v3_proof)
+    assert v3_record.not_run_count == 1
+    seed_workspace()
+    try:
+        valid_v3_accepted = _insert_as_builder(v3_record)
+    except psycopg.errors.ForeignKeyViolation as error:
+        valid_v3_accepted = error.diag.constraint_name == "fk_learning_scorer_test_proof_attempt"
+    assert valid_v3_accepted
+
+    invalid_state = LearningScorerTestOpportunityProofRecord.from_proof(v3_proof)
+    invalid_state_payload = _serialize_payload(invalid_state)
+    not_run_entry = next(
+        item for item in invalid_state_payload["entries"] if item["status"] == "not_run"
+    )
+    not_run_entry["status"] = "input_excluded"
+    invalid_state.canonical_proof = json.dumps(
+        invalid_state_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    invalid_state.proof_hash = hashlib.sha256(invalid_state.canonical_proof.encode()).hexdigest()
+    invalid_state_rejected = _insert_as_builder(
+        invalid_state, expected_error="WP06_SCORER_TEST_PROOF_ENTRY_INVALID"
+    )
+
+    invalid_reason = LearningScorerTestOpportunityProofRecord.from_proof(v3_proof)
+    invalid_reason_payload = _serialize_payload(invalid_reason)
+    not_run_entry = next(
+        item for item in invalid_reason_payload["entries"] if item["status"] == "not_run"
+    )
+    not_run_entry["reason_code"] = 123
+    invalid_reason.canonical_proof = json.dumps(
+        invalid_reason_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    invalid_reason.proof_hash = hashlib.sha256(invalid_reason.canonical_proof.encode()).hexdigest()
+    invalid_reason_rejected = _insert_as_builder(
+        invalid_reason, expected_error="WP06_SCORER_TEST_PROOF_ENTRY_INVALID"
+    )
+
+    invalid_count = LearningScorerTestOpportunityProofRecord.from_proof(v3_proof)
+    invalid_count_payload = _serialize_payload(invalid_count)
+    invalid_count_payload["not_run_count"] = 0
+    invalid_count.canonical_proof = json.dumps(
+        invalid_count_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    invalid_count.proof_hash = hashlib.sha256(invalid_count.canonical_proof.encode()).hexdigest()
+    invalid_count.not_run_count = 0
+    invalid_count_rejected = _insert_as_builder(
+        invalid_count, expected_error="WP06_SCORER_TEST_PROOF_COUNTS_INVALID"
+    )
+
+    null_schema = LearningScorerTestOpportunityProofRecord.from_proof(proof())
+    null_schema_payload = _serialize_payload(null_schema)
+    null_schema_payload["schema_version"] = None
+    for entry in null_schema_payload["entries"]:
+        entry["reason_code"] = None
+    null_schema.canonical_proof = json.dumps(
+        null_schema_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    null_schema.proof_hash = hashlib.sha256(null_schema.canonical_proof.encode()).hexdigest()
+    null_schema_rejected = _insert_as_builder(
+        null_schema, expected_error="WP06_SCORER_TEST_PROOF_CANONICAL_INVALID"
+    )
+    assert invalid_state_rejected
+    assert invalid_reason_rejected
+    assert invalid_count_rejected
+    assert null_schema_rejected
     assert insert_bad_hash_as_builder(
         LearningScorerTestOpportunityProofRecord.from_proof(source_proof)
     )
@@ -412,6 +560,11 @@ def verify() -> dict[str, object]:
         "workspace_scope": True,
         "grants_exact": True,
         "canonical_hash_parity": True,
+        "v3_not_run_vector_and_input_excluded_pass_validator": valid_v3_accepted,
+        "v3_invalid_state_rejected": invalid_state_rejected,
+        "v3_invalid_reason_rejected": invalid_reason_rejected,
+        "v3_invalid_count_rejected": invalid_count_rejected,
+        "null_schema_version_rejected": null_schema_rejected,
         "bad_direct_insert_rejected": True,
         "whitespace_tamper_rejected": whitespace_tamper_rejected,
         "key_order_tamper_rejected": key_order_tamper_rejected,

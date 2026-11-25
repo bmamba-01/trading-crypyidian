@@ -75,120 +75,24 @@ def source_manifest() -> DatasetManifest:
     )
 
 
-class RightsRepository:
-    def __init__(self, *, invalidated: bool = False, pending: bool = False) -> None:
-        self.invalidated = invalidated
-        self.pending = pending
-
-    async def find_invalidation(self, **_: object) -> str | None:
-        return "source_takedown" if self.invalidated else None
-
-    async def has_unprocessed_rights_event(self, **_: object) -> bool:
-        return self.pending
-
-
-class SourceAccessReader:
-    def __init__(self, envelope: object | None = None, error: Exception | None = None) -> None:
-        self.envelope = envelope or SimpleNamespace(
-            decision=SimpleNamespace(permitted=True, reason="allowed"),
-            revision=SimpleNamespace(revision=SimpleNamespace(revision_id="revision-1")),
-            historical_policy_id="policy-1",
-            historical_policy_sequence=3,
-            current_policy_id="policy-1",
-            current_policy_sequence=3,
-            rights_hash=RIGHTS_HASH,
-            evaluated_at=NOW,
-        )
-        self.error = error
-
-    async def select_access_envelope(self, **_: object) -> object:
-        if self.error:
-            raise self.error
-        return self.envelope
-
-
 @pytest.mark.asyncio
-async def test_pending_rights_event_blocks_source_dependent_manifest_before_access_read() -> None:
-    source = SourceAccessReader()
-    gate = DatasetSourceEligibilityGate(RightsRepository(pending=True), source)
+async def test_source_item_manifest_without_exact_source_use_lineage_is_denied() -> None:
+    gate = DatasetSourceEligibilityGate()
 
-    with pytest.raises(DatasetSourceEligibilityDenied, match="rights_event_unprocessed"):
+    with pytest.raises(
+        DatasetSourceEligibilityDenied,
+        match="source_use_lineage_missing",
+    ):
         await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
 
-
-@pytest.mark.asyncio
-async def test_persisted_invalidation_blocks_source_dependent_manifest() -> None:
-    gate = DatasetSourceEligibilityGate(RightsRepository(invalidated=True), SourceAccessReader())
-
-    with pytest.raises(DatasetSourceEligibilityDenied, match="source_takedown"):
-        await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
-
-
-@pytest.mark.asyncio
-async def test_live_rights_hash_change_blocks_manifest_even_without_invalidation_event() -> None:
-    changed_envelope = SimpleNamespace(
-        decision=SimpleNamespace(permitted=True, reason="allowed"),
-        revision=SimpleNamespace(revision=SimpleNamespace(revision_id="revision-1")),
-        historical_policy_id="policy-1",
-        historical_policy_sequence=3,
-        current_policy_id="policy-2",
-        current_policy_sequence=4,
-        rights_hash="f" * 64,
-    )
-    gate = DatasetSourceEligibilityGate(
-        RightsRepository(), SourceAccessReader(envelope=changed_envelope)
-    )
-
-    with pytest.raises(DatasetSourceEligibilityDenied, match="live_rights_mismatch"):
-        await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
-
-
-@pytest.mark.asyncio
-async def test_exact_current_lineage_allows_source_dependent_manifest() -> None:
-    gate = DatasetSourceEligibilityGate(RightsRepository(), SourceAccessReader())
-
-    evidence = await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
-
-    assert len(evidence) == 1
-    assert evidence[0].workspace_id == WORKSPACE_ID
-    assert evidence[0].manifest_hash == source_manifest().content_hash
-    assert evidence[0].sample_id == "sample-1"
-    assert evidence[0].reference == REFERENCE
-    assert evidence[0].checked_at == NOW
-    assert evidence[0].canonical_json == (
-        '{"checked_at":"2026-11-03T00:00:00+00:00",'
-        f'"manifest_hash":"{source_manifest().content_hash}",'
-        '"reference":{"item_id":"item-1","policy_id":"policy-1",'
-        '"policy_sequence":3,"purpose":"training","revision_id":"revision-1",'
-        f'"rights_hash":"{RIGHTS_HASH}","source_id":"source-1"}},'
-        '"sample_id":"sample-1",'
-        f'"workspace_id":"{WORKSPACE_ID}"}}'
-    )
-
-
-@pytest.mark.asyncio
-async def test_missing_database_checked_at_fails_closed() -> None:
-    source = SourceAccessReader()
-    del source.envelope.evaluated_at
-    gate = DatasetSourceEligibilityGate(RightsRepository(), source)
-
-    with pytest.raises(DatasetSourceEligibilityDenied, match="live_access_unavailable"):
-        await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
-
-
-@pytest.mark.asyncio
-async def test_access_lookup_exception_fails_closed() -> None:
-    gate = DatasetSourceEligibilityGate(
-        RightsRepository(), SourceAccessReader(error=RuntimeError("database unavailable"))
-    )
-
-    with pytest.raises(DatasetSourceEligibilityDenied, match="live_access_unavailable"):
-        await gate.assert_eligible(workspace_id=WORKSPACE_ID, manifest=source_manifest())
+    sample = source_manifest().samples[0]
+    assert sample.source_use_lineage == ()
+    assert sample.source_replay_bundle_hash is None
 
 
 @pytest.mark.asyncio
 async def test_source_free_manifest_returns_no_source_rights_evidence() -> None:
-    gate = DatasetSourceEligibilityGate(RightsRepository(), SourceAccessReader())
+    gate = DatasetSourceEligibilityGate()
     manifest = source_manifest()
     sample = manifest.samples[0]
     source_free_sample = DatasetSample(

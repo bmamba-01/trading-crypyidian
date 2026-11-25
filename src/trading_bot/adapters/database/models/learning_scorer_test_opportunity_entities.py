@@ -87,16 +87,21 @@ class LearningScorerTestOpportunityProofRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint(
             "expected_opportunity_count > 0 AND candidate_count >= 0 "
             "AND no_candidate_count >= 0 AND input_excluded_count >= 0 "
+            "AND (not_run_count IS NULL OR not_run_count >= 0) "
             "AND source_gap_count >= 0 AND membership_mismatch_count >= 0 "
             "AND unlabeled_candidate_count >= 0 "
-            "AND candidate_count + no_candidate_count + input_excluded_count "
-            "+ membership_mismatch_count = expected_opportunity_count "
+            "AND ((not_run_count IS NULL AND candidate_count + no_candidate_count "
+            "+ input_excluded_count + membership_mismatch_count = expected_opportunity_count) "
+            "OR (not_run_count IS NOT NULL AND candidate_count + no_candidate_count "
+            "+ input_excluded_count + not_run_count + membership_mismatch_count "
+            "= expected_opportunity_count)) "
             "AND unlabeled_candidate_count <= candidate_count",
             name="learning_scorer_test_proof_counts_valid",
         ),
         CheckConstraint(
             "completeness_verified = (input_excluded_count = 0 AND source_gap_count = 0 "
-            "AND membership_mismatch_count = 0 AND unlabeled_candidate_count = 0 "
+            "AND coalesce(not_run_count, 0) = 0 AND membership_mismatch_count = 0 "
+            "AND unlabeled_candidate_count = 0 "
             "AND candidate_count + no_candidate_count = expected_opportunity_count)",
             name="learning_scorer_test_proof_completeness_valid",
         ),
@@ -124,6 +129,7 @@ class LearningScorerTestOpportunityProofRecord(UuidPrimaryKey, CreatedAt, Base):
     candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
     no_candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
     input_excluded_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    not_run_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_gap_count: Mapped[int] = mapped_column(Integer, nullable=False)
     membership_mismatch_count: Mapped[int] = mapped_column(Integer, nullable=False)
     unlabeled_candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -162,6 +168,7 @@ class LearningScorerTestOpportunityProofRecord(UuidPrimaryKey, CreatedAt, Base):
             candidate_count=proof.candidate_count,
             no_candidate_count=proof.no_candidate_count,
             input_excluded_count=proof.input_excluded_count,
+            not_run_count=proof.not_run_count if proof.proof_schema_version == "v3" else None,
             source_gap_count=proof.source_gap_count,
             membership_mismatch_count=proof.membership_mismatch_count,
             unlabeled_candidate_count=proof.unlabeled_candidate_count,

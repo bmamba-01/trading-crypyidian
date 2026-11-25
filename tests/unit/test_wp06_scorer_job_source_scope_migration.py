@@ -105,3 +105,28 @@ def test_rights_reader_grants_and_downgrade_are_column_scoped() -> None:
     assert "REVOKE SELECT ON public.source_policy_revision" not in sql
     assert "DROP FUNCTION public.wp06_preflight_scorer_job_source_rights(uuid,uuid)" in sql
     assert "DROP FUNCTION public.wp06_check_scorer_job_source_scope(uuid,uuid,boolean)" in sql
+
+
+def test_scorer_source_scope_sql_checks_every_license_use_dimension() -> None:
+    """Giữ regression guard cho từng chiều rights mà gate runtime tự dựng."""
+    sql = MIGRATION.read_text(encoding="utf-8")
+    scope_start = sql.index("IF policy_row.license_scope->>'source_id'")
+    scope_end = sql.index("current_scope := pg_catalog.jsonb_build_object(", scope_start)
+    scope_contract = sql[scope_start:scope_end]
+
+    for predicate in (
+        "policy_row.license_scope->>'source_id' IS DISTINCT FROM group_row.source_id",
+        "policy_row.license_scope->>'provider' IS DISTINCT FROM policy_row.provider",
+        "policy_row.license_scope->>'product' IS DISTINCT FROM policy_row.product",
+        "policy_row.license_scope->>'venue' IS DISTINCT FROM policy_row.venue",
+        "policy_row.license_scope->>'contract' IS DISTINCT FROM policy_row.contract",
+        "policy_row.license_scope->'symbols'",
+        "policy_row.license_scope->'intervals'",
+        "policy_row.license_scope->>'data_start'",
+        "policy_row.license_scope->>'data_end'",
+        "policy_row.license_scope->'allowed_purposes'",
+        "policy_row.license_scope->'allowed_outputs'",
+        "policy_row.license_scope->'derived_use'",
+        "policy_row.license_scope->'max_retention_days' <> 'null'::jsonb",
+    ):
+        assert predicate in scope_contract

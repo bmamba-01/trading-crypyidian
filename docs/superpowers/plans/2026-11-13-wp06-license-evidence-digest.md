@@ -46,9 +46,9 @@
 
 - [ ] **Step 1: Viết test RED** cho normalization, duplicate rejection, token/symbol/timeframe validation, `[start,end)` boundary, purpose/output/derived-use subset, max retention và canonical SHA-256.
 - [ ] **Step 2: Chạy test** `PYTHONPATH=. uv run pytest tests/unit/test_source_license_scope.py -q`; xác nhận fail vì symbols chưa tồn tại.
-- [ ] **Step 3: Implement value object** từ chối member trùng rồi sort tập hợp, timestamp UTC cố định, no wildcard và canonical contract v1.
-- [ ] **Step 4: Chạy test GREEN** cùng Ruff/mypy mục tiêu; chỉ sửa behavior trong phạm vi test.
-- [ ] **Step 5: Thêm glossary EN→VI** cho license evidence digest, typed rights scope và source-use coverage, dẫn nguồn FastAPI/reference phù hợp.
+- [x] **Step 3: Implement value object** từ chối member trùng rồi sort tập hợp, timestamp UTC cố định, no wildcard và canonical contract v1.
+- [x] **Step 4: Chạy test GREEN** cùng Ruff/mypy mục tiêu; chỉ sửa behavior trong phạm vi test.
+- [x] **Step 5: Thêm glossary EN→VI** cho license evidence digest, typed rights scope và source-use coverage, dẫn nguồn FastAPI/reference phù hợp.
 
 ### Task 2: Evidence ledger, source policy revision và migration
 
@@ -66,11 +66,11 @@
 - `SourceLicenseEvidenceRecord` contains only digest/scope/reference/provenance metadata.
 - `source_rights_hash()` conditionally includes evidence identity/digest/scope hash, preserving old fingerprints for legacy revisions.
 
-- [ ] **Step 1: Viết unit/migration tests RED** cho verified revision thiếu evidence, scope/evidence mismatch, immutable evidence, legacy-null round-trip, fingerprint binding/parity contract, workspace FK, append-only and RLS/grants.
-- [ ] **Step 2: Chạy các tests mục tiêu** và xác nhận thiếu model/migration behavior.
-- [ ] **Step 3: Thêm model và migration nối từ Alembic head `f6b8d0e2a4c7`**; evidence FK ghép workspace/source, canonical text/JSONB consistency, DB SHA-256 check, verified revision trigger và downgrade populated guard.
-- [ ] **Step 4: Map ORM/repository/domain**; verified legacy database rows đọc được nhưng eligibility yêu cầu evidence id/digest/scope hash hợp lệ.
-- [ ] **Step 5: Chạy tests GREEN**, `uv run alembic heads`, migration schema unit, Ruff/mypy mục tiêu; mở rộng và chạy `tests/e2e/test_wp05_source_registry.py` để kiểm tra ledger, RLS, append-only và role grants trên PostgreSQL Compose.
+- [x] **Step 1: Viết unit/migration tests RED** cho verified revision thiếu evidence, scope/evidence mismatch, immutable evidence, legacy-null round-trip, fingerprint binding/parity contract, workspace FK, append-only and RLS/grants.
+- [x] **Step 2: Chạy các tests mục tiêu** và xác nhận thiếu model/migration behavior.
+- [x] **Step 3: Thêm model và migration nối từ Alembic head `f6b8d0e2a4c7`**; evidence FK ghép workspace/source, canonical text/JSONB consistency, DB SHA-256 check, verified revision trigger và downgrade populated guard.
+- [x] **Step 4: Map ORM/repository/domain**; verified legacy database rows đọc được nhưng eligibility yêu cầu evidence id/digest/scope hash hợp lệ.
+- [x] **Step 5: Chạy tests GREEN**, `uv run alembic heads`, migration schema unit, Ruff/mypy mục tiêu; mở rộng và chạy `tests/e2e/test_wp05_source_registry.py` để kiểm tra ledger, RLS, append-only và role grants trên PostgreSQL Compose.
 
 ### Task 3: Pending policy và upload raw stream
 
@@ -88,10 +88,14 @@
 - `POST /api/v1/research-sources/{source_id}/revisions/{policy_id}/license-evidence` reads raw body using `Request.stream()` and returns metadata-only evidence response.
 - Upload limit is 10 MiB; allowlist and idempotency are exactly as defined in spec.
 
-- [ ] **Step 1: Viết tests RED** cho in-limit chunk stream, over-limit/chunked body, bad `Content-Length`, empty body, unsupported media type, disconnect, source/policy/MFA/CSRF, idempotent retry and changed digest.
-- [ ] **Step 2: Chạy tests mục tiêu** và xác nhận endpoint/append operation chưa tồn tại.
-- [ ] **Step 3: Implement stream hashing** incremental, không giữ bytes hoặc filename; tạo evidence row sau khi stream hoàn tất trong transaction và trả response no-store.
-- [ ] **Step 4: Chạy tests GREEN** cho API/service/repository, test workspace scope và transaction rollback.
+- [x] **Step 1: Viết tests RED** cho in-limit chunk stream, over-limit/chunked body, bad `Content-Length`, empty body, unsupported media type, disconnect, source/policy/MFA/CSRF, idempotent retry and changed digest.
+- [x] **Step 2: Chạy tests mục tiêu** và xác nhận endpoint/append operation chưa tồn tại.
+- [x] **Step 3: Implement stream hashing** incremental, không giữ bytes hoặc filename; tạo evidence row sau khi stream hoàn tất trong transaction và trả response no-store.
+- [x] **Step 4: Chạy tests GREEN** cho API/service/repository, workspace scope và rollback: `uv run pytest -q -rs --tb=short tests/unit/test_source_policy_admin.py tests/unit/test_research_source_admin_api.py tests/unit/test_source_policy.py tests/unit/test_sec29_30_http_limits.py` → **87 passed/5.95s/0 skipped**; proxy Compose dưới đây xác nhận evidence count chỉ tăng đúng một sau upload, over-limit không thêm row.
+
+**Trạng thái E2E 21/11/2026:** lượt đầu chưa xác minh vì Docker API không trả container inventory; lịch sử lỗi này giữ nguyên trong memory/WBS.
+
+**Rerun 24/11/2026:** `uv run pytest -q -rs --tb=short tests/e2e/test_wp06_license_evidence_upload_proxy.py` → **1 passed/68.86s/0 skipped**. Qua Caddy HTTPS: upload 1 MiB+1 trả 201 với SHA-256/byte-count đúng, body không bị trả lại và Cache-Control là `no-store`; upload trên 10 MiB và POST route thường trên trần 1 MiB đều trả 413 + `no-store`; DB chỉ có đúng một evidence row metadata. Compose project/network/volume đã cleanup, token fixture test-only bị xóa.
 
 ### Task 4: TRAINING manifest và normalized-data exact scope
 
@@ -117,11 +121,15 @@
 - Training output/derived-use and aggregate-evaluation output/derived-use are explicit server-side operations. Indefinite current retention is `None`, so a finite license is denied.
 - The stored source training receipt remains immutable and matches a successful exact use-scope check under the existing source lock order.
 
+**Cập nhật contract 23/11/2026:** source-dependent `dataset-manifest-v3` hiện bị từ chối bằng `source_use_lineage_missing` trước khi dựng payload vì producer chưa phát exact `SourceUseScope` lineage. Đường replay bundle v5 vẫn dùng `DatabaseReplayTrainingRightsGate` và receipt theo từng bundle child. E2E normalized-sample trên head d3 chỉ chứng minh v3 fail-closed/no-write; positive TRAINING receipt QA hiện có không được diễn giải là quyền non-QA hoặc positive v3. Không đánh dấu source-dependent v3 eligible cho đến khi có producer lineage và E2E tương ứng.
+
 - [ ] **Step 1: Viết tests RED** for producer preservation of outcome bundle hashes, authoritative per-sample source-use lineage, valid exact coverage, every identity/dimension/purpose/output/derived-use/retention denial, legacy or missing lineage, forged/cross-workspace MarketBar UUID, event backlog/revocation, proof→revoke/contract-scope-change→trainer claim denial before payload/receipt, and retry receipt mismatch.
 - [ ] **Step 2: Chạy scoped unit và Compose** để chứng minh gate hiện chưa đối chiếu license scope với persisted snapshot/bar inputs.
-- [ ] **Step 3: Implement typed envelope/use-scope derivation** from verifier-produced manifest lineage, replay candidate `bundle_hash` and exact persisted MarketBar rows; preserve READ COMMITTED and source lock order; use operation-specific purpose/output/derived-use.
-- [ ] **Step 4: Persist append-only `learning_replay_training_receipt` per bundle child, normalized dataset/access run and exact scope hash. Add chained SECURITY DEFINER/helper migration replacing `wp06_assert_training_source_rights` and `wp06_claim_learning_training_batch` so current scope is rechecked at normalization and every training claim before payload/receipt; preserve grants, RLS, locks, receipt immutability and legacy denial. No direct evidence-table grant.
-- [ ] **Step 5: Run focused unit + fresh Compose scope, normalization and rights-invalidation E2E**, including allowed exact fixture and every mismatch/no-write case; no skips.
+- [x] **Step 3: Implement typed envelope/use-scope derivation** from verifier-produced manifest lineage, replay candidate `bundle_hash` and exact persisted MarketBar rows; preserve READ COMMITTED and source lock order; use operation-specific purpose/output/derived-use.
+- [x] **Step 4: Persist append-only `learning_replay_training_receipt` per bundle child, normalized dataset/access run and exact scope hash. Add chained SECURITY DEFINER/helper migration replacing `wp06_assert_training_source_rights` and `wp06_claim_learning_training_batch` so current scope is rechecked at normalization and every training claim before payload/receipt; preserve grants, RLS, locks, receipt immutability and legacy denial. No direct evidence-table grant.
+- [x] **Step 5: Run focused unit + fresh Compose scope, normalization and rights-invalidation E2E**, including allowed exact fixture and every mismatch/no-write case; no skips.
+
+**Đối soát Step 5 ngày 24/11/2026:** source-scope/normalization/replay-rights regression trên Alembic head `f0a2c4e6b8d3` đã đạt trong Compose: `tests/e2e/test_wp06_source_license_scope.py` (**1 passed/131.05s/0 skipped**), `tests/e2e/test_wp06_normalized_fold_samples.py` và `tests/e2e/test_wp06_replay_rights_races.py` (scope matrix tám chiều, exact fixture, hai thứ tự khóa; **1 passed/167.04s/0 skipped**). `tests/e2e/test_wp05_source_registry.py` (**1 passed/58.78s/0 skipped**) kiểm năm chiều identity và tính bất biến. Rights-invalidation Compose chạy lại ở lượt này đạt **1 passed/42.09s/0 skipped**. Unit tập trung cho eligibility, fold/normalization, split, batch access, source revision, replay repository và migration đạt **67 passed/1.19s/0 skipped**; `uv run alembic heads` trả sole head `f0a2c4e6b8d3`. Các fixture PostgreSQL là QA tổng hợp. Manifest source-dependent v3 tiếp tục bị từ chối fail-closed; đường source-backed v5 là đường dương tính đã kiểm. Kết quả này chỉ đóng lượt test Task 4, không cấp entitlement non-QA hoặc thay scope/race E2E riêng của PAPER scorer, performance, Shadow và Drift.
 
 ### Task 5: Replay, scorer TEST và deployment source scope
 
@@ -148,7 +156,7 @@
 - Only metadata/fingerprint/eligibility crosses the deployment rights gateway; no raw score, probability array or trade rows.
 
 - [ ] **Step 1: RED tests** for exact backfill/replay-vs-training-vs-TEST operation scopes, deny-before-fetch/write/run, reauthorization after scope/policy change, every child warmup interval, mixed interval/source/revision, missing lineage, policy purpose mismatch, revoked evidence, SQL evaluation output mapping and unchanged proof/receipt/deployment pointer/event on denial.
-- [ ] **Step 2: Implement current-rights SQL/repository recheck** using the canonical evidence-aware fingerprint/scope helper and narrowly granted function execution.
+- [x] **Step 2: Implement current-rights SQL/repository recheck** using the canonical evidence-aware fingerprint/scope helper and narrowly granted function execution.
 - [ ] **Step 3: Run unit and fresh Compose proof/deployment/replay E2E**, including scope changes between report and activation; no skips.
 
 ### Task 6: Candidate-bound PAPER runtime, SHADOW and DRIFT scope
@@ -172,7 +180,7 @@
 - PAPER operation maps to `paper_demo` / `paper_inference`; drift report maps to `paper_demo` / `aggregate_report`; both require indefinite retention under the current product lifecycle.
 
 - [ ] **Step 1: RED tests** for persisted source-bar identity/revision/checksum and exact candidate coverage, policy change between preflight and atomic commit, wrong symbol/timeframe/range/source denial before score commit, no decision/event/pointer mutation, missing decision-lineage denial, positive baseline and scorer-backed Shadow observation, per-decision shadow denial, cohort member mismatch to INCONCLUSIVE, and QA/legacy evidence denial.
-- [ ] **Step 2: Implement candidate-bound DB gateway and exact lineage reconstruction**; repeat rights check atomically before score/shadow/drift persistence, retain source lock order and no raw evidence grants.
+- [x] **Step 2: Implement candidate-bound DB gateway and exact lineage reconstruction**; repeat rights check atomically before score/shadow/drift persistence, retain source lock order and no raw evidence grants.
 - [ ] **Step 3: Run unit plus fresh Compose runtime, PAPER gateway, shadow/drift and integrated Task9 E2E**, assert 0 skips and unchanged state for denied cases.
 
 ### Task 7: Admin upload/review UI và Playwright
@@ -189,10 +197,20 @@
 - After reload, a workspace-authorized metadata-only facade reads `evidence_for_pending()` and shows digest/scope; UI never reads evidence ledger/raw row. Reviewer may select an immutable prior `license_evidence_id` only through the existing approval contract.
 - Full Vietnamese labels; digest copy; no file bytes, name, or external reference leakage beyond authorized workspace.
 
-- [ ] **Step 1: Viết Playwright assertions RED** for Vietnamese scope form, metadata-only digest after reload, file upload/CSRF/idempotency, separate reviewer approval, desktop/mobile no overflow and pending-vs-verified lifecycle.
-- [ ] **Step 2: Chạy Playwright** và xác nhận missing controls.
-- [ ] **Step 3: Implement responsive form and scoped metadata-only pending evidence facade** with raw file body, digest recovery after reload, and reviewer evidence-ID selection.
-- [ ] **Step 4: Chạy desktop 1280×800/mobile 390×844 Playwright**, inspect both screenshots, assert no horizontal overflow and 0 skipped cases.
+- [x] **Step 1: Viết Playwright assertions RED** for Vietnamese scope form, metadata-only digest after reload, file upload/CSRF/idempotency, separate reviewer approval, desktop/mobile no overflow and pending-vs-verified lifecycle.
+- [x] **Step 2: Chạy Playwright** và xác nhận missing controls.
+- [x] **Step 3: Implement responsive form and scoped metadata-only pending evidence facade** with raw file body, digest recovery after reload, and reviewer evidence-ID selection.
+- [x] **Step 4: Chạy desktop 1280×800/mobile 390×844 Playwright**, inspect both screenshots, assert no horizontal overflow and 0 skipped cases.
+
+**Xác minh lại giao diện 21/11/2026:** CSS giữ ô nhập/nút/công tắc ở 44px trên trang nguồn dù quy tắc mật độ Admin đặt 40px desktop; file picker được Việt hóa và test qua thao tác chọn tệp thật của trình duyệt. Đã sửa bài Playwright để chờ lần reload do giao diện gọi sau upload, không phát reload thứ hai khi trang đang điều hướng. `uv run pytest -q -rs --tb=short tests/e2e/test_admin_research_sources_playwright.py tests/e2e/test_research_source_admin_ui.py` → **6 passed/31.15s/0 skipped**; ảnh desktop/mobile được tạo lại và xem. Hành trình này dùng mock UI và không xác nhận giới hạn body xuyên middleware/proxy.
+
+**Cập nhật tích hợp 21/11/2026:** lượt UI sau khi dịch nhãn nguồn/model card `uv run pytest -q -rs --tb=short tests/e2e/test_admin_research_sources_playwright.py tests/e2e/test_research_source_admin_ui.py tests/e2e/test_learning_scorer_model_card_ui.py` → **7 passed/20.47s/0 skipped**, screenshot desktop/mobile đã xem; giao diện dùng mock/facade, không xác nhận giới hạn body xuyên proxy. `tests/e2e/test_wp06_source_license_scope.py` xác nhận positive TRAINING receipt theo exact attempt/scope và revoke-before-claim no-payload/no-receipt → **1 passed/107.51s/0 skipped** trên fixture QA. Route upload evidence có cap 10 MiB riêng qua middleware/Caddy/Nginx, route khác 1 MiB, HTTP limit unit **39 passed** và Compose config với secret Telegram giả đạt. Compose proxy E2E chưa xác minh: lần đầu app dừng do thiếu token Telegram trong test stack; đã thêm override secret giả, nhưng Docker API treo khi kiểm tra container nên chưa rerun. Giữ integrated verification mở.
+
+**Rerun E2E proxy 21/11/2026:** overlay test được chuyển sang fixture cố định `web_ingress=198.18.254.0/24`, và `TRADING_BOT_TRUSTED_PROXY_IPS` khớp đúng subnet; Compose-config contract cùng `tests/unit/test_sec29_30_http_limits.py` → **39 passed**. `uv run pytest -q -rs --tb=short tests/e2e/test_wp06_license_evidence_upload_proxy.py` → **1 failed/286.27s** trước probe: PostgreSQL Compose `unhealthy` sau `--wait-timeout 180`; nhánh dọn project Compose riêng cũng timeout sau 60 giây. Chạy lại `down --volumes --remove-orphans` cho đúng project `crypidian-wp06-upload-proxy-fccf7ca6f0` đã xóa volume và network; `compose ps --all` xác nhận không còn container. Không có assertion upload nào được chạy; E2E vẫn mở, không tính là pass.
+
+**Chẩn đoán Docker 21/11/2026:** một project PostgreSQL Compose riêng khác timeout sau 60 giây trước khi tạo container; `compose logs`/`ps` không thấy container và cleanup project riêng thoát 0. Không có log PostgreSQL để kết luận nguyên nhân sâu hơn; upload-proxy E2E tiếp tục mở.
+
+**Cập nhật proxy E2E 22/11/2026:** Docker Compose đã chạy lại ổn định. `uv run pytest -q -rs --tb=short tests/e2e/test_wp06_license_evidence_upload_proxy.py` → **1 passed/61.98s/0 skipped**: upload 1 MiB+ qua TLS trả 201 và digest khớp; body không được trả/lưu, chỉ một evidence row tồn tại; upload hơn 10 MiB trả 413 + `no-store`; route thường vẫn từ chối body hơn 1 MiB. `tests/unit/test_sec29_30_http_limits.py` → **39 passed/4.48s**. Trong lúc sửa harness, probe không còn đọc lại stdin sau bootstrap, cookie được dựng theo production prefix, port overlay đổi `!reset` thành `!override`, và client oversize dùng `Expect: 100-continue` để thu được 413 sớm thay vì lỗi BrokenPipe. Semantics `!reset`/`!override` đã đối chiếu tài liệu Compose chính thức 22/11/2026: https://docs.docker.com/reference/compose-file/merge/. Ruff, format-check và `git diff --check` đạt. Proxy E2E này chỉ xác nhận ranh giới upload với fixture synthetic; quyền non-QA, positive PAPER/SHADOW và rights/scope race matrix vẫn mở, nên integrated verification và ticket giữ In Progress.
 
 ### Task 8: Traceability và integrated verification
 
@@ -206,8 +224,8 @@
 
 - [ ] **Step 1: Chạy full unit suite**, all affected Compose E2E including source registry/policy, training scope, scorer deployment, candidate runtime, shadow/drift and Task9; no skip.
 - [ ] **Step 2: Chạy Ruff check/format, mypy, Compose config, Alembic single-head/check, verify no stale `f6b8d0e2a4c7` head expectations remain in tests/probes, and `git diff --check`.**
-- [ ] **Step 3: Cập nhật WBS**: code contract status tách biệt với external license/release evidence; giữ active modes khóa.
-- [ ] **Step 4: Ghi memory** chính xác nguồn/URL/ngày/test/result/giới hạn, sau đó đọc lại memory và đối chiếu diff/output.
+- [x] **Step 3: Cập nhật WBS**: code contract status tách biệt với external license/release evidence; giữ active modes khóa.
+- [x] **Step 4: Ghi memory** chính xác nguồn/URL/ngày/test/result/giới hạn, sau đó đọc lại memory và đối chiếu diff/output.
 
 ## Trạng thái triển khai 14/11/2026
 
@@ -215,3 +233,7 @@
 - Task 4: replay bundle/normalized TRAINING manifest đối chiếu shared child lineage, exact persisted MarketBar identity và current evidence scope; receipt ghi metadata theo access và immutability. Fresh PostgreSQL Compose E2E **1 passed/128.36s/0 skipped** kiểm tamper, receipt, rights revoke trước trainer claim và no-payload/no-training-receipt.
 - E2E dùng synthetic first-party QA fixture, không phải license thật. Test riêng evaluator direct-call denial là chủ ý ACL; tampered scope được kiểm qua `candidate-proof-builder` normalization gateway. Repository map `WP06_TRAINING_REPLAY_*` về fail-closed conflict.
 - Task 5–6 vẫn mở: exact scope/current-rights wiring cần nối tiếp vào scorer TEST, deployment/runtime PAPER/SHADOW và DRIFT; chưa có positive active target. Task 8 vẫn mở cho integrated regression suite/review cuối. Full unit **3906 passed**, Playwright performance/license **5 passed**, performance gateway Compose **1 passed**, Ruff/format/mypy/Compose/Alembic/diff checks đạt. `SHADOW`/`PAPER_GATE` tiếp tục khóa.
+
+### Rerun Task 4 source license scope — 24/11/2026
+
+`uv run pytest -q -rs --tb=short tests/e2e/test_wp06_source_license_scope.py` → **1 passed/131.05s/0 skipped** on Alembic head `f0a2c4e6b8d3`. PostgreSQL Compose revalidated exact v5 TRAINING normalization/receipt, idempotent retry, missing/extra child and MarketBar substitution denial, cross-workspace/operation denial, and current-rights revoke before trainer claim with no payload or training receipt. This is a synthetic QA entitlement fixture; it proves the technical gate only. No resource matching the E2E project prefix remained; unrelated shared Compose projects were left untouched. The broader Task 4 producer, source-scope near-miss and rights-invalidation matrix remains tracked in its checkboxes above.

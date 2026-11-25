@@ -1,7 +1,8 @@
 """Compose fail-closed cho wiring gateway PAPER của scorer đã train.
 
 - Manifest source-item WP05 (v1–v3) với canonical source TRAINING-only bị chặn trước khi
-  train (`WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED`), nên không có artifact/deployment.
+  train: source-dependent manifest v3 thiếu producer lineage bị từ chối bằng
+  `source_use_lineage_missing`, nên không có artifact/deployment.
 - Manifest replay v5 (QA) train được; từ lát B (`d4f6a8b0c2e4`) gateway đọc được lineage v5
   (không còn `MANIFEST_MISSING`). Artifact chưa có TEST proof/report nên preflight PAPER không
   có canonical source để kiểm và gateway từ chối `WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND`,
@@ -151,7 +152,7 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
                     "WP06_MANIFEST_HASH": manifest["manifest_hash"],
                 },
             )
-        assert "WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED" in str(legacy.value)
+        assert "source_use_lineage_missing" in str(legacy.value)
         assert normalized(
             "candidate-proof-builder",
             "source-rights-verify-unchanged",

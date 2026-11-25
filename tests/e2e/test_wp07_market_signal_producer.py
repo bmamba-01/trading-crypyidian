@@ -210,8 +210,19 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
             "primary_correct_badge": True,
             "gap_badge": True,
             "filtered_empty": True,
-            "admin_visible_rows": 3,
+            "admin_direct_select_denied": True,
+            "admin_telegram_delivery_select_denied": True,
+            "admin_telegram_delivery_dml_denied": True,
             "admin_delete_denied": True,
+            "owner_ai_analyses_status": 200,
+            "operator_ai_analyses_status": 403,
+            "operator_run_report_status": 403,
+            "operator_run_report_json_status": 403,
+            "reviewer_ai_analyses_status": 403,
+            "reviewer_run_report_status": 403,
+            "reviewer_run_report_json_status": 403,
+            "reader_workspace_role_denials": {"operator": True, "analyst_reviewer": True},
+            "reader_workspace_owner_allowed": True,
         }, admin
     finally:
         subprocess.run(

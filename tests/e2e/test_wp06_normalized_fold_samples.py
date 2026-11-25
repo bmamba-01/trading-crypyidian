@@ -104,7 +104,7 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         assert heads.stdout.count("(head)") == 1
-        assert "a3c7e9f1b5d2 (head)" in heads.stdout
+        assert "ab26dde001df (head)" in heads.stdout
         assert "No new upgrade operations detected" in check.stdout + check.stderr
         compose(
             "run",
@@ -608,9 +608,7 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
             "-e",
             f"WP06_MANIFEST_HASH={source_manifest['manifest_hash']}",
         )
-        assert "WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED" in (
-            legacy_builder.stdout + legacy_builder.stderr
-        )
+        assert "source_use_lineage_missing" in (legacy_builder.stdout + legacy_builder.stderr)
         # Từ chối nguyên tử: không receipt TRAINING, không normalized sample nào được ghi.
         assert run_probe(
             "candidate-proof-builder",
