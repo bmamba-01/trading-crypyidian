@@ -1,5 +1,14 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 25/11/2026 (CK-12 / CRY-231):**
+- **25/11/2026 — CRY-231 `[CK-12/con-lai]` hoàn tất Done:**
+  1. *Lỗ ngày theo múi giờ cấu hình:* Bổ sung hàm `daily_window_start(as_of, policy)` trong `trading_bot.domain.risk.risk_windows`. Sử dụng múi giờ cấu hình rủi ro từ `loss_window_timezone` của workspace settings để tính toán chính xác mốc bắt đầu ngày tại địa phương và chuyển đổi chuẩn về UTC khi truy vấn closed trades. Tích hợp vào `BotReportingService._bot_protection` và `OperationalTelemetryRepository`.
+  2. *Cầu dao thật (FX-2 drawdown breaker):* Tích hợp drawdown breaker thật qua `drawdown_policy_for` / `evaluate_drawdown_breaker` vào `protection_view` và thẻ Cockpit bot monitor (`market_chart.html`), hiển thị chính xác trạng thái cảnh báo/ngắt do sụt giảm vốn.
+  3. *Telemetry runtime:* Bổ sung `lease_owner`, `lease_expires_at`, `heartbeat_at`, `last_tick_at` vào `BotRuntimeStatus` và `BotRuntimeRow`, serialize qua `as_dict()` và render trên modal chi tiết bot trong Cockpit (`market_chart.html`).
+  - Unit tests: **33 passed** (`test_ck12_bot_protection.py`, `test_risk_windows.py`, `test_admin_market_chart.py`).
+  - Playwright E2E: **3 passed** (`test_admin_market_chart_playwright.py`).
+  - Commit `ec1cad33` trên nhánh `dev`, đã đẩy lên `origin/dev`. Ticket `#231` trên ItsAPlan đã chuyển `Done`. Chi tiết [implementation memory](./implementation-memory.md#2026-11-25--cry-231-ck-12con-lai-done-lỗ-ngày-múi-giờ-cấu-hình-cầu-dao-thật--telemetry-runtime).
+
 **Cập nhật 24/11/2026 (WP-07B):**
 - **24/11/2026 — CRY-345 `[WP-07B/derivatives-poller]`:** bổ sung retention 90 ngày cho `derivatives_snapshot` (cột `expires_at`, backfill, index), collector dọn hết hạn mỗi tick, store xoá theo RLS. Unit 18 passed, Compose migration 1 passed/52.70s. Bảng `market_funding`/`market_liquidation`/`market_trade_flow` vẫn chưa có retention — ghi nhận thành gap riêng. [implementation memory](./implementation-memory.md#2026-11-24--cry-345-wp-07b-retention-ảnh-chụp-phái-sinh).
 

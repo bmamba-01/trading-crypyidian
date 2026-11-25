@@ -13,6 +13,24 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-231 [CK-12/con-lai] Done: Lỗ ngày múi giờ cấu hình, cầu dao thật & telemetry runtime
+
+- **Phạm vi & thay đổi:**
+  1. *Lỗ ngày theo múi giờ cấu hình:* Bổ sung hàm `daily_window_start(as_of, policy)` trong `domain.risk.risk_windows`. Sử dụng múi giờ cấu hình rủi ro từ `loss_window_timezone` (Workspace Risk Settings) để tính mốc bắt đầu ngày cục bộ, quy đổi chính xác về UTC. Cập nhật `BotReportingService._bot_protection` truy vấn `closed_net_since(since=day_start)` theo múi giờ này và truyền `timezone_name` vào `protection_view`. Cập nhật `OperationalTelemetryRepository._calculate_loss_windows` phân giải `loss_window_timezone` từ `WorkspaceSettingsRepository`.
+  2. *Cầu dao thật (FX-2 drawdown breaker):* Thay thế hiển thị cầu dao tĩnh bằng trạng thái đánh giá drawdown breaker thật (`drawdown_policy_for` / `evaluate_drawdown_breaker`) trong `protection_view` và thẻ Cockpit bot monitor (`market_chart.html`), hiển thị thông tin ngắt (`tripped`, `breached`, lý do và sụt giảm hiện tại).
+  3. *Telemetry runtime:* Bổ sung `lease_owner`, `lease_expires_at`, `heartbeat_at`, `last_tick_at` vào `BotRuntimeRow` (truy vấn từ `bot_runtime_lease`, `bot_runtime_state`, `bot_decision`) và `BotRuntimeStatus`. Serialize an toàn qua `as_dict()` và render trên modal chi tiết bot trong Cockpit (`market_chart.html`).
+- **Kiểm chứng:**
+  - Unit tests: **33 passed** (`test_ck12_bot_protection.py`, `test_risk_windows.py`, `test_admin_market_chart.py`).
+  - E2E Playwright tests: **3 passed** (`test_admin_market_chart_playwright.py`).
+  - Linting & type checking: Ruff format & check 100% clean, Mypy sạch 100% trên 7 file mã nguồn liên quan.
+  - Commit: `ec1cad33` trên nhánh `dev`, đã đẩy lên `origin/dev`.
+  - Tracker ItsAPlan: Issue `#231` (`CRY-231`) chuyển sang `Done` (column 4), bình luận nghiệm thu `#4874`.
+- **Pitfall & bài học:**
+  - `BotDecisionRecord` kế thừa `CreatedAt`, cột thời gian tạo là `created_at` chứ không phải `decided_at`.
+  - `BotRuntimeStatus.as_dict()` và `@property def lease` trả về `expires_at` dạng ISO format string; các unit test cần so sánh đúng kiểu định dạng.
+  - Thời gian bắt đầu ngày theo múi giờ: ví dụ múi giờ `Asia/Ho_Chi_Minh` (UTC+7) thì 00:00 ngày hôm nay tại VN tương ứng với 17:00 UTC của ngày hôm trước, được tính toán và chuyển đổi chuẩn xác về `datetime` có `tzinfo=UTC` để truy vấn cơ sở dữ liệu.
+
+
 ### 2026-11-25 — CRY-81 [MI-7] Done: hậu kiểm R theo nhãn AI
 
 - **Phạm vi:** `report_analytics.r_multiples_by_dimensions` tính R = PnL ròng / 1R đã duyệt, nhóm chiến lược × lý do vào × lý do thoát × chế độ lúc vào; thiếu 1R đếm riêng, không gán R=0. `reporting._candidate_explanation` đưa `context_regime`/`estimated_loss`/`risk_budget` từ candidate thật vào `entry_reason`. Bảng hiển thị trên `/admin/reports` qua `web_router.reports` + `reports.html`.
