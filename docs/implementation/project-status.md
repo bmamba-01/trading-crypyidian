@@ -1,5 +1,9 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 25/11/2026 (WP-07C / CRY-364, CRY-365, CRY-366):**
+- **25/11/2026 — CRY-364 `[WP-07C/backfill-orchestration]` hoàn tất Done (commit `cb6835ea`):** `BackfillDatasetOrchestrationService` + CLI fixture-safe (`BTCUSDT`/`ETHUSDT`, connector live khóa trước grant), manifest `READY` + `bundle_hash` + `BackfillQualityReport`. Unit + PostgreSQL Compose E2E **4 passed/17.59s**.
+- **25/11/2026 — CRY-365 `[WP-07C/scheduler]` & CRY-366 `[WP-07C/macro-raw-evidence]` hoàn tất Done:** `WorkbenchJobScheduler` (RBAC, resource limits, kiểm quyền mỗi tick, audit) và `replay_macro_raw_evidence.py` (macro blackout as-of cho H06 chống lookahead + `MarketRawReference` retention 90 ngày + bundle envelope). Unit + PostgreSQL Compose E2E **3 passed/19.03s**.
+
 **Cập nhật 25/11/2026 (OPS07F / CRY-463..468):**
 - **25/11/2026 — CRY-468 `[OPS07F/Task10]` hoàn tất schema, server-side gate G0–G5, template & E2E (giữ In Progress chờ đủ dependency evidence & chữ ký thật):** `live_readiness_dossier.py`, `live_readiness_gate.py`, `docs/operations/live-readiness-dossier-template.md`, unit + PostgreSQL Compose E2E **5 passed/20.13s** (0 skipped). Live vẫn khóa sau G5 chờ quyết định G6 riêng.
 - **25/11/2026 — CRY-467 `[OPS07F/Task9]` hoàn tất runbook & drill E2E (commit `0fd45c08`, giữ In Progress chờ on-call/alert destination/topology thật):** Bộ runbook tiếng Việt **RB-01..RB-11** tại `docs/operations/live-production-operations-runbook.md` + diễn tập cô lập `tests/e2e/test_live_operations_runbook_drill_e2e.py` (**4 passed/24.74s**, 0 skipped).

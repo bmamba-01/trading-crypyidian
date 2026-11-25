@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — WP-07C: CRY-364, CRY-365 & CRY-366 Done (Backfill orchestration, Scheduler, Macro & Raw Evidence Replay)
+
+- **CRY-364 (`[WP-07C/backfill-orchestration]` — commit `cb6835ea`):**
+  - `src/trading_bot/application/backfill_orchestration.py` & `src/trading_bot/cli/backfill_orchestration.py`: `BackfillDatasetOrchestrationService` (phạm vi mặc định giới hạn `BTCUSDT`/`ETHUSDT`, khóa connector live khi chưa có policy `BACKTEST_RESEARCH` verified, hỗ trợ tạo/tạm dừng/resume/hủy job, đóng gói manifest `READY` + `bundle_hash`, và tính `BackfillQualityReport` coverage/gap/duplicate/SHA-256).
+  - Kiểm chứng: `tests/unit/test_cry364_backfill_orchestration.py` + `tests/e2e/test_cry364_backfill_orchestration_e2e.py` (PostgreSQL Compose đọc `market_bar` thật, phát hiện gap 75% coverage) → **4 passed in 17.59s**.
+- **CRY-365 (`[WP-07C/scheduler]`):**
+  - `src/trading_bot/application/workbench_job_scheduler.py`: `WorkbenchJobScheduler` với phân quyền lập lịch/hủy (`owner`, `strategy_admin`), giới hạn tài nguyên (`max_concurrent_runs`, `min_interval_seconds`, `max_runs_per_day`), kiểm lại quyền dữ liệu hiện hành (`rights_checker`) mỗi lượt tick ngắn hạn không giữ transaction DB dài, và ghi `ScheduleAuditEntry` đầy đủ.
+- **CRY-366 (`[WP-07C/macro-raw-evidence]`):**
+  - `src/trading_bot/application/replay_macro_raw_evidence.py`: `evaluate_replay_macro_as_of` (chống lookahead tuyệt đối theo `available_at <= decision_time`, phân biệt `UNKNOWN`/`BLACKOUT`/`CLEAR` theo cửa sổ `BLACKOUT_BEFORE=30m`/`BLACKOUT_AFTER=60m` cho H06 backtest), `build_replay_raw_reference` (chính sách retention 90 ngày, lưu object store & gắn `MarketRawReference` + SHA-256), và `attach_macro_and_raw_evidence_to_bundle`.
+- **Kiểm chứng CRY-365 & CRY-366:**
+  - `uv run pytest -q --tb=short tests/unit/test_cry365_366_scheduler_and_macro_replay.py tests/e2e/test_cry365_366_scheduler_macro_e2e.py`: exit code `0`, **3 passed in 19.03s** (gồm PostgreSQL Compose E2E lưu/đọc `MarketRawReference` thật, kiểm macro as-of `BLACKOUT`/`CLEAR` và scheduler dispatch); Ruff check/format, Mypy & `git diff --check` clean 100%.
+
 ### 2026-11-25 — CRY-468 [OPS07F/Task10] Hồ sơ readiness G0–G5 & server-side release gate (hoàn tất schema/gate/template/E2E, giữ In Progress chờ đủ evidence dependency G0–G5 thật)
 
 - **Thay đổi:**
