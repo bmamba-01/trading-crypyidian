@@ -18,12 +18,20 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
+from trading_bot.domain.market.anchored_vwap import (
+    ANCHORED_VWAP_FORMULA_VERSION,
+    anchored_vwap_from_swings,
+    anchored_vwap_month_utc,
+    anchored_vwap_week_utc,
+)
 from trading_bot.domain.market.features import (
     adx_dmi,
     atr,
     bollinger_bands,
     efficiency_ratio,
     ema,
+    macd,
+    obv,
     realized_volatility,
     rsi,
     sma,
@@ -32,10 +40,189 @@ from trading_bot.domain.market.features import (
     zscore,
 )
 from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
+from trading_bot.domain.market.sessions import (
+    LIQUIDITY_FORMULA_VERSION,
+    SESSION_STATS_FORMULA_VERSION,
+    previous_week_high_low,
+    session_range_percentiles,
+    session_ranges,
+)
+from trading_bot.domain.market.structure import (
+    ADAPTIVE_PIVOT_FORMULA_VERSION,
+    adaptive_pivot_lookback,
+)
 from trading_bot.domain.market.validation import inspect_bar_series
 
 FEATURE_SCHEMA_VERSION = "crypidian-feature-snapshot-v1"
 DEFAULT_EMA_PERIODS = (20, 80, 200)
+OBV_FORMULA_VERSION = "sig1-obv-v1"
+MACD_FORMULA_VERSION = "sig1-macd-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ExtraFeatureSpec:
+    """Đặc tả công thức và warm-up cho một feature mở rộng (opt-in) trong FeatureSnapshot."""
+
+    name: str
+    formula_version: str
+    formula_spec: Mapping[str, object]
+    description_vi: str
+
+
+EXTRA_FEATURE_REGISTRY: Mapping[str, ExtraFeatureSpec] = MappingProxyType(
+    {
+        "obv": ExtraFeatureSpec(
+            name="obv",
+            formula_version=OBV_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": OBV_FORMULA_VERSION,
+                "seed": "zero_at_first_bar",
+                "direction_source": "close_diff",
+            },
+            description_vi="On-Balance Volume tích lũy nhân quả trên chuỗi nến đóng.",
+        ),
+        "macd_line": ExtraFeatureSpec(
+            name="macd_line",
+            formula_version=MACD_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": MACD_FORMULA_VERSION,
+                "fast": 12,
+                "slow": 26,
+                "signal": 9,
+                "output": "line",
+            },
+            description_vi="Đường MACD = EMA(12) - EMA(26).",
+        ),
+        "macd_signal": ExtraFeatureSpec(
+            name="macd_signal",
+            formula_version=MACD_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": MACD_FORMULA_VERSION,
+                "fast": 12,
+                "slow": 26,
+                "signal": 9,
+                "output": "signal",
+            },
+            description_vi="Đường tín hiệu EMA(9) của MACD.",
+        ),
+        "macd_histogram": ExtraFeatureSpec(
+            name="macd_histogram",
+            formula_version=MACD_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": MACD_FORMULA_VERSION,
+                "fast": 12,
+                "slow": 26,
+                "signal": 9,
+                "output": "histogram",
+            },
+            description_vi="Histogram MACD = macd_line - macd_signal.",
+        ),
+        "anchored_vwap_week_utc": ExtraFeatureSpec(
+            name="anchored_vwap_week_utc",
+            formula_version=ANCHORED_VWAP_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": ANCHORED_VWAP_FORMULA_VERSION,
+                "anchor_rule": "week_start_utc",
+                "price": "ohlc_typical_price",
+                "precision": "decimal",
+            },
+            description_vi="Anchored VWAP reset vào đầu tuần UTC (thứ Hai 00:00 UTC).",
+        ),
+        "anchored_vwap_month_utc": ExtraFeatureSpec(
+            name="anchored_vwap_month_utc",
+            formula_version=ANCHORED_VWAP_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": ANCHORED_VWAP_FORMULA_VERSION,
+                "anchor_rule": "month_start_utc",
+                "price": "ohlc_typical_price",
+                "precision": "decimal",
+            },
+            description_vi="Anchored VWAP reset vào đầu tháng UTC (ngày 01, 00:00 UTC).",
+        ),
+        "anchored_vwap_confirmed_swing": ExtraFeatureSpec(
+            name="anchored_vwap_confirmed_swing",
+            formula_version=ANCHORED_VWAP_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": ANCHORED_VWAP_FORMULA_VERSION,
+                "anchor_rule": "confirmed_swing_pivot",
+                "left_bars": 3,
+                "right_bars": 3,
+                "swing_kind": "all",
+                "price": "ohlc_typical_price",
+                "precision": "decimal",
+            },
+            description_vi="Anchored VWAP neo theo swing pivot đã xác nhận gần nhất.",
+        ),
+        "pwh": ExtraFeatureSpec(
+            name="pwh",
+            formula_version=LIQUIDITY_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": LIQUIDITY_FORMULA_VERSION,
+                "level": "previous_completed_utc_week_high",
+            },
+            description_vi="Đỉnh tuần UTC hoàn tất gần nhất (PWH).",
+        ),
+        "pwl": ExtraFeatureSpec(
+            name="pwl",
+            formula_version=LIQUIDITY_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": LIQUIDITY_FORMULA_VERSION,
+                "level": "previous_completed_utc_week_low",
+            },
+            description_vi="Đáy tuần UTC hoàn tất gần nhất (PWL).",
+        ),
+        "adaptive_pivot_lookback": ExtraFeatureSpec(
+            name="adaptive_pivot_lookback",
+            formula_version=ADAPTIVE_PIVOT_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": ADAPTIVE_PIVOT_FORMULA_VERSION,
+                "base_bars": 3,
+                "min_bars": 2,
+                "max_bars": 6,
+                "baseline_window": 20,
+                "min_atr_samples": 5,
+            },
+            description_vi="Cửa sổ lookback pivot thích ứng theo chế độ biến động ATR.",
+        ),
+        "asia_range_percentile": ExtraFeatureSpec(
+            name="asia_range_percentile",
+            formula_version=SESSION_STATS_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": SESSION_STATS_FORMULA_VERSION,
+                "session_key": "asia",
+                "min_samples": 5,
+                "method": "mid_rank_prior_completed_sessions",
+            },
+            description_vi="Phân vị độ rộng phiên Á hoàn tất gần nhất so với lịch sử trước đó.",
+        ),
+        "london_range_percentile": ExtraFeatureSpec(
+            name="london_range_percentile",
+            formula_version=SESSION_STATS_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": SESSION_STATS_FORMULA_VERSION,
+                "session_key": "london",
+                "min_samples": 5,
+                "method": "mid_rank_prior_completed_sessions",
+            },
+            description_vi=(
+                "Phân vị độ rộng phiên London hoàn tất gần nhất so với lịch sử trước đó."
+            ),
+        ),
+        "new_york_range_percentile": ExtraFeatureSpec(
+            name="new_york_range_percentile",
+            formula_version=SESSION_STATS_FORMULA_VERSION,
+            formula_spec={
+                "formula_version": SESSION_STATS_FORMULA_VERSION,
+                "session_key": "new_york",
+                "min_samples": 5,
+                "method": "mid_rank_prior_completed_sessions",
+            },
+            description_vi=(
+                "Phân vị độ rộng phiên New York hoàn tất gần nhất so với lịch sử trước đó."
+            ),
+        ),
+    }
+)
 
 
 class MarketRegime(StrEnum):
@@ -82,6 +269,7 @@ class FeatureSettings:
     warmup_rule: str = "3x_period"
     atr_seed_method: str = "wilder_first_period_sma"
     zscore_mode: str = "prior_samples_excluding_current"
+    extra_features: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -136,6 +324,13 @@ class FeatureSettings:
             raise ValueError("Ngưỡng ER range phải nằm trong [0, 1].")
         if not 0.0 < self.high_volatility_quantile < 1.0:
             raise ValueError("Phân vị biến động cao phải nằm giữa 0 và 1.")
+        if len(set(self.extra_features)) != len(self.extra_features):
+            raise ValueError("Danh sách extra_features không được trùng tên.")
+        unknown_extra = [name for name in self.extra_features if name not in EXTRA_FEATURE_REGISTRY]
+        if unknown_extra:
+            raise ValueError(
+                f"extra_features chưa được đăng ký công thức: {', '.join(unknown_extra)}."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +485,31 @@ def _feature_names(settings: FeatureSettings) -> tuple[str, ...]:
             "session_vwap",
         )
     )
+    if settings.extra_features:
+        names.extend(settings.extra_features)
     return tuple(names)
+
+
+def _extra_warmup_bars(name: str, settings: FeatureSettings) -> int:
+    if name in ("obv", "anchored_vwap_week_utc", "anchored_vwap_month_utc"):
+        return 1
+    if name == "macd_line":
+        return settings.warmup_multiplier * 26
+    if name in ("macd_signal", "macd_histogram"):
+        return settings.warmup_multiplier * 26 + 9
+    if name == "anchored_vwap_confirmed_swing":
+        return 7
+    if name in ("pwh", "pwl"):
+        return max(1, math.ceil(timedelta(days=7) / settings.expected_interval))
+    if name == "adaptive_pivot_lookback":
+        return settings.atr_period + 4
+    if name in (
+        "asia_range_percentile",
+        "london_range_percentile",
+        "new_york_range_percentile",
+    ):
+        return max(1, math.ceil(timedelta(days=6) / settings.expected_interval))
+    raise ValueError(f"extra_feature chưa hỗ trợ warm-up: {name}")
 
 
 def _warmup_by_feature(settings: FeatureSettings, bar_count: int) -> dict[str, bool]:
@@ -322,6 +541,8 @@ def _warmup_by_feature(settings: FeatureSettings, bar_count: int) -> dict[str, b
         f"zscore_inclusive_{settings.zscore_period}": settings.zscore_period,
         "session_vwap": 1,
     }
+    for extra_name in settings.extra_features:
+        requirements[extra_name] = _extra_warmup_bars(extra_name, settings)
     return {name: bar_count >= count for name, count in requirements.items()}
 
 
@@ -367,43 +588,127 @@ def feature_schema_hash(
 
 
 def _formula_hash(settings: FeatureSettings) -> str:
-    return _hash(
-        {
-            "atr_seed_method": settings.atr_seed_method,
-            "bollinger_ddof": 0,
-            "ema_seed": "first_sma",
-            "ema_periods": list(settings.ema_periods),
-            "efficiency_ratio_period": settings.efficiency_ratio_period,
-            "formula_version": settings.formula_version,
-            "expected_interval_microseconds": int(
-                settings.expected_interval.total_seconds() * 1_000_000
-            ),
-            "max_event_age_microseconds": int(settings.max_event_age.total_seconds() * 1_000_000),
-            "periods": {
-                "adx": settings.adx_period,
-                "atr": settings.atr_period,
-                "bollinger": settings.bollinger_period,
-                "realized_volatility": settings.realized_volatility_period,
-                "rsi": settings.rsi_period,
-                "sma": settings.sma_period,
-                "zscore": settings.zscore_period,
-            },
-            "regime_thresholds": {
-                "high_volatility_quantile": settings.high_volatility_quantile,
-                "range_adx_max": settings.range_adx_max,
-                "range_efficiency_max": settings.range_efficiency_max,
-                "trend_adx_threshold": settings.trend_adx_threshold,
-            },
-            "rma_seed": "first_period_arithmetic_mean",
-            "regime_history_microseconds": int(settings.regime_history.total_seconds() * 1_000_000),
-            "vwap_price": "ohlc_typical_price",
-            "vwap_reset": "utc_calendar_day",
-            "warmup_multiplier": settings.warmup_multiplier,
-            "warmup_rule": settings.warmup_rule,
-            "zscore_mode": settings.zscore_mode,
-            "zscore_window": settings.zscore_mode,
+    payload: dict[str, object] = {
+        "atr_seed_method": settings.atr_seed_method,
+        "bollinger_ddof": 0,
+        "ema_seed": "first_sma",
+        "ema_periods": list(settings.ema_periods),
+        "efficiency_ratio_period": settings.efficiency_ratio_period,
+        "formula_version": settings.formula_version,
+        "expected_interval_microseconds": int(
+            settings.expected_interval.total_seconds() * 1_000_000
+        ),
+        "max_event_age_microseconds": int(settings.max_event_age.total_seconds() * 1_000_000),
+        "periods": {
+            "adx": settings.adx_period,
+            "atr": settings.atr_period,
+            "bollinger": settings.bollinger_period,
+            "realized_volatility": settings.realized_volatility_period,
+            "rsi": settings.rsi_period,
+            "sma": settings.sma_period,
+            "zscore": settings.zscore_period,
+        },
+        "regime_thresholds": {
+            "high_volatility_quantile": settings.high_volatility_quantile,
+            "range_adx_max": settings.range_adx_max,
+            "range_efficiency_max": settings.range_efficiency_max,
+            "trend_adx_threshold": settings.trend_adx_threshold,
+        },
+        "rma_seed": "first_period_arithmetic_mean",
+        "regime_history_microseconds": int(settings.regime_history.total_seconds() * 1_000_000),
+        "vwap_price": "ohlc_typical_price",
+        "vwap_reset": "utc_calendar_day",
+        "warmup_multiplier": settings.warmup_multiplier,
+        "warmup_rule": settings.warmup_rule,
+        "zscore_mode": settings.zscore_mode,
+        "zscore_window": settings.zscore_mode,
+    }
+    if settings.extra_features:
+        # Chỉ thêm khóa extra_features khi chiến lược opt-in để giữ nguyên 100% hash cũ.
+        payload["extra_features"] = {
+            name: dict(EXTRA_FEATURE_REGISTRY[name].formula_spec)
+            for name in sorted(settings.extra_features)
         }
-    )
+    return _hash(payload)
+
+
+def _compute_extra_features(
+    bars: tuple[OHLCVBar, ...],
+    highs: tuple[float, ...],
+    lows: tuple[float, ...],
+    closes: tuple[float, ...],
+    atr_series: tuple[float | None, ...],
+    settings: FeatureSettings,
+) -> dict[str, float | None]:
+    """Tính các feature mở rộng (opt-in) thuần nhân quả; chỉ chạy khi được yêu cầu."""
+    requested = set(settings.extra_features)
+    if not requested:
+        return {}
+    output: dict[str, float | None] = {}
+    if "obv" in requested:
+        volumes = tuple(float(bar.volume) for bar in bars)
+        output["obv"] = obv(closes, volumes)[-1]
+    if requested & {"macd_line", "macd_signal", "macd_histogram"}:
+        macd_line, macd_signal, macd_hist = macd(closes)
+        if "macd_line" in requested:
+            output["macd_line"] = macd_line[-1]
+        if "macd_signal" in requested:
+            output["macd_signal"] = macd_signal[-1]
+        if "macd_histogram" in requested:
+            output["macd_histogram"] = macd_hist[-1]
+    if requested & {
+        "anchored_vwap_week_utc",
+        "anchored_vwap_month_utc",
+        "anchored_vwap_confirmed_swing",
+    }:
+        open_times = tuple(bar.open_time for bar in bars)
+        dec_highs = tuple(bar.high for bar in bars)
+        dec_lows = tuple(bar.low for bar in bars)
+        dec_closes = tuple(bar.close for bar in bars)
+        dec_volumes = tuple(bar.volume for bar in bars)
+        if "anchored_vwap_week_utc" in requested:
+            val = anchored_vwap_week_utc(
+                open_times, dec_highs, dec_lows, dec_closes, dec_volumes
+            ).values[-1]
+            output["anchored_vwap_week_utc"] = None if val is None else float(val)
+        if "anchored_vwap_month_utc" in requested:
+            val = anchored_vwap_month_utc(
+                open_times, dec_highs, dec_lows, dec_closes, dec_volumes
+            ).values[-1]
+            output["anchored_vwap_month_utc"] = None if val is None else float(val)
+        if "anchored_vwap_confirmed_swing" in requested:
+            val = anchored_vwap_from_swings(
+                open_times, dec_highs, dec_lows, dec_closes, dec_volumes
+            ).values[-1]
+            output["anchored_vwap_confirmed_swing"] = None if val is None else float(val)
+    if requested & {"pwh", "pwl"}:
+        open_times = tuple(bar.open_time for bar in bars)
+        pwh_series, pwl_series = previous_week_high_low(
+            open_times, highs, lows, settings.expected_interval
+        )
+        if "pwh" in requested:
+            output["pwh"] = pwh_series[-1]
+        if "pwl" in requested:
+            output["pwl"] = pwl_series[-1]
+    if "adaptive_pivot_lookback" in requested:
+        lookback = adaptive_pivot_lookback(atr_series)[-1]
+        output["adaptive_pivot_lookback"] = None if lookback is None else float(lookback)
+    session_percentile_map = {
+        "asia_range_percentile": "asia",
+        "london_range_percentile": "london",
+        "new_york_range_percentile": "new_york",
+    }
+    needed_sessions = requested & set(session_percentile_map)
+    if needed_sessions:
+        open_times = tuple(bar.open_time for bar in bars)
+        ranges = session_ranges(open_times, highs, lows, settings.expected_interval)
+        percentiles = session_range_percentiles(ranges)
+        latest_by_key: dict[str, float | None] = {}
+        for item in percentiles:
+            latest_by_key[item.session_key] = item.percentile
+        for feature_name in needed_sessions:
+            output[feature_name] = latest_by_key.get(session_percentile_map[feature_name])
+    return output
 
 
 def _session_vwap(bars: tuple[OHLCVBar, ...]) -> tuple[float | None, ...]:
@@ -592,9 +897,8 @@ class FeatureCalculator:
                 feature_values[f"ema_{period}"] = ema(closes, period)[-1]
             ranges = true_range(highs, lows, closes)
             feature_values["tr"] = ranges[-1]
-            feature_values[f"atr_{self.settings.atr_period}"] = atr(
-                highs, lows, closes, self.settings.atr_period
-            )[-1]
+            atr_series = atr(highs, lows, closes, self.settings.atr_period)
+            feature_values[f"atr_{self.settings.atr_period}"] = atr_series[-1]
             feature_values[f"rsi_{self.settings.rsi_period}"] = rsi(
                 closes, self.settings.rsi_period
             )[-1]
@@ -624,6 +928,10 @@ class FeatureCalculator:
                 closes, self.settings.zscore_period, inclusive=True
             )[-1]
             feature_values["session_vwap"] = _session_vwap(bars)[-1]
+            if self.settings.extra_features:
+                feature_values.update(
+                    _compute_extra_features(bars, highs, lows, closes, atr_series, self.settings)
+                )
         else:
             feature_values = dict.fromkeys(feature_names)
 

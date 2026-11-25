@@ -8,6 +8,7 @@ nến (streaming) và chạy cả chuỗi (batch) luôn cho cùng kết quả �
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -17,6 +18,7 @@ from trading_bot.domain.strategy.geometry import find_confirmed_pivots
 
 STRUCTURE_FORMULA_VERSION = "sig1-structure-v1"
 TRENDLINE_FORMULA_VERSION = "sig1-trendline-v1"
+ADAPTIVE_PIVOT_FORMULA_VERSION = "sig1-adaptive-pivot-v1"
 
 SwingKind = Literal["high", "low"]
 SwingLabel = Literal["HH", "HL", "LH", "LL"]
@@ -32,6 +34,7 @@ class SwingPoint:
     price: float
     confirmed_index: int
     label: SwingLabel | None
+    lookback_bars: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,15 @@ def market_structure(
     """
     _validate_ohlc(high, low, close)
     swings = confirmed_swings(high, low, left_bars=left_bars, right_bars=right_bars)
+    return _structure_from_swings(close, swings, formula_version=STRUCTURE_FORMULA_VERSION)
+
+
+def _structure_from_swings(
+    close: Sequence[float],
+    swings: tuple[SwingPoint, ...],
+    *,
+    formula_version: str,
+) -> StructureResult:
     by_confirmation: dict[int, list[SwingPoint]] = {}
     for swing in swings:
         by_confirmation.setdefault(swing.confirmed_index, []).append(swing)
@@ -143,7 +155,138 @@ def market_structure(
             else:
                 active_low = swing
         trend_by_bar.append(trend)
-    return StructureResult(swings, tuple(breaks), tuple(trend_by_bar))
+    return StructureResult(
+        swings, tuple(breaks), tuple(trend_by_bar), formula_version=formula_version
+    )
+
+
+def adaptive_pivot_lookback(
+    atr_values: Sequence[float | None],
+    *,
+    base_bars: int = 3,
+    min_bars: int = 2,
+    max_bars: int = 6,
+    baseline_window: int = 20,
+    min_atr_samples: int = 5,
+) -> tuple[int | None, ...]:
+    """Tính cửa sổ lookback pivot thích ứng theo chế độ biến động ATR (thuần nhân quả).
+
+    Tại mỗi nến ``i``, so sánh ``atr_values[i]`` với trung bình các mẫu ATR hợp lệ trong
+    cửa sổ quá khứ ``[i - baseline_window + 1 .. i]`` (không dùng dữ liệu sau ``i``).
+    Biến động cao mở rộng cửa sổ để lọc nhiễu, biến động thấp thu hẹp trong
+    ``[min_bars, max_bars]``. Trả ``None`` khi thiếu ATR hoặc chưa đủ ``min_atr_samples``
+    (fail-closed).
+    """
+    if min_bars < 1 or base_bars < min_bars or max_bars < base_bars:
+        raise ValueError("Phải thỏa 1 <= min_bars <= base_bars <= max_bars")
+    if baseline_window < 1 or min_atr_samples < 1:
+        raise ValueError("baseline_window và min_atr_samples phải ≥ 1")
+
+    output: list[int | None] = []
+    for index, current_atr in enumerate(atr_values):
+        if current_atr is None or not math.isfinite(current_atr) or current_atr <= 0.0:
+            output.append(None)
+            continue
+        start = max(0, index - baseline_window + 1)
+        valid = [
+            float(value)
+            for value in atr_values[start : index + 1]
+            if value is not None and math.isfinite(value) and value > 0.0
+        ]
+        if len(valid) < min_atr_samples:
+            output.append(None)
+            continue
+        baseline = math.fsum(valid) / len(valid)
+        ratio = float(current_atr) / baseline
+        scaled = int(round(base_bars * ratio))
+        output.append(max(min_bars, min(max_bars, scaled)))
+    return tuple(output)
+
+
+def adaptive_confirmed_swings(
+    high: Sequence[float],
+    low: Sequence[float],
+    atr_values: Sequence[float | None],
+    *,
+    base_bars: int = 3,
+    min_bars: int = 2,
+    max_bars: int = 6,
+    baseline_window: int = 20,
+    min_atr_samples: int = 5,
+) -> tuple[SwingPoint, ...]:
+    """Tìm swing đã xác nhận với cửa sổ pivot thích ứng theo ATR (không nhìn trước).
+
+    Cửa sổ ``k = lookback[index]`` chỉ dùng ATR tới ``index``; pivot tại ``index`` chỉ được
+    xác nhận tại ``confirmed_index = index + k`` sau khi đủ ``k`` nến bên phải đóng.
+    """
+    if not (len(high) == len(low) == len(atr_values)):
+        raise ValueError("Các chuỗi high/low/atr_values phải có cùng độ dài")
+    for h, lo in zip(high, low, strict=True):
+        if lo > h:
+            raise ValueError("Giá thấp không được lớn hơn giá cao")
+
+    lookbacks = adaptive_pivot_lookback(
+        atr_values,
+        base_bars=base_bars,
+        min_bars=min_bars,
+        max_bars=max_bars,
+        baseline_window=baseline_window,
+        min_atr_samples=min_atr_samples,
+    )
+    raw_pivots: list[tuple[SwingKind, int, float, int, int]] = []
+    length = len(high)
+    for index, k in enumerate(lookbacks):
+        if k is None or index < k or index + k >= length:
+            continue
+        neighbors = (*range(index - k, index), *range(index + 1, index + k + 1))
+        if all(high[index] > high[neighbor] for neighbor in neighbors):
+            raw_pivots.append(("high", index, float(high[index]), index + k, k))
+        if all(low[index] < low[neighbor] for neighbor in neighbors):
+            raw_pivots.append(("low", index, float(low[index]), index + k, k))
+
+    previous: dict[str, float] = {}
+    swings: list[SwingPoint] = []
+    for kind, idx, price, confirmed_idx, k in sorted(
+        raw_pivots, key=lambda item: (item[3], item[1], item[0])
+    ):
+        prior = previous.get(kind)
+        label: SwingLabel | None
+        if prior is None:
+            label = None
+        elif kind == "high":
+            label = "HH" if price > prior else "LH"
+        else:
+            label = "LL" if price < prior else "HL"
+        previous[kind] = price
+        swings.append(SwingPoint(kind, idx, price, confirmed_idx, label, lookback_bars=k))
+    return tuple(swings)
+
+
+def adaptive_market_structure(
+    high: Sequence[float],
+    low: Sequence[float],
+    close: Sequence[float],
+    atr_values: Sequence[float | None],
+    *,
+    base_bars: int = 3,
+    min_bars: int = 2,
+    max_bars: int = 6,
+    baseline_window: int = 20,
+    min_atr_samples: int = 5,
+) -> StructureResult:
+    """Máy trạng thái BOS/CHoCH dùng swing pivot thích ứng theo ATR."""
+    _validate_ohlc(high, low, close)
+    swings = adaptive_confirmed_swings(
+        high,
+        low,
+        atr_values,
+        base_bars=base_bars,
+        min_bars=min_bars,
+        max_bars=max_bars,
+        baseline_window=baseline_window,
+        min_atr_samples=min_atr_samples,
+    )
+    return _structure_from_swings(close, swings, formula_version=ADAPTIVE_PIVOT_FORMULA_VERSION)
 
 
 TrendlineSide = Literal["resistance", "support"]

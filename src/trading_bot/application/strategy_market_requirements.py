@@ -9,7 +9,7 @@ Khung "10m" không phải interval của Binance nên không hỗ trợ (không 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from types import MappingProxyType
 
@@ -219,7 +219,11 @@ def entry_timeframe_for_release(release_id: str) -> str | None:
     return ENTRY_TIMEFRAME_BY_RELEASE.get(release_id)
 
 
-def feature_settings_for(timeframe: str) -> FeatureSettings:
+def feature_settings_for(
+    timeframe: str,
+    *,
+    extra_features: Sequence[str] = (),
+) -> FeatureSettings:
     """Trả settings feature đã ghim theo timeframe được hỗ trợ."""
     try:
         interval = TIMEFRAME_INTERVALS[timeframe]
@@ -233,6 +237,7 @@ def feature_settings_for(timeframe: str) -> FeatureSettings:
         code_hash=FEATURE_CODE_HASH,
         expected_interval=interval,
         max_event_age=interval * 2,
+        extra_features=tuple(extra_features),
     )
 
 

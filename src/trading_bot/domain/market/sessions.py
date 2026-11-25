@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 SESSION_FORMULA_VERSION = "sig1-session-v1"
 LIQUIDITY_FORMULA_VERSION = "sig1-liquidity-v1"
+SESSION_STATS_FORMULA_VERSION = "sig1-session-stats-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,11 +180,14 @@ def liquidity_levels(
     close: Sequence[float],
     interval: timedelta,
     sessions: Sequence[SessionDefinition] = DEFAULT_SESSIONS,
+    *,
+    include_weekly: bool = True,
 ) -> tuple[LiquidityLevel, ...]:
-    """Mức đỉnh/đáy của phiên đã đóng và của ngày UTC trước (PDH/PDL) kèm trạng thái.
+    """Mức đỉnh/đáy của phiên đã đóng, ngày UTC trước (PDH/PDL) và tuần UTC trước (PWH/PWL).
 
-    Mức phiên hết hạn khi phiên cùng loại kế tiếp mở; PDH/PDL hết hạn sau một ngày UTC.
-    Chỉ phiên/ngày ``complete`` mới sinh mức (không dùng phiên đang chạy).
+    Mức phiên hết hạn khi phiên cùng loại kế tiếp mở; PDH/PDL hết hạn sau một ngày UTC;
+    PWH/PWL hết hạn sau một tuần UTC. Chỉ phiên/ngày/tuần ``complete`` mới sinh mức
+    (tuyệt đối không dùng tuần đang mở).
     """
     _validate(open_times, high, low, close)
     if not open_times:
@@ -266,4 +270,253 @@ def liquidity_levels(
                     )
                 )
         day += timedelta(days=1)
+
+    if include_weekly:
+        first_open_utc = open_times[0].astimezone(UTC)
+        first_monday = first_open_utc.date() - timedelta(days=first_open_utc.weekday())
+        week_start = datetime.combine(first_monday, time(0), tzinfo=UTC)
+        if first_open_utc > week_start:
+            # Tuần đầu bị cắt giữa chừng -> bỏ qua, chỉ lấy từ tuần UTC trọn vẹn đầu tiên.
+            week_start += timedelta(days=7)
+        while True:
+            week_end = week_start + timedelta(days=7)
+            if week_end > last_close:
+                break
+            members = [i for i, moment in enumerate(open_times) if week_start <= moment < week_end]
+            if members:
+                week_sides: tuple[tuple[Side, str, float], ...] = (
+                    ("high", "Đỉnh tuần trước (PWH)", float(max(high[i] for i in members))),
+                    ("low", "Đáy tuần trước (PWL)", float(min(low[i] for i in members))),
+                )
+                for side, label, price in week_sides:
+                    state, event = _resolve_level(
+                        side=side,
+                        price=price,
+                        armed_at=week_end,
+                        expires_at=week_end + timedelta(days=7),
+                        open_times=open_times,
+                        high=high,
+                        low=low,
+                        close=close,
+                        interval=interval,
+                    )
+                    levels.append(
+                        LiquidityLevel(
+                            key=f"pw{side[0]}",
+                            label_vi=label,
+                            side=side,
+                            price=price,
+                            armed_at=week_end,
+                            expires_at=week_end + timedelta(days=7),
+                            state=state,
+                            event_index=event,
+                        )
+                    )
+            week_start = week_end
+
     return tuple(sorted(levels, key=lambda level: (level.armed_at, level.key)))
+
+
+def _utc_week_start(moment: datetime) -> datetime:
+    utc_moment = moment.astimezone(UTC)
+    monday = utc_moment.date() - timedelta(days=utc_moment.weekday())
+    return datetime.combine(monday, time(0), tzinfo=UTC)
+
+
+def previous_week_high_low(
+    open_times: Sequence[datetime],
+    high: Sequence[float],
+    low: Sequence[float],
+    interval: timedelta,
+) -> tuple[tuple[float | None, ...], tuple[float | None, ...]]:
+    """Chuỗi PWH/PWL nhân quả theo tuần UTC hoàn tất gần nhất tại từng nến.
+
+    Tuyệt đối không dùng tuần đang mở hoặc tuần đầu bị khuyết trước thứ Hai 00:00 UTC.
+    Khi một tuần UTC trọn vẹn vừa đóng tại ``open_times[i] + interval``, PWH/PWL của tuần
+    đó bắt đầu khả dụng từ nến ``i`` trở đi cho tới khi tuần tiếp theo hoàn tất.
+    """
+    _validate(open_times, high, low)
+    if interval <= timedelta(0):
+        raise ValueError("interval phải lớn hơn 0")
+    if not open_times:
+        return (), ()
+
+    first_open_utc = open_times[0].astimezone(UTC)
+    current_week_start: datetime | None = None
+    current_week_end: datetime | None = None
+    current_week_complete_from_start = False
+    current_high = 0.0
+    current_low = 0.0
+    last_pwh: float | None = None
+    last_pwl: float | None = None
+
+    pwh_series: list[float | None] = []
+    pwl_series: list[float | None] = []
+
+    for moment, bar_high, bar_low in zip(open_times, high, low, strict=True):
+        week_start = _utc_week_start(moment)
+        week_end = week_start + timedelta(days=7)
+        if current_week_start is None:
+            current_week_start = week_start
+            current_week_end = week_end
+            current_week_complete_from_start = first_open_utc <= week_start
+            current_high = float(bar_high)
+            current_low = float(bar_low)
+        elif week_start != current_week_start:
+            if current_week_complete_from_start:
+                last_pwh = current_high
+                last_pwl = current_low
+            current_week_start = week_start
+            current_week_end = week_end
+            current_week_complete_from_start = True
+            current_high = float(bar_high)
+            current_low = float(bar_low)
+        else:
+            current_high = max(current_high, float(bar_high))
+            current_low = min(current_low, float(bar_low))
+
+        bar_close = moment.astimezone(UTC) + interval
+        assert current_week_end is not None
+        if current_week_complete_from_start and bar_close >= current_week_end:
+            last_pwh = current_high
+            last_pwl = current_low
+
+        pwh_series.append(last_pwh)
+        pwl_series.append(last_pwl)
+
+    return tuple(pwh_series), tuple(pwl_series)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRangePercentile:
+    """Phân vị độ rộng phiên hoàn tất so với các phiên cùng loại trong quá khứ."""
+
+    session_key: str
+    open_at: datetime
+    close_at: datetime
+    range_size: float
+    percentile: float | None
+    sample_size: int
+    formula_version: str = SESSION_STATS_FORMULA_VERSION
+
+
+def session_range_percentiles(
+    ranges: Sequence[SessionRange],
+    *,
+    min_samples: int = 5,
+    lookback_sessions: int | None = None,
+) -> tuple[SessionRangePercentile, ...]:
+    """Tính phân vị độ rộng phiên (Asia/London/NY) thuần nhân quả, fail-closed khi thiếu mẫu.
+
+    Chỉ xét phiên đã hoàn tất (``complete=True``). Lịch sử so sánh chỉ gồm các phiên cùng
+    ``key`` đã đóng trước khi phiên hiện tại mở (``prior.close_at <= current.open_at``).
+    Công thức phân vị bậc giữa (mid-rank): ``(số_nhỏ_hơn + 0.5 * số_bằng) / n``.
+    Nếu cỡ mẫu ``n < min_samples``, trả ``percentile = None``.
+    """
+    if min_samples < 1:
+        raise ValueError("min_samples phải ≥ 1")
+    if lookback_sessions is not None and lookback_sessions < min_samples:
+        raise ValueError("lookback_sessions phải ≥ min_samples")
+
+    completed = sorted(
+        (item for item in ranges if item.complete),
+        key=lambda item: (item.close_at, item.open_at, item.key),
+    )
+    history_by_key: dict[str, list[SessionRange]] = {}
+    results: list[SessionRangePercentile] = []
+
+    for item in completed:
+        prior_all = [
+            prior for prior in history_by_key.get(item.key, ()) if prior.close_at <= item.open_at
+        ]
+        if lookback_sessions is not None:
+            prior_all = prior_all[-lookback_sessions:]
+        sample_size = len(prior_all)
+        current_range = item.high - item.low
+        if sample_size < min_samples:
+            percentile: float | None = None
+        else:
+            prior_ranges = [prior.high - prior.low for prior in prior_all]
+            below = sum(1 for value in prior_ranges if value < current_range)
+            equal = sum(1 for value in prior_ranges if value == current_range)
+            percentile = (below + 0.5 * equal) / sample_size
+        results.append(
+            SessionRangePercentile(
+                session_key=item.key,
+                open_at=item.open_at,
+                close_at=item.close_at,
+                range_size=current_range,
+                percentile=percentile,
+                sample_size=sample_size,
+            )
+        )
+        history_by_key.setdefault(item.key, []).append(item)
+
+    return tuple(results)
+
+
+@dataclass(frozen=True, slots=True)
+class LiquidityBaseRate:
+    """Base rate lịch sử quét/phá biên thanh khoản kèm cỡ mẫu ``n`` (fail-closed khi thiếu mẫu)."""
+
+    level_key: str
+    sample_size: int
+    swept_count: int
+    accepted_count: int
+    expired_count: int
+    sweep_rate: float | None
+    acceptance_rate: float | None
+    touch_rate: float | None
+    formula_version: str = SESSION_STATS_FORMULA_VERSION
+
+
+def liquidity_base_rates(
+    levels: Sequence[LiquidityLevel],
+    *,
+    min_samples: int = 10,
+) -> tuple[LiquidityBaseRate, ...]:
+    """Tính base rate quét (``rejected``) / phá biên (``accepted``) kèm ``sample_size = n``.
+
+    Chỉ đếm các mức đã kết thúc vòng đời (``state != 'armed'``) để không bị lệch bởi mức
+    chưa ngã ngũ. Khi ``sample_size < min_samples``, các tỷ lệ trả ``None`` (fail-closed).
+    """
+    if min_samples < 1:
+        raise ValueError("min_samples phải ≥ 1")
+
+    counts: dict[str, list[int]] = {}
+    for level in levels:
+        if level.state == "armed":
+            continue
+        bucket = counts.setdefault(level.key, [0, 0, 0])
+        if level.state == "rejected":
+            bucket[0] += 1
+        elif level.state == "accepted":
+            bucket[1] += 1
+        elif level.state == "expired":
+            bucket[2] += 1
+
+    output: list[LiquidityBaseRate] = []
+    for key in sorted(counts):
+        swept, accepted, expired = counts[key]
+        total = swept + accepted + expired
+        if total < min_samples:
+            sweep_rate: float | None = None
+            acceptance_rate: float | None = None
+            touch_rate: float | None = None
+        else:
+            sweep_rate = swept / total
+            acceptance_rate = accepted / total
+            touch_rate = (swept + accepted) / total
+        output.append(
+            LiquidityBaseRate(
+                level_key=key,
+                sample_size=total,
+                swept_count=swept,
+                accepted_count=accepted,
+                expired_count=expired,
+                sweep_rate=sweep_rate,
+                acceptance_rate=acceptance_rate,
+                touch_rate=touch_rate,
+            )
+        )
+    return tuple(output)

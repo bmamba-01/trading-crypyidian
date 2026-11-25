@@ -346,3 +346,26 @@ def vwap(price: Sequence[float], volume: Sequence[float]) -> FeatureSeries:
         weighted_price += sample_price * sample_volume
         output.append(weighted_price / total_volume if total_volume > 0.0 else None)
     return tuple(output)
+
+
+def obv(close: Sequence[float], volume: Sequence[float]) -> FeatureSeries:
+    """Tính OBV (On-Balance Volume) tích lũy nhân quả trên chuỗi nến đóng.
+
+    Quy ước seed tại nến đầu tiên ``obv[0] = 0.0`` (chưa có nến trước để so hướng).
+    Với ``i >= 1``: cộng ``volume[i]`` khi ``close[i] > close[i-1]``, trừ ``volume[i]``
+    khi ``close[i] < close[i-1]``, giữ nguyên khi giá đóng bằng nhau.
+    """
+    closes, volumes = _aligned(close, volume)
+    if any(value < 0.0 for value in volumes):
+        raise ValueError("Khối lượng không được âm")
+    if not closes:
+        return ()
+    total = 0.0
+    output: list[float | None] = [0.0]
+    for index in range(1, len(closes)):
+        if closes[index] > closes[index - 1]:
+            total += volumes[index]
+        elif closes[index] < closes[index - 1]:
+            total -= volumes[index]
+        output.append(total)
+    return tuple(output)

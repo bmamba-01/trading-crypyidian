@@ -19,6 +19,7 @@ from trading_bot.application.strategy_market_requirements import (
     feature_settings_for,
 )
 from trading_bot.domain.market.feature_snapshot import (
+    EXTRA_FEATURE_REGISTRY,
     DataFreshness,
     FeatureCalculator,
     FeatureSnapshot,
@@ -168,7 +169,8 @@ def _build_decision_snapshot_from_bars(
     timeframe_lineage: list[DecisionSnapshotTimeframeLineage] = []
 
     for timeframe, feature_names in requirements.items():
-        settings = feature_settings_for(timeframe)
+        requested_extra = tuple(name for name in feature_names if name in EXTRA_FEATURE_REGISTRY)
+        settings = feature_settings_for(timeframe, extra_features=requested_extra)
         input_bars = tuple(bars_by_timeframe.get(timeframe, ()))
         visible_bars = tuple(
             sorted(
