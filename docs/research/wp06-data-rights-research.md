@@ -1,6 +1,6 @@
 # Nghiên cứu quyền dữ liệu cho WP06
 
-**Kiểm tra gần nhất:** 2026-11-20 (UTC)
+**Kiểm tra điều khoản nguồn:** 2026-11-23 (UTC) · **Kiểm tra implementation:** 2026-11-24
 **Mục tiêu:** xác định nguồn lịch sử có thể cấp quyền rõ ràng cho backtest, TRAINING, lưu artifact/report và PAPER scorer nội bộ. Đây là ghi nhận phạm vi tài liệu nguồn, không thay thế tư vấn pháp lý hoặc license đã ký.
 
 ## Kết luận hiện tại
@@ -32,9 +32,18 @@ Không chấp nhận README license của mã downloader thay cho license của 
 - **Giới hạn hợp đồng:** Customer Agreement hiện hành (hiệu lực công bố 2025-08-18) cấp quyền dùng dịch vụ cho mục đích kinh doanh nội bộ. Mục 2.3 nói khách hàng tự chịu trách nhiệm về việc dùng các Data Source bên ngoài; nguồn đó có thể giới hạn việc sử dụng và yêu cầu license riêng từ bên thứ ba. Vì thế, mua CoinAPI hoặc nhận $25 credit **không** tự chứng minh Binance cho phép lưu nến OHLCV, backtest, TRAINING, giữ model/đầu ra phái sinh hoặc PAPER/SHADOW. Điều khoản/AUP cũng cấm bán lại dịch vụ hoặc một phần dịch vụ; phạm vi cung cấp bot cho khách hàng cần được CoinAPI trả lời riêng.
 - **Hướng tiếp theo, chưa thực hiện:** xin CoinAPI xác nhận bằng văn bản (1) quyền họ có thể cấp và quyền Binance còn yêu cầu cho dữ liệu USD-M Futures BTC/ETH 1m; (2) backtest, TRAINING, lưu nến và giữ model/report/feature phái sinh trong thời gian và sau khi hủy gói; (3) PAPER/SHADOW nội bộ và việc có/không cung cấp sản phẩm cho khách hàng; (4) ghi nguồn, phân phối lại/hiển thị, thời hạn lưu/xóa/thu hồi; (5) phí thực cho hai mã, ngày bắt đầu, 1 năm và phương thức thanh toán. Chưa gửi yêu cầu, tạo tài khoản/API key, tải dữ liệu hay phát sinh chi phí.
 
-## Khoảng trống contract cần đóng
+## Tái kiểm tra CoinAPI — 2026-11-23
 
-Rà soát mã ngày 12/11/2026 phát hiện receipt hiện tại ghim fingerprint/reference của policy và metadata lần kiểm, nhưng chưa chứng minh hash của bytes thỏa thuận/license gốc hay một scope có kiểu cho provider, product, venue, contract, symbol, interval, date range và loại output được phép. `evidence_ref` tự nó không chứng minh nội dung được tham chiếu. Vì vậy, trạng thái policy `VERIFIED` và receipt hiện có chưa đủ để tuyên bố đã lưu bằng chứng license chính xác; không tạo positive rights journey dựa trên fixture. Phải giữ `SHADOW`/`PAPER_GATE` khóa cho tới khi contract và bằng chứng áp dụng thật được ghim, xác minh và có quyền hiện hành cho từng purpose.
+- Trang **Data Usage Policy Explained** nói rõ đây là hướng dẫn giải thích; điều khoản ràng buộc nằm trong Customer Agreement và Acceptable Usage Policy. Hướng dẫn xếp internal trading, quantitative research, AI/ML, internal dashboards và reporting vào các ví dụ thường được xem là internal use; nếu sản phẩm đưa raw/normalized market data tới người dùng bên ngoài thì có thể cần thỏa thuận redistribution. Đây là hướng dẫn chung, không phải xác nhận cho Crypidian hoặc một gói cụ thể.
+- Customer Agreement trên trang legal ghi hiệu lực 2025-08-18; mục 1.2 giới hạn quyền truy cập dịch vụ CoinAPI cho internal business purposes. Mục 2.3 quy định khách hàng tự chịu trách nhiệm với external Data Sources, vốn có thể bị hạn chế sử dụng và cần license bổ sung từ bên thứ ba. AUP cũng cho CoinAPI quyền hạn chế/ngừng quyền truy cập với cách dùng bị coi là bất thường, không hợp lệ hoặc quá mức. Vì vậy, các điều khoản CoinAPI được công bố không tự cấp quyền của Binance đối với dữ liệu USDⓈ-M Futures hay xác nhận quyền lưu/training/giữ outputs sau khi hết hạn.
+- FAQ hiện nêu không có traditional free plan; PAYG có thể cấp $25 credit sau khi tạo API key và xác minh payment method. Điều khoản 2.6–2.7 cũng cho phép tính PAYG usage khi vượt quota/credit và thu phần thiếu vào payment method; credit mua trước không hoàn lại. Không coi $25 là truy cập miễn phí không cần thẻ hoặc không có rủi ro tính phí.
+- Chưa xác minh metadata/symbol ID, coverage liên tục BTCUSDT 1m đủ một năm, điều khoản Binance tương ứng, hay rights cho training, lưu weights/report, PAPER/SHADOW và sản phẩm cung cấp cho người dùng. Chưa có tài khoản/key, không gọi API, không tải data và không phát sinh thanh toán. Kết luận không đổi: CoinAPI chỉ là ứng viên để hỏi rõ scope và xin điều khoản/bằng chứng áp dụng; active modes vẫn khóa.
+
+## Trạng thái contract và bằng chứng quyền
+
+Khoảng trống implementation được phát hiện ngày 12/11/2026 đã được xử lý: hệ thống nhận bytes qua luồng upload, tính SHA-256, không lưu bytes/tên file, lưu digest/byte-count/media-type cùng typed exact scope và reference ngoài DB, rồi ghim evidence ID/digest/scope hash vào policy revision và receipt sử dụng. PostgreSQL/Compose xác nhận bảng bất biến, scope/RLS, deny khi mismatch và upload qua Caddy TLS; ngày 24/11/2026 proxy E2E đạt (**1 passed/68.86s/0 skipped**), API/service/domain/HTTP-limit unit **87 passed/5.95s**. Upload 1 MiB+1 được nhận với digest đúng, >10 MiB trả 413 + `no-store`, route khác giữ trần 1 MiB; chỉ một evidence row chứa metadata được ghi.
+
+Đây là contract kỹ thuật, không xác minh tính pháp lý hoặc nội dung reference ngoài. Người vận hành vẫn phải cung cấp bằng chứng có hiệu lực và scope cho đúng provider/product/venue/contract, dữ liệu và purpose. Hiện chưa có license non-QA đã được xác minh cho dữ liệu Binance USDⓈ-M, nên không tạo positive PAPER/SHADOW journey từ fixture và tiếp tục khóa `SHADOW`/`PAPER_GATE`.
 
 ## Nguồn chính thức đã kiểm tra
 
@@ -42,6 +51,7 @@ Rà soát mã ngày 12/11/2026 phát hiện receipt hiện tại ghim fingerprin
 - Binance Vision Dataset Terms v1.0, công bố cập nhật 2026-08-26: <https://github.com/binance/binance-public-data/blob/master/TERMS_AND_CONDITIONS.md>
 - Binance USDⓈ-M developer documentation (API mô tả truy cập market data, không phải license archive): <https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures>
 - CoinAPI Customer Agreement/AUP (hiệu lực công bố 2025-08-18; kiểm tra 2026-11-20): <https://www.coinapi.io/legal>
+- CoinAPI Data Usage Policy Explained (hướng dẫn không ràng buộc, được trang dẫn chiếu tới Customer Agreement/AUP; kiểm tra 2026-11-23): <https://www.coinapi.io/usage-policy>
 - CoinAPI Market Data API pricing: <https://www.coinapi.io/products/market-data-api/pricing>
 - CoinAPI Market Data API FAQ (coverage, exchange ID, credits/billing): <https://www.coinapi.io/products/market-data-api/faq>
 - CoinAPI OHLCV historical endpoint: <https://www.coinapi.io/products/market-data-api/docs/rest-api/ohlcv/ohlcv/symbol_id/history/get>
@@ -52,6 +62,6 @@ Rà soát mã ngày 12/11/2026 phát hiện receipt hiện tại ghim fingerprin
 
 ## Việc còn cần
 
-- Ledger entry-hold riêng đã được owner duyệt và triển khai; xem spec WP06 incident entry hold. Cần license/receipt áp dụng cho đúng mục đích nội bộ trước khi tải/training. CoinAPI public pricing và điều khoản đã được rà lại ngày 2026-11-20 nhưng chưa có báo giá theo yêu cầu cụ thể; chưa gửi yêu cầu ra ngoài, chưa tạo account/API key và chưa phát sinh chi phí.
+- Ledger entry-hold riêng đã được owner duyệt và triển khai; xem spec WP06 incident entry hold. Cần license/receipt áp dụng cho đúng mục đích nội bộ trước khi tải/training. CoinAPI pricing/FAQ, usage-policy explainer, Customer Agreement và AUP đã được kiểm tra lại ngày 2026-11-23; chưa có báo giá hoặc xác nhận quyền cho use case cụ thể, chưa gửi yêu cầu ra ngoài, chưa tạo account/API key và chưa phát sinh chi phí.
 - Khi có bằng chứng, triển khai provider/evidence adapter nếu cần, nhập nguồn non-QA, tạo run mới với receipt theo run, chạy đủ TRAINING → TEST proof/report theo policy `wp06-scorer-test-v1`, rồi mới kiểm SHADOW, PAPER_GATE riêng, veto/abstain, rollback/restart, history retention và zero-side-effect.
 - Sau journey hợp lệ, chạy independent integrated security review. Giữ active modes khóa trong mọi môi trường sản phẩm cho tới khi các cổng này đạt.

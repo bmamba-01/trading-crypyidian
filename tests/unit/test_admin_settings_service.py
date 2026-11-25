@@ -142,6 +142,9 @@ class MemorySettingsRepository:
 class MemorySession:
     scalar_result: object = None
 
+    def __init__(self) -> None:
+        self.projection_calls = 0
+
     async def scalar(self, statement: object) -> None:
         query = str(statement)
         if "count(" in query:
@@ -149,6 +152,29 @@ class MemorySession:
         if "risk_profile_version" in query:
             return SimpleNamespace()
         return None
+
+    async def execute(self, statement: object, parameters: object) -> Any:
+        del statement, parameters
+        self.projection_calls += 1
+        count = int(self.scalar_result or 0)
+        return _ProjectionResult(
+            {
+                "active_intents": count,
+                "open_positions": 0,
+                "active_reservations": 0,
+            }
+        )
+
+
+class _ProjectionResult:
+    def __init__(self, row: dict[str, int]) -> None:
+        self.row = row
+
+    def mappings(self) -> _ProjectionResult:
+        return self
+
+    def one(self) -> dict[str, int]:
+        return self.row
 
 
 @pytest.mark.asyncio
@@ -158,14 +184,6 @@ async def test_strategy_only_publish_is_not_blocked_by_active_paper_state() -> N
     payload["strategy"]["default_release"] = "h02-v1"
     next_settings = WorkspaceSettings.model_validate(payload)
     session = MemorySession()
-    session.scalar_calls = 0
-
-    async def scalar(statement: object) -> int:
-        del statement
-        session.scalar_calls += 1
-        return 1
-
-    session.scalar = scalar  # type: ignore[method-assign]
     await SettingsAdminService._guard_paper_policy_change(
         SimpleNamespace(session=session),
         workspace_id=uuid4(),
@@ -174,7 +192,7 @@ async def test_strategy_only_publish_is_not_blocked_by_active_paper_state() -> N
         principal=principal_with(Role.OWNER),
     )
 
-    assert session.scalar_calls == 0
+    assert session.projection_calls == 0
 
 
 @pytest.mark.asyncio
@@ -184,12 +202,7 @@ async def test_execution_profile_change_is_blocked_while_paper_state_is_active()
     payload["paper_execution"]["starting_equity"] = "10001"
     next_settings = WorkspaceSettings.model_validate(payload)
     session = MemorySession()
-
-    async def scalar(statement: object) -> int:
-        del statement
-        return 1
-
-    session.scalar = scalar  # type: ignore[method-assign]
+    session.scalar_result = 1
     with pytest.raises(SettingsAdminError, match="Không thể đổi PAPER execution"):
         await SettingsAdminService._guard_paper_policy_change(
             SimpleNamespace(session=session),
@@ -224,7 +237,7 @@ async def test_execution_profile_guard_rejects_principal_without_workspace_bot_v
             next_settings=next_settings,
             principal=principal_with(Role.OPERATOR),
         )
-    assert session.scalar_calls == 0
+    assert session.projection_calls == 0
 
 
 def principal_with(role: Role) -> Principal:

@@ -14,8 +14,42 @@ from trading_bot.application.bot_lifecycle_guard import BotLifecycleGuard, BotNo
 WORKSPACE, BOT = uuid4(), uuid4()
 
 
-def _guard(bot: object | None, positions: int, orders: int, reservations: int):
-    session = RecordingSession(scalar_results=[bot, positions, orders, reservations])
+class _ProjectionResult:
+    def __init__(self, row: dict[str, int | bool]) -> None:
+        self._row = row
+
+    def mappings(self):
+        return self
+
+    def one(self):
+        return self._row
+
+
+class _LifecycleSession(RecordingSession):
+    def __init__(self, row: dict[str, int | bool]) -> None:
+        super().__init__()
+        self.row = row
+
+    async def execute(self, statement, params=None):
+        query = self.statements.append
+        compiled_query = str(statement)
+        query(compiled_query)
+        self.events.append("execute")
+        if "wp06_admin_bot_lifecycle_snapshot" in compiled_query:
+            self.parameters = params
+            return _ProjectionResult(self.row)
+        return None
+
+
+def _guard(bot_exists: bool, positions: int, orders: int, reservations: int):
+    session = _LifecycleSession(
+        {
+            "bot_exists": bot_exists,
+            "open_positions": positions,
+            "open_orders": orders,
+            "held_reservations": reservations,
+        }
+    )
     return BotLifecycleGuard(session), session  # type: ignore[arg-type]
 
 
@@ -25,7 +59,7 @@ def _guard(bot: object | None, positions: int, orders: int, reservations: int):
     ids=["open-position", "open-order", "held-reservation", "all"],
 )
 def test_not_flat_bot_raises_with_counts(positions: int, orders: int, reservations: int) -> None:
-    guard, session = _guard(object(), positions, orders, reservations)
+    guard, session = _guard(True, positions, orders, reservations)
 
     with pytest.raises(BotNotFlatError) as error:
         asyncio.run(guard.ensure_flat_for_disable(WORKSPACE, BOT))
@@ -37,17 +71,17 @@ def test_not_flat_bot_raises_with_counts(positions: int, orders: int, reservatio
 
 
 def test_flat_bot_passes_and_queries_only_that_bot_scope() -> None:
-    guard, session = _guard(object(), 0, 0, 0)
+    guard, session = _guard(True, 0, 0, 0)
 
     assert asyncio.run(guard.ensure_flat_for_disable(WORKSPACE, BOT)) is None
 
-    # [0] L1 advisory lock (M7), [1] tra bot, sau đó ba câu đếm theo bot.
-    statements = session.statements[2:]
-    assert all("bot_id" in statement for statement in statements)
-    assert "trade" in statements[0]
-    assert "order_intent" in statements[1]
-    assert "risk_reservation" in statements[2]
-    assert all("status" in statement for statement in statements)
+    # L1 advisory lock phải đứng trước một truy vấn projection hẹp trong cùng transaction.
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "wp06_admin_bot_lifecycle_snapshot" in session.statements[1]
+    assert "trade" not in session.statements[1]
+    assert "order_intent" not in session.statements[1]
+    assert session.parameters == {"workspace_id": WORKSPACE, "bot_id": BOT}
+    assert session.events == ["execute", "execute"]
 
 
 def test_guard_status_sets_cover_unknown_states() -> None:
@@ -58,7 +92,7 @@ def test_guard_status_sets_cover_unknown_states() -> None:
 
 
 def test_invisible_bot_is_not_found() -> None:
-    guard, _ = _guard(None, 0, 0, 0)
+    guard, _ = _guard(False, 0, 0, 0)
 
     with pytest.raises(BotNotFlatError) as error:
         asyncio.run(guard.ensure_flat_for_disable(WORKSPACE, BOT))

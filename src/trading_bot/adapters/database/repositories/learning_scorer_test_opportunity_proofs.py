@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
@@ -529,6 +529,7 @@ class LearningScorerTestOpportunityProofRepository:
             membership_mismatch_count=missing_total,
             unlabeled_candidate_count=unlabeled_total,
             entries=test_entries,
+            proof_schema_version="v3",
         )
         if proof.candidate_count != len(all_candidate_ids):
             raise ValueError("Candidate inventory TEST có duplicate hoặc count sai.")
@@ -677,6 +678,7 @@ class LearningScorerTestOpportunityProofRepository:
                 BacktestDecisionOpportunityRecord.event_id,
                 BacktestDecisionOpportunityRecord.input_state,
                 BacktestDecisionOpportunityRecord.strategy_state,
+                BacktestDecisionOpportunityRecord.reason_code,
                 BacktestDecisionOpportunityRecord.candidate_id,
                 BacktestDecisionOpportunityRecord.vector_hash,
                 BacktestDecisionOpportunityRecord.runtime_snapshot_id,
@@ -810,7 +812,10 @@ class LearningScorerTestOpportunityProofRepository:
             opportunity = opportunity_by_event.get(event_id)
             if opportunity is None:
                 continue
-            if opportunity.strategy_state not in {"CANDIDATE", "NO_CANDIDATE"}:
+            has_vector = opportunity.strategy_state in {"CANDIDATE", "NO_CANDIDATE"} or (
+                opportunity.input_state == "EVALUATED" and opportunity.strategy_state == "NOT_RUN"
+            )
+            if not has_vector:
                 continue
             if opportunity.feature_schema_hash != scorer_vector_schema_hash:
                 raise ValueError("Decision opportunity TEST lệch scorer vector schema.")
@@ -957,6 +962,14 @@ class LearningScorerTestOpportunityProofRepository:
             )
             if canonical_payload != record.canonical_proof:
                 raise ValueError("canonical bytes không chuẩn")
+            schema_version = payload.get("schema_version")
+            proof_schema_version: Literal["v2", "v3"]
+            if schema_version == "wp06-scorer-test-opportunity-proof-v2":
+                proof_schema_version = "v2"
+            elif schema_version == "wp06-scorer-test-opportunity-proof-v3":
+                proof_schema_version = "v3"
+            else:
+                raise ValueError("schema version proof TEST không được hỗ trợ")
             entries = tuple(
                 ScorerTestOpportunityEntry(
                     stable_id_hash=item["stable_id_hash"],
@@ -967,6 +980,7 @@ class LearningScorerTestOpportunityProofRepository:
                     sample_id_hash=item["sample_id_hash"],
                     sample_hash=item["sample_hash"],
                     vector_hash=item["vector_hash"],
+                    reason_code=item.get("reason_code"),
                 )
                 for item in payload["entries"]
             )
@@ -990,6 +1004,7 @@ class LearningScorerTestOpportunityProofRepository:
                 membership_mismatch_count=payload["membership_mismatch_count"],
                 unlabeled_candidate_count=payload["unlabeled_candidate_count"],
                 entries=entries,
+                proof_schema_version=proof_schema_version,
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise LearningScorerTestOpportunityProofConflict(
@@ -1017,6 +1032,11 @@ class LearningScorerTestOpportunityProofRepository:
             ("candidate_count", record.candidate_count, proof.candidate_count),
             ("no_candidate_count", record.no_candidate_count, proof.no_candidate_count),
             ("input_excluded_count", record.input_excluded_count, proof.input_excluded_count),
+            (
+                "not_run_count",
+                record.not_run_count,
+                proof.not_run_count if proof.proof_schema_version == "v3" else None,
+            ),
             ("source_gap_count", record.source_gap_count, proof.source_gap_count),
             (
                 "membership_mismatch_count",
@@ -1082,11 +1102,22 @@ def _build_test_inventory_entries(
             continue
         stable_id_hash = _sha256(event_id)
         if row.input_state == "INPUT_EXCLUDED" or row.strategy_state == "NOT_RUN":
+            if row.input_state not in {"EVALUATED", "INPUT_EXCLUDED"}:
+                raise ValueError("Opportunity TEST có input_state không hợp lệ.")
+            if row.strategy_state != "NOT_RUN":
+                raise ValueError("INPUT_EXCLUDED TEST phải giữ strategy_state=NOT_RUN.")
+            if not isinstance(row.reason_code, str) or not row.reason_code.strip():
+                raise ValueError("Opportunity TEST chưa chạy/bị loại thiếu reason_code.")
+            status: Literal["input_excluded", "not_run"] = (
+                "input_excluded" if row.input_state == "INPUT_EXCLUDED" else "not_run"
+            )
             entries.append(
                 ScorerTestOpportunityEntry(
                     stable_id_hash=stable_id_hash,
-                    status="input_excluded",
+                    status=status,
                     candidate_id_hash=None,
+                    vector_hash=(row.vector_hash if status == "not_run" else None),
+                    reason_code=row.reason_code,
                 )
             )
             continue

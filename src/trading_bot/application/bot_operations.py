@@ -26,6 +26,9 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.errors import is_transient_database_error
+from trading_bot.adapters.database.repositories.admin_lifecycle_guard import (
+    AdminLifecycleScopeDenied,
+)
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.adapters.database.repositories.bot_operations import (
     BotIdentityRow,
@@ -265,9 +268,12 @@ class PrincipalBotOperations:
                 changed = False
                 if row.status != "DISABLED":
                     # L1 rồi đếm; cùng transaction với lệnh ghi account (ruling 29).
-                    await self._service._lifecycle_guard_factory(
-                        uow.session
-                    ).ensure_flat_for_disable(principal.workspace_id, bot_id)
+                    try:
+                        await self._service._lifecycle_guard_factory(
+                            uow.session
+                        ).ensure_flat_for_disable(principal.workspace_id, bot_id)
+                    except AdminLifecycleScopeDenied:
+                        raise BotRuntimeControlError("CONTROL_PERMISSION_DENIED") from None
                     changed = await repository.disable_account(
                         principal.workspace_id, row.account_id
                     )

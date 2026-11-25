@@ -46,10 +46,12 @@ class MarketScannerService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         unit_of_work: Callable[..., Any] = UnitOfWork,
         repository: Callable[[Any], Any] = BotReportRepository,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._unit_of_work = unit_of_work
         self._repository = repository
 
@@ -66,13 +68,15 @@ class MarketScannerService:
             raise MarketScannerError(403, "Bạn không có quyền xem bộ quét.")
         if timeframe not in SCAN_INTERVALS:
             raise MarketScannerError(422, "Bộ quét chỉ dùng khung 1h, 4h hoặc 1d.")
+        if self._report_reader_sessions is None:
+            raise MarketScannerError(503, "Kho dữ liệu thị trường chưa sẵn sàng.")
         instant = now or datetime.now(UTC)
         limit = 21 * 86400 // SCAN_INTERVALS[timeframe] + 12
         async with self._unit_of_work(
-            self._sessions,
+            self._report_reader_sessions,
             workspace_id=principal.workspace_id,
             actor_membership_id=principal.membership_id,
-            snapshot_read_only=not record,
+            snapshot_read_only=True,
         ) as unit:
             repository = self._repository(unit.session)
             sources: dict[str, dict[str, list[str]]] = {}
@@ -98,8 +102,13 @@ class MarketScannerService:
             result = scan_markets(series, timeframe=timeframe, now=instant, criteria=criteria)
             result["generated_at"] = instant.isoformat()
             result["summary"] = _summary(result)
-            if record:
-                unit.record_audit(
+        if record:
+            async with self._unit_of_work(
+                self._sessions,
+                workspace_id=principal.workspace_id,
+                actor_membership_id=principal.membership_id,
+            ) as audit_unit:
+                audit_unit.record_audit(
                     action=SCAN_ACTION,
                     target_type="market_scan",
                     reason=result["summary"],

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import load_only
 
 from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.bot_entities import BotInstance
@@ -37,6 +41,15 @@ from trading_bot.domain.risk.workspace_budget import MarkPolicy
 
 class PostgresFlattenSnapshotProvider:
     """Tạo snapshot có RLS theo UoW; lỗi hydrate/readiness không bị coi là state rỗng."""
+
+    def __init__(
+        self,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        require_report_reader: bool = False,
+    ) -> None:
+        self._report_reader_sessions = report_reader_sessions
+        self._require_report_reader = require_report_reader
 
     async def capture(self, uow: UnitOfWork) -> FlattenSnapshot:
         settings_repository = WorkspaceSettingsRepository(uow.session)
@@ -71,126 +84,157 @@ class PostgresFlattenSnapshotProvider:
         checkpoint_repository = PaperCheckpointRepository()
         workspace_control = await controls.current_workspace(uow.workspace_id)
         bots: list[FlattenBotSnapshot] = []
-        for bot, account in account_rows.all():
-            await bind_account_bot(
-                uow.session,
-                workspace_id=uow.workspace_id,
-                account_id=account.id,
-                allow_switch=True,
-            )
-            latest = await checkpoint_repository.load_latest(uow, account_id=account.id)
-            targets: list[FlattenTarget] = []
-            if latest is not None:
-                _, snapshot = latest
-                await checkpoint_repository.verify_ledger_consistency(
-                    uow, account_id=account.id, snapshot=snapshot
+        async with self._reader_unit_of_work(uow) as reader_uow:
+            for bot, account in account_rows.all():
+                await bind_account_bot(
+                    reader_uow.session,
+                    workspace_id=uow.workspace_id,
+                    account_id=account.id,
+                    allow_switch=True,
                 )
-                gateway = PaperExecutionGateway.restore(profile.fill_policy, snapshot)
-                orders = {
-                    row.idempotency_key: row
-                    for row in (
-                        await uow.session.scalars(
-                            select(OrderIntentRecord).where(
-                                OrderIntentRecord.workspace_id == uow.workspace_id,
-                                OrderIntentRecord.bot_id == bot.id,
-                                OrderIntentRecord.account_id == account.id,
+                latest = await checkpoint_repository.load_latest_for_report_reader(
+                    reader_uow, account_id=account.id
+                )
+                targets: list[FlattenTarget] = []
+                if latest is not None:
+                    _, snapshot = latest
+                    await checkpoint_repository.verify_ledger_consistency_for_report_reader(
+                        reader_uow, account_id=account.id, snapshot=snapshot
+                    )
+                    gateway = PaperExecutionGateway.restore(profile.fill_policy, snapshot)
+                    orders = {
+                        row.idempotency_key: row
+                        for row in (
+                            await reader_uow.session.scalars(
+                                select(OrderIntentRecord)
+                                .options(
+                                    load_only(
+                                        OrderIntentRecord.idempotency_key,
+                                        OrderIntentRecord.risk_reservation_id,
+                                    )
+                                )
+                                .where(
+                                    OrderIntentRecord.workspace_id == uow.workspace_id,
+                                    OrderIntentRecord.bot_id == bot.id,
+                                    OrderIntentRecord.account_id == account.id,
+                                )
+                            )
+                        ).all()
+                    }
+                    for position in sorted(
+                        gateway.open_positions(), key=lambda item: item.position_id
+                    ):
+                        mark = await self._mark(
+                            reader_uow,
+                            symbol=position.symbol,
+                            policy=mark_policy,
+                            as_of=now,
+                        )
+                        target_fields: dict[str, Any] = {}
+                        if mark is None:
+                            target_fields["mark_error_code"] = "FLATTEN_MARK_UNAVAILABLE"
+                        elif now - mark.close_time > max_mark_age:
+                            target_fields["mark_error_code"] = "FLATTEN_MARK_STALE"
+                        else:
+                            target_fields |= {
+                                "mark_price": mark.close,
+                                "mark_record_id": mark.id,
+                                "mark_revision": mark.revision,
+                                "mark_checksum": mark.checksum,
+                                "mark_close_time": mark.close_time,
+                            }
+                        order = next(
+                            (
+                                item
+                                for item in gateway.open_orders()
+                                if item.intent_id == position.intent_id
+                            ),
+                            None,
+                        )
+                        ledger_order = (
+                            orders.get(order.idempotency_key) if order is not None else None
+                        )
+                        targets.append(
+                            FlattenTarget(
+                                target_type="POSITION",
+                                target_id=position.position_id,
+                                symbol=position.symbol,
+                                status="OPEN",
+                                quantity=position.quantity,
+                                reservation_id=(
+                                    ledger_order.risk_reservation_id
+                                    if ledger_order is not None
+                                    else None
+                                ),
+                                **target_fields,
                             )
                         )
-                    ).all()
-                }
-                for position in sorted(gateway.open_positions(), key=lambda item: item.position_id):
-                    mark = await self._mark(
-                        uow,
-                        symbol=position.symbol,
-                        policy=mark_policy,
-                        as_of=now,
+                    for order in sorted(gateway.open_orders(), key=lambda item: item.intent_id):
+                        ledger_order = orders.get(order.idempotency_key)
+                        targets.append(
+                            FlattenTarget(
+                                target_type="OPEN_ORDER",
+                                target_id=order.intent_id,
+                                symbol=order.symbol,
+                                status=order.status.value,
+                                quantity=order.remaining_quantity,
+                                reservation_id=(
+                                    ledger_order.risk_reservation_id
+                                    if ledger_order is not None
+                                    else None
+                                ),
+                            )
+                        )
+                state = await uow.session.scalar(
+                    select(BotRuntimeStateRecord).where(
+                        BotRuntimeStateRecord.workspace_id == uow.workspace_id,
+                        BotRuntimeStateRecord.bot_id == bot.id,
+                        BotRuntimeStateRecord.account_id == account.id,
                     )
-                    target_fields: dict[str, Any] = {}
-                    if mark is None:
-                        target_fields["mark_error_code"] = "FLATTEN_MARK_UNAVAILABLE"
-                    elif now - mark.close_time > max_mark_age:
-                        target_fields["mark_error_code"] = "FLATTEN_MARK_STALE"
-                    else:
-                        target_fields |= {
-                            "mark_price": mark.close,
-                            "mark_record_id": mark.id,
-                            "mark_revision": mark.revision,
-                            "mark_checksum": mark.checksum,
-                            "mark_close_time": mark.close_time,
-                        }
-                    order = next(
-                        (
-                            item
-                            for item in gateway.open_orders()
-                            if item.intent_id == position.intent_id
+                )
+                bot_control = await controls.current_bot(uow.workspace_id, bot.id)
+                bots.append(
+                    FlattenBotSnapshot(
+                        bot_id=bot.id,
+                        account_id=account.id,
+                        bot_control_revision=(
+                            bot_control.revision if bot_control is not None else 0
                         ),
-                        None,
+                        workspace_control_revision=(
+                            workspace_control.revision if workspace_control is not None else 0
+                        ),
+                        targets=tuple(targets),
+                        readiness=state.readiness if state is not None else None,
+                        activity_status=state.activity_status if state is not None else None,
+                        account_status=account.status,
+                        bot_entry_state=(
+                            bot_control.entry_state.value if bot_control is not None else "ENABLED"
+                        ),
+                        workspace_killed=(
+                            workspace_control is not None
+                            and workspace_control.kill_state.value == "KILLED"
+                        ),
+                        applied_bot_control_revision=(
+                            state.applied_bot_control_revision if state is not None else None
+                        ),
                     )
-                    ledger_order = orders.get(order.idempotency_key) if order is not None else None
-                    targets.append(
-                        FlattenTarget(
-                            target_type="POSITION",
-                            target_id=position.position_id,
-                            symbol=position.symbol,
-                            status="OPEN",
-                            quantity=position.quantity,
-                            reservation_id=(
-                                ledger_order.risk_reservation_id
-                                if ledger_order is not None
-                                else None
-                            ),
-                            **target_fields,
-                        )
-                    )
-                for order in sorted(gateway.open_orders(), key=lambda item: item.intent_id):
-                    ledger_order = orders.get(order.idempotency_key)
-                    targets.append(
-                        FlattenTarget(
-                            target_type="OPEN_ORDER",
-                            target_id=order.intent_id,
-                            symbol=order.symbol,
-                            status=order.status.value,
-                            quantity=order.remaining_quantity,
-                            reservation_id=(
-                                ledger_order.risk_reservation_id
-                                if ledger_order is not None
-                                else None
-                            ),
-                        )
-                    )
-            state = await uow.session.scalar(
-                select(BotRuntimeStateRecord).where(
-                    BotRuntimeStateRecord.workspace_id == uow.workspace_id,
-                    BotRuntimeStateRecord.bot_id == bot.id,
-                    BotRuntimeStateRecord.account_id == account.id,
                 )
-            )
-            bot_control = await controls.current_bot(uow.workspace_id, bot.id)
-            bots.append(
-                FlattenBotSnapshot(
-                    bot_id=bot.id,
-                    account_id=account.id,
-                    bot_control_revision=bot_control.revision if bot_control is not None else 0,
-                    workspace_control_revision=(
-                        workspace_control.revision if workspace_control is not None else 0
-                    ),
-                    targets=tuple(targets),
-                    readiness=state.readiness if state is not None else None,
-                    activity_status=state.activity_status if state is not None else None,
-                    account_status=account.status,
-                    bot_entry_state=(
-                        bot_control.entry_state.value if bot_control is not None else "ENABLED"
-                    ),
-                    workspace_killed=(
-                        workspace_control is not None
-                        and workspace_control.kill_state.value == "KILLED"
-                    ),
-                    applied_bot_control_revision=(
-                        state.applied_bot_control_revision if state is not None else None
-                    ),
-                )
-            )
         return FlattenSnapshot(uow.workspace_id, now, tuple(bots))
+
+    @asynccontextmanager
+    async def _reader_unit_of_work(self, uow: UnitOfWork) -> AsyncIterator[UnitOfWork]:
+        if self._report_reader_sessions is None:
+            if self._require_report_reader:
+                raise RuntimeError("ADMIN_REPORT_READER_UNAVAILABLE")
+            yield uow
+            return
+        async with UnitOfWork(
+            self._report_reader_sessions,
+            workspace_id=uow.workspace_id,
+            actor_membership_id=uow.actor_membership_id,
+            snapshot_read_only=True,
+        ) as reader_uow:
+            yield reader_uow
 
     async def _mark(
         self,
@@ -202,6 +246,21 @@ class PostgresFlattenSnapshotProvider:
     ) -> MarketBar | None:
         row = await uow.session.scalar(
             select(MarketBar)
+            .options(
+                load_only(
+                    MarketBar.id,
+                    MarketBar.workspace_id,
+                    MarketBar.source,
+                    MarketBar.symbol,
+                    MarketBar.timeframe,
+                    MarketBar.close_time,
+                    MarketBar.available_at,
+                    MarketBar.is_closed,
+                    MarketBar.revision,
+                    MarketBar.checksum,
+                    MarketBar.close,
+                )
+            )
             .where(
                 MarketBar.workspace_id == uow.workspace_id,
                 MarketBar.symbol == symbol,

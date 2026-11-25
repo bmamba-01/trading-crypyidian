@@ -22,6 +22,7 @@ from trading_bot.auth.router import client_address, get_auth_service
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.service import AuthenticationFailure
 from trading_bot.common.http_limits import (
+    BodySizeLimitMiddleware,
     SlidingWindowRateLimiter,
     parse_trusted_proxies,
     resolve_client_ip,
@@ -419,6 +420,57 @@ def test_oversized_real_route_and_multi_content_length_return_413() -> None:
     assert spoofed_cl.status_code == 413
 
 
+def test_license_evidence_route_gets_10_mib_while_other_requests_stay_global_limit() -> None:
+    evidence_path = "/api/v1/research-sources/source/revisions/policy/license-evidence"
+    evidence_bytes: list[int] = []
+    app = FastAPI()
+
+    @app.post(evidence_path)
+    async def upload_evidence(request: Request) -> JSONResponse:
+        body = await request.body()
+        evidence_bytes.append(len(body))
+        return JSONResponse({"size": len(body)})
+
+    @app.post("/probe/mutate")
+    async def mutate(request: Request) -> JSONResponse:
+        return JSONResponse({"size": len(await request.body())})
+
+    wrapped = BodySizeLimitMiddleware(
+        app,
+        max_bytes=512,
+        path_overrides=(
+            (
+                "POST",
+                "/api/v1/research-sources/{source_id}/revisions/{policy_id}/license-evidence",
+                10 * 1024 * 1024,
+            ),
+        ),
+    )
+    client = TestClient(wrapped)
+
+    successful = client.post(evidence_path, content=b"e" * (1024 * 1024 + 1))
+    assert successful.status_code == 200
+    assert successful.json() == {"size": 1024 * 1024 + 1}
+    assert evidence_bytes == [1024 * 1024 + 1]
+
+    too_large = client.post(evidence_path, content=b"e" * (10 * 1024 * 1024 + 1))
+    assert too_large.status_code == 413
+    assert too_large.headers["cache-control"] == "no-store"
+    assert evidence_bytes == [1024 * 1024 + 1]
+
+    ordinary = client.post("/probe/mutate", content=b"x" * 513)
+    assert ordinary.status_code == 413
+    assert ordinary.headers["cache-control"] == "no-store"
+
+    wrong_method = client.request("GET", evidence_path, content=b"x" * 513)
+    assert wrong_method.status_code == 413
+    assert wrong_method.headers["cache-control"] == "no-store"
+
+    wrong_route = client.post(evidence_path + "/extra", content=b"x" * 513)
+    assert wrong_route.status_code == 413
+    assert wrong_route.headers["cache-control"] == "no-store"
+
+
 def test_deploy_artifacts_and_uvicorn_flags_are_configured(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
@@ -427,7 +479,10 @@ def test_deploy_artifacts_and_uvicorn_flags_are_configured(tmp_path: Path) -> No
     assert "--no-server-header" in dockerfile
 
     caddyfile = (root / "deploy" / "Caddyfile").read_text(encoding="utf-8")
-    assert "max_size 1MB" in caddyfile
+    assert "max_size 1048576" in caddyfile
+    assert "max_size 10485760" in caddyfile
+    assert "method POST" in caddyfile
+    assert "license-evidence" in caddyfile
     assert "149.154.160.0/20" in caddyfile
     assert "91.108.4.0/22" in caddyfile
     assert "reverse_proxy admin-web:8000" in caddyfile
@@ -435,6 +490,8 @@ def test_deploy_artifacts_and_uvicorn_flags_are_configured(tmp_path: Path) -> No
     nginx = (root / "deploy" / "nginx" / "crypidian.conf").read_text(encoding="utf-8")
     assert "TLSv1.2 TLSv1.3" in nginx
     assert "client_max_body_size 1m;" in nginx
+    assert "client_max_body_size 10m;" in nginx
+    assert "license-evidence" in nginx
     assert "limit_req_zone" in nginx
     assert "X-Forwarded-For $remote_addr" in nginx
     assert "149.154.160.0/20" in nginx
@@ -515,6 +572,58 @@ def test_deploy_artifacts_and_uvicorn_flags_are_configured(tmp_path: Path) -> No
     assert "--forwarded-allow-ips" in admin_web["command"]
     assert "--limit-concurrency" in admin_web["command"]
     assert "--no-server-header" in admin_web["command"]
+
+    # Overlay E2E phải ghim subnet ingress và chỉ tin đúng subnet đó.
+    proxy_override = root / "tests" / "e2e" / "fixtures" / "wp06_license_upload_proxy.compose.yaml"
+    assert proxy_override.is_file()
+    proxy_token = secrets_dir / "wp06_proxy_telegram_token.txt"
+    proxy_token.write_text("123456789:unit_test_placeholder\n", encoding="utf-8")
+    proxy_env = env | {
+        "TRADING_BOT_TRUSTED_PROXY_IPS": "198.18.254.0/24",
+        "WP06_PROXY_TELEGRAM_TOKEN_FILE": str(proxy_token),
+        "WP06_PROXY_PORT": "18443",
+    }
+    proxy_result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            "crypidian-wp06-proxy-contract",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "deploy/compose.tls.yaml",
+            "-f",
+            str(proxy_override),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env=proxy_env,
+        text=True,
+        encoding="utf-8",
+    )
+    proxy_model = json.loads(proxy_result.stdout)
+    proxy_admin = proxy_model["services"]["admin-web"]
+    assert proxy_admin["environment"]["TRADING_BOT_TRUSTED_PROXY_IPS"] == "198.18.254.0/24"
+    ingress = next(
+        network for name, network in proxy_model["networks"].items() if name.endswith("web_ingress")
+    )
+    assert ingress["ipam"]["config"][0]["subnet"] == "198.18.254.0/24"
+    reverse_proxy = proxy_model["services"]["reverse-proxy"]
+    assert "web_ingress" in reverse_proxy["networks"]
+    assert reverse_proxy["ports"] == [
+        {
+            "host_ip": "127.0.0.1",
+            "mode": "ingress",
+            "target": 443,
+            "published": "18443",
+            "protocol": "tcp",
+        }
+    ]
 
 
 def test_uvicorn_proxy_headers_middleware_composes_cleanly_with_app() -> None:

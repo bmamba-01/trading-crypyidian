@@ -8,10 +8,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
+from typing import Literal, overload
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.exc import DBAPIError
 
 
@@ -25,12 +26,51 @@ def _url(user: str, password: str) -> URL:
     )
 
 
-def _seed_qa_decision_source(connection, workspace_id: UUID, bot_id: UUID) -> tuple[UUID, UUID]:
-    """Tạo lineage QA tối thiểu trong database kiểm thử tạm, không tạo policy/license."""
+@overload
+def _seed_qa_decision_source(
+    connection: Connection,
+    workspace_id: UUID,
+    bot_id: UUID,
+    *,
+    source: str = "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE",
+) -> tuple[UUID, UUID]: ...
+
+
+@overload
+def _seed_qa_decision_source(
+    connection: Connection,
+    workspace_id: UUID,
+    bot_id: UUID,
+    *,
+    include_trade: Literal[True],
+    source: str = "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE",
+) -> tuple[UUID, UUID]: ...
+
+
+@overload
+def _seed_qa_decision_source(
+    connection: Connection,
+    workspace_id: UUID,
+    bot_id: UUID,
+    *,
+    include_trade: Literal[False],
+    source: str = "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE",
+) -> tuple[UUID, None]: ...
+
+
+def _seed_qa_decision_source(
+    connection: Connection,
+    workspace_id: UUID,
+    bot_id: UUID,
+    *,
+    include_trade: bool = True,
+    source: str = "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE",
+) -> tuple[UUID, UUID | None]:
+    """Tạo lineage tổng hợp, tùy chọn không seed trade, không tạo policy/license."""
     now = datetime.now(UTC)
     bar_id = uuid4()
     decision_id = uuid4()
-    trade_id = uuid4()
+    trade_id = uuid4() if include_trade else None
     account_id = uuid4()
     decision_snapshot_id = "d" * 64
     feature_snapshot_id = "e" * 64
@@ -44,7 +84,7 @@ def _seed_qa_decision_source(connection, workspace_id: UUID, bot_id: UUID) -> tu
                 close_time,event_at,received_at,available_at,open,high,low,close,volume,
                 quote_volume,is_closed,id
             ) VALUES (
-                :workspace,:instrument,'BTCUSDT','1h','CRYPIDIAN_FIRST_PARTY_QA_FIXTURE',
+                :workspace,:instrument,'BTCUSDT','1h',:source,
                 :logical_key,:idempotency_key,1,:checksum,NULL,NULL,NULL,:open_time,
                 :close_time,:close_time,:close_time,:close_time,100,101,99,100,1,NULL,true,:bar
             )
@@ -53,8 +93,9 @@ def _seed_qa_decision_source(connection, workspace_id: UUID, bot_id: UUID) -> tu
         {
             "workspace": workspace_id,
             "instrument": uuid4(),
-            "logical_key": f"qa:{bar_id}",
-            "idempotency_key": f"qa:{bar_id}",
+            "source": source,
+            "logical_key": f"paper-source-scope:{source}:{bar_id}",
+            "idempotency_key": f"paper-source-scope:{source}:{bar_id}",
             "checksum": "a" * 64,
             "open_time": now - timedelta(hours=1),
             "close_time": now,
@@ -163,38 +204,40 @@ def _seed_qa_decision_source(connection, workspace_id: UUID, bot_id: UUID) -> tu
             "event_digest": source_event_digest,
         },
     )
-    connection.execute(
-        text(
-            """
-            INSERT INTO public.trade (
-                id,workspace_id,bot_id,account_id,mode,intent_id,status,symbol,quote_asset,
-                side,settings_version_id,strategy_release_id,strategy_release_hash,
-                feature_snapshot_id,candidate_id,risk_decision_id,risk_reservation_id,
-                gross_pnl,fee_total,funding_total,slippage_total,total_cost,net_pnl,
-                opened_at,closed_at,lineage
-            ) VALUES (
-                :id,:workspace,:bot,:account,'PAPER',:intent,'OPEN','BTCUSDT','USDT','LONG',
-                :settings,:release,:release_hash,:feature,:candidate,:risk_decision,
-                :reservation,0,0,0,0,0,0,:opened_at,NULL,'{}'::jsonb
-            )
-            """
-        ),
-        {
-            "id": trade_id,
-            "workspace": workspace_id,
-            "bot": bot_id,
-            "account": account_id,
-            "intent": uuid4(),
-            "settings": uuid4(),
-            "release": uuid4(),
-            "release_hash": "7" * 64,
-            "feature": feature_snapshot_id,
-            "candidate": "4" * 64,
-            "risk_decision": uuid4(),
-            "reservation": uuid4(),
-            "opened_at": now,
-        },
-    )
+    if include_trade:
+        assert trade_id is not None
+        connection.execute(
+            text(
+                """
+                INSERT INTO public.trade (
+                    id,workspace_id,bot_id,account_id,mode,intent_id,status,symbol,quote_asset,
+                    side,settings_version_id,strategy_release_id,strategy_release_hash,
+                    feature_snapshot_id,candidate_id,risk_decision_id,risk_reservation_id,
+                    gross_pnl,fee_total,funding_total,slippage_total,total_cost,net_pnl,
+                    opened_at,closed_at,lineage
+                ) VALUES (
+                    :id,:workspace,:bot,:account,'PAPER',:intent,'OPEN','BTCUSDT','USDT','LONG',
+                    :settings,:release,:release_hash,:feature,:candidate,:risk_decision,
+                    :reservation,0,0,0,0,0,0,:opened_at,NULL,'{}'::jsonb
+                )
+                """
+            ),
+            {
+                "id": trade_id,
+                "workspace": workspace_id,
+                "bot": bot_id,
+                "account": account_id,
+                "intent": uuid4(),
+                "settings": uuid4(),
+                "release": uuid4(),
+                "release_hash": "7" * 64,
+                "feature": feature_snapshot_id,
+                "candidate": "4" * 64,
+                "risk_decision": uuid4(),
+                "reservation": uuid4(),
+                "opened_at": now,
+            },
+        )
     return decision_id, trade_id
 
 
@@ -273,6 +316,95 @@ def _probe_trade_member_fence(engine, workspace_id: UUID, trade_id: UUID) -> boo
     return writer_waited and visible_status == "OPEN" and final_status == "CLOSED"
 
 
+def _probe_paper_gate_source_lock_order(
+    admin_engine, super_engine, workspace_id: UUID, decision_id: UUID
+) -> bool:
+    """Chứng minh gate chờ source lock rồi mới từ chối nguồn QA, không ghi report."""
+    lock_key = f"research-source:{workspace_id}:CRYPIDIAN_FIRST_PARTY_QA"
+    gate_started = Event()
+    gate_done = Event()
+    gate_pid: list[int] = []
+    gate_result: list[bool] = []
+    gate_errors: list[BaseException] = []
+
+    def check_gate() -> None:
+        try:
+            with admin_engine.begin() as gate:
+                gate.execute(
+                    text("SELECT pg_catalog.set_config('app.workspace_id', :workspace, true)"),
+                    {"workspace": str(workspace_id)},
+                )
+                gate.execute(text("SET LOCAL lock_timeout = '3s'"))
+                gate_pid.append(
+                    gate.execute(text("SELECT pg_catalog.pg_backend_pid()")).scalar_one()
+                )
+                gate_started.set()
+                gate_result.append(
+                    gate.execute(
+                        text(
+                            "SELECT public.wp06_can_aggregate_paper_performance_decision_source"
+                            "(:workspace,:decision)"
+                        ),
+                        {"workspace": workspace_id, "decision": decision_id},
+                    ).scalar_one()
+                )
+            gate_done.set()
+        except BaseException as error:
+            gate_errors.append(error)
+            gate_done.set()
+
+    with super_engine.connect() as blocker:
+        transaction = blocker.begin()
+        blocker.execute(text("SET LOCAL lock_timeout = '3s'"))
+        blocker.execute(
+            text(
+                "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(:lock_key, 0))"
+            ),
+            {"lock_key": lock_key},
+        )
+        gate_thread = Thread(target=check_gate)
+        gate_thread.start()
+        assert gate_started.wait(timeout=5), "PAPER gate connection không khởi động."
+        deadline = monotonic() + 5
+        gate_waited = False
+        while monotonic() < deadline and not gate_done.is_set():
+            gate_waited = blocker.execute(
+                text("SELECT pg_catalog.pg_blocking_pids(:pid) <> ARRAY[]::integer[]"),
+                {"pid": gate_pid[0]},
+            ).scalar_one()
+            if gate_waited:
+                break
+            sleep(0.05)
+        report_count_while_waiting = blocker.execute(
+            text(
+                "SELECT count(*) FROM public.learning_paper_performance_report "
+                "WHERE workspace_id=:workspace"
+            ),
+            {"workspace": workspace_id},
+        ).scalar_one()
+        transaction.commit()
+        gate_thread.join(timeout=5)
+        assert not gate_thread.is_alive(), "PAPER gate chưa tiếp tục sau khi nhả source lock."
+    if gate_errors:
+        raise AssertionError("PAPER source gate lỗi khi tiếp tục sau source lock.") from (
+            gate_errors[0]
+        )
+    with super_engine.connect() as connection:
+        report_count_after = connection.execute(
+            text(
+                "SELECT count(*) FROM public.learning_paper_performance_report "
+                "WHERE workspace_id=:workspace"
+            ),
+            {"workspace": workspace_id},
+        ).scalar_one()
+    return (
+        gate_waited
+        and gate_result == [False]
+        and report_count_while_waiting == 0
+        and report_count_after == 0
+    )
+
+
 def _assert_admin_payload_select_denied(connection, workspace_id: UUID) -> bool:
     try:
         with connection.begin_nested():
@@ -309,6 +441,9 @@ def main() -> None:
 
         writer_waits_before_mutation = _probe_trade_member_fence(
             super_engine, workspace_id, trade_id
+        )
+        paper_gate_waits_for_source_lock = _probe_paper_gate_source_lock_order(
+            admin_engine, super_engine, workspace_id, decision_id
         )
 
         with admin_engine.begin() as connection:
@@ -405,6 +540,7 @@ def main() -> None:
         assert payload_select_denied is True
         assert report_count == 0
         assert writer_waits_before_mutation is True
+        assert paper_gate_waits_for_source_lock is True
         print(
             json.dumps(
                 {
@@ -417,6 +553,7 @@ def main() -> None:
                     "missing_report_rights_false": True,
                     "missing_report_gateway_empty": True,
                     "no_paper_report_written": True,
+                    "paper_gate_waits_for_source_lock_before_qa_denial": True,
                     "writer_waits_before_member_mutation": True,
                 },
                 sort_keys=True,

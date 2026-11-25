@@ -113,6 +113,8 @@ class OperationalHealthService:
         """Đọc telemetry thật trong transaction READ ONLY và trả snapshot đã che bí mật."""
         evaluated_at = now_utc or self._clock()
         total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
+        if actor_membership_id is None:
+            raise PermissionError("Cần membership đang xác thực để đọc telemetry vận hành.")
         async with UnitOfWork(
             self._sessions,
             workspace_id=workspace_id,
@@ -120,10 +122,13 @@ class OperationalHealthService:
             snapshot_read_only=True,
         ) as unit:
             repo = OperationalTelemetryRepository(unit.session, clock=self._clock)
-            telemetry, loss_snapshot = await repo.collect(
+            telemetry, loss_snapshot = await repo.collect_admin_projection(
                 workspace_id=workspace_id,
+                membership_id=actor_membership_id,
+                bot_id=None,
                 as_of=evaluated_at,
                 consecutive_api_errors=total_api_errors,
+                operation="health_read",
             )
             persisted = await repo.latest_breaker_snapshot(
                 workspace_id=workspace_id,
@@ -170,10 +175,13 @@ class OperationalHealthService:
                 workspace_id=workspace_id,
                 scope_key=scope_key,
             )
-            telemetry, _ = await repo.collect(
+            telemetry, _ = await repo.collect_admin_projection(
                 workspace_id=workspace_id,
+                membership_id=operator_membership_id,
                 as_of=now_utc,
                 bot_id=bot_id,
+                consecutive_api_errors=0,
+                operation="breaker_resume",
             )
             engine = CircuitBreakerEngine.from_snapshot(persisted)
             # Cập nhật cooldown nếu đã trôi qua trước khi gọi request_resume

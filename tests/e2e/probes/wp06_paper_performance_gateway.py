@@ -129,6 +129,16 @@ def _url(user: str, password: str) -> URL:
     )
 
 
+def _admin_select_is_denied(connection, query: str) -> bool:
+    """Kiểm tra truy vấn nguồn thô bị từ chối bằng quyền DB của admin-web."""
+    try:
+        with connection.begin_nested():
+            connection.execute(text(query)).all()
+    except DBAPIError as error:
+        return getattr(error.orig, "sqlstate", None) == "42501"
+    return False
+
+
 def main() -> None:
     workspace_id = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
     bot_id = uuid4()
@@ -573,6 +583,96 @@ def main() -> None:
                 {"workspace": workspace_id, "report_id": report_id},
             )
             assert report_exists is False, "Denial không được lưu report."
+            admin_score_rows_denied = _admin_select_is_denied(
+                connection,
+                "SELECT class_probabilities FROM public.learning_score_event LIMIT 1",
+            )
+            admin_trade_rows_denied = _admin_select_is_denied(
+                connection,
+                "SELECT net_pnl FROM public.trade LIMIT 1",
+            )
+            admin_inherits_app_role = connection.execute(
+                text("SELECT pg_catalog.pg_has_role('crypidian_admin_web','crypidian_app','USAGE')")
+            ).scalar_one()
+            assert admin_score_rows_denied is True
+            assert admin_trade_rows_denied is True
+            assert admin_inherits_app_role is False
+        # Báo cáo tối thiểu này chỉ kiểm RLS và cách ly workspace trong DB Compose dùng riêng;
+        # nó không đại diện quyền dữ liệu, kết quả dương tính hoặc báo cáo đủ điều kiện.
+        with super_engine.begin() as connection:
+            connection.execute(text("SET LOCAL session_replication_role = replica"))
+            connection.execute(
+                text(
+                    "INSERT INTO public.learning_paper_performance_report ("
+                    "id,workspace_id,bot_id,baseline_report_id,baseline_report_hash,"
+                    "policy_version,policy_hash,target_fingerprint,membership_digest,"
+                    "as_of,status,idempotency_key,report_hash,report,canonical_report) VALUES ("
+                    ":report_id,:workspace_id,:bot_id,:baseline_report_id,:baseline_report_hash,"
+                    ":policy_version,:policy_hash,:target_fingerprint,:membership_digest,"
+                    ":as_of,'inconclusive',:idempotency_key,:report_hash,"
+                    "CAST(:report AS jsonb),:canonical_report)"
+                ),
+                {
+                    "report_id": report_id,
+                    "workspace_id": workspace_id,
+                    "bot_id": bot_id,
+                    "baseline_report_id": baseline_report_id,
+                    "baseline_report_hash": baseline_report_hash,
+                    "policy_version": policy.version,
+                    "policy_hash": policy.content_hash,
+                    "target_fingerprint": target_fingerprint,
+                    "membership_digest": "f" * 64,
+                    "as_of": as_of,
+                    "idempotency_key": uuid4(),
+                    "report_hash": report_hash,
+                    "report": canonical_report,
+                    "canonical_report": canonical_report,
+                },
+            )
+
+        foreign_workspace_id = uuid4()
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("SELECT pg_catalog.set_config('app.workspace_id', :workspace, true)"),
+                {"workspace": str(workspace_id)},
+            )
+            owner_metadata_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM public.learning_paper_performance_report "
+                    "WHERE workspace_id=:workspace AND id=:report_id"
+                ),
+                {"workspace": workspace_id, "report_id": report_id},
+            ).scalar_one()
+            connection.execute(
+                text("SELECT pg_catalog.set_config('app.workspace_id', :workspace, true)"),
+                {"workspace": str(foreign_workspace_id)},
+            )
+            foreign_metadata_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM public.learning_paper_performance_report "
+                    "WHERE workspace_id=:owner_workspace AND id=:report_id"
+                ),
+                {"owner_workspace": workspace_id, "report_id": report_id},
+            ).scalar_one()
+            foreign_gateway_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM public.wp06_read_paper_performance_report("
+                    ":workspace,:report_id)"
+                ),
+                {"workspace": foreign_workspace_id, "report_id": report_id},
+            ).scalar_one()
+        assert owner_metadata_count == 1
+        assert foreign_metadata_count == 0
+        assert foreign_gateway_count == 0
+        with super_engine.begin() as connection:
+            connection.execute(text("SET LOCAL session_replication_role = replica"))
+            connection.execute(
+                text(
+                    "DELETE FROM public.learning_paper_performance_report "
+                    "WHERE workspace_id=:workspace AND id=:report_id"
+                ),
+                {"workspace": workspace_id, "report_id": report_id},
+            )
         assert acl["evaluator_isolated"] is True
         assert acl["trade_column_scoped"] is True
         assert acl["report_table_access_denied"] is True
@@ -603,6 +703,9 @@ def main() -> None:
                     "report_writer_zero_eligible_coverage_guard": True,
                     "report_writer_denies_missing_target_without_mutation": True,
                     "no_raw_member_fields_returned": True,
+                    "cross_workspace_report_hidden": True,
+                    "admin_raw_score_access_denied": True,
+                    "admin_raw_trade_access_denied": True,
                 },
                 sort_keys=True,
             )

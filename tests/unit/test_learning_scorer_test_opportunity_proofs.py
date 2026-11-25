@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -111,6 +111,50 @@ def test_proof_record_keeps_only_canonical_hashed_inventory_and_exact_scope() ->
     repository_type.validate_record(record)
 
 
+def test_v2_proof_canonical_hash_remains_unchanged() -> None:
+    proof = replace(
+        _proof(),
+        record_id=UUID(int=1),
+        workspace_id=UUID(int=2),
+        evaluation_run_id=UUID(int=3),
+        attempt_id=UUID(int=4),
+        normalized_dataset_id=UUID(int=5),
+    )
+
+    payload = json.loads(proof.canonical_json)
+
+    assert proof.content_hash == "6bb91f928de4c21b58627200e141e7fd37bddd5399c35bfd58eacc64c5de3bfe"
+    assert payload["schema_version"] == "wp06-scorer-test-opportunity-proof-v2"
+    assert "not_run_count" not in payload
+    assert all("reason_code" not in entry for entry in payload["entries"])
+
+
+def test_v2_proof_retains_combined_legacy_input_excluded_count() -> None:
+    base = _proof()
+    input_excluded = ScorerTestOpportunityEntry(
+        stable_id_hash=hashlib.sha256(b"event:legacy-input-excluded").hexdigest(),
+        status="input_excluded",
+        candidate_id_hash=None,
+    )
+    proof = replace(
+        base,
+        expected_opportunity_count=3,
+        entries=tuple(
+            sorted((*base.entries, input_excluded), key=lambda entry: entry.stable_id_hash)
+        ),
+    )
+    record_type, _, _ = _database_api()
+
+    record = record_type.from_proof(proof)
+    payload = json.loads(record.canonical_proof)
+
+    assert payload["schema_version"] == "wp06-scorer-test-opportunity-proof-v2"
+    assert proof.input_excluded_count == record.input_excluded_count == 1
+    assert record.not_run_count is None
+    assert sum(entry["status"] == "input_excluded" for entry in payload["entries"]) == 1
+    assert "not_run_count" not in payload
+
+
 @pytest.mark.asyncio
 async def test_repository_preserves_legacy_evaluation_proof_hash_for_new_builder_operation() -> (
     None
@@ -191,7 +235,7 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
         _TestMembershipRow,
     )
 
-    event_ids = tuple(f"event-{index}" for index in range(5))
+    event_ids = tuple(f"event-{index}" for index in range(6))
     candidate_ids = {
         event_ids[0]: hashlib.sha256(b"candidate-labeled").hexdigest(),
         event_ids[2]: hashlib.sha256(b"candidate-unlabeled").hexdigest(),
@@ -210,6 +254,13 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
                 "candidate": "CANDIDATE",
                 "no_candidate": "NO_CANDIDATE",
                 "excluded": "NOT_RUN",
+                "not_run": "NOT_RUN",
+            }[state],
+            reason_code={
+                "candidate": "CANDIDATE_CREATED",
+                "no_candidate": "NO_SIGNAL",
+                "excluded": "INPUT_NOT_READY",
+                "not_run": "SETTINGS_NOT_EFFECTIVE",
             }[state],
             candidate_id=candidate_id,
             vector_hash=vector_hash,
@@ -228,6 +279,7 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
         event_ids[2], state="candidate", candidate_id=candidate_ids[event_ids[2]]
     )
     excluded_row = opportunity(event_ids[3], state="excluded")
+    not_run_row = opportunity(event_ids[4], state="not_run")
     outcome = SimpleNamespace(
         id=outcome_id,
         outcome_hash=hashlib.sha256(b"outcome").hexdigest(),
@@ -255,6 +307,7 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
             event_ids[1]: no_candidate_row,
             event_ids[2]: unlabeled_row,
             event_ids[3]: excluded_row,
+            event_ids[4]: not_run_row,
         },
         outcome_by_event={event_ids[0]: outcome},
         membership_by_outcome={outcome_id: sample},
@@ -264,14 +317,30 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
     assert missing_events == 1
     assert unlabeled_count == 1
     assert found_candidates == set(candidate_ids.values())
-    assert len(entries) == 4
-    assert {entry.status for entry in entries} == {"candidate", "no_candidate", "input_excluded"}
+    assert len(entries) == 5
+    assert {entry.status for entry in entries} == {
+        "candidate",
+        "no_candidate",
+        "input_excluded",
+        "not_run",
+    }
     assert by_stable_id[hashlib.sha256(event_ids[1].encode()).hexdigest()].status == (
         "no_candidate"
     )
     assert by_stable_id[hashlib.sha256(event_ids[3].encode()).hexdigest()].status == (
         "input_excluded"
     )
+    assert (
+        by_stable_id[hashlib.sha256(event_ids[3].encode()).hexdigest()].reason_code
+        == "INPUT_NOT_READY"
+    )
+    assert by_stable_id[hashlib.sha256(event_ids[4].encode()).hexdigest()].status == "not_run"
+    assert (
+        by_stable_id[hashlib.sha256(event_ids[4].encode()).hexdigest()].reason_code
+        == "SETTINGS_NOT_EFFECTIVE"
+    )
+    not_run_entry = by_stable_id[hashlib.sha256(event_ids[4].encode()).hexdigest()]
+    assert not_run_entry.vector_hash == vector_hash
     labeled_entry = by_stable_id[hashlib.sha256(event_ids[0].encode()).hexdigest()]
     assert labeled_entry.outcome_id_hash == hashlib.sha256(str(outcome_id).encode()).hexdigest()
     assert labeled_entry.outcome_hash == outcome.outcome_hash
@@ -285,6 +354,90 @@ def test_test_inventory_includes_unlabeled_candidates_no_candidates_and_incomple
     assert unlabeled_entry.sample_id_hash is None
     assert unlabeled_entry.sample_hash is None
     assert unlabeled_entry.vector_hash is None
+
+
+def test_v3_proof_counts_not_run_separately_and_keeps_reason_codes() -> None:
+    labeled, no_candidate = _proof().entries
+    entries = tuple(
+        sorted(
+            (
+                labeled,
+                no_candidate,
+                ScorerTestOpportunityEntry(
+                    stable_id_hash=hashlib.sha256(b"event:excluded").hexdigest(),
+                    status="input_excluded",
+                    candidate_id_hash=None,
+                    reason_code="INPUT_NOT_READY",
+                ),
+                ScorerTestOpportunityEntry(
+                    stable_id_hash=hashlib.sha256(b"event:not-run").hexdigest(),
+                    status="not_run",
+                    candidate_id_hash=None,
+                    vector_hash=hashlib.sha256(b"not-run-vector").hexdigest(),
+                    reason_code="SETTINGS_NOT_EFFECTIVE",
+                ),
+            ),
+            key=lambda entry: entry.stable_id_hash,
+        )
+    )
+
+    proof = ScorerTestOpportunityProof(
+        record_id=uuid4(),
+        workspace_id=uuid4(),
+        evaluation_run_id=uuid4(),
+        attempt_id=uuid4(),
+        normalized_dataset_id=uuid4(),
+        manifest_hash="1" * 64,
+        fold_plan_hash="2" * 64,
+        fold_id="3" * 64,
+        approval_hash="4" * 64,
+        bundle_hash="5" * 64,
+        vector_schema_version="crypidian-learning-feature-vector-v1",
+        vector_schema_hash="6" * 64,
+        test_membership_digest="7" * 64,
+        source_scope_hash="8" * 64,
+        expected_opportunity_count=4,
+        source_gap_count=0,
+        membership_mismatch_count=0,
+        unlabeled_candidate_count=0,
+        proof_schema_version="v3",
+        entries=entries,
+    )
+
+    payload = json.loads(proof.canonical_json)
+
+    assert proof.input_excluded_count == 1
+    assert proof.not_run_count == 1
+    assert proof.completeness_verified is False
+    assert payload["schema_version"] == "wp06-scorer-test-opportunity-proof-v3"
+    assert payload["not_run_count"] == 1
+    assert {
+        entry["reason_code"]
+        for entry in payload["entries"]
+        if entry["status"] in {"input_excluded", "not_run"}
+    } == {"INPUT_NOT_READY", "SETTINGS_NOT_EFFECTIVE"}
+    not_run_entry = next(entry for entry in payload["entries"] if entry["status"] == "not_run")
+    assert not_run_entry["vector_hash"] == hashlib.sha256(b"not-run-vector").hexdigest()
+
+
+def test_v3_proof_requires_reason_for_not_run_and_input_excluded() -> None:
+    with pytest.raises(ValueError, match="reason_code"):
+        ScorerTestOpportunityEntry(
+            stable_id_hash=hashlib.sha256(b"event:not-run").hexdigest(),
+            status="not_run",
+            candidate_id_hash=None,
+        )
+
+
+def test_v3_not_run_requires_vector_lineage_without_outcome_linkage() -> None:
+    stable_id_hash = hashlib.sha256(b"event:not-run-without-vector").hexdigest()
+    with pytest.raises(ValueError, match="vector lineage"):
+        ScorerTestOpportunityEntry(
+            stable_id_hash=stable_id_hash,
+            status="not_run",
+            candidate_id_hash=None,
+            reason_code="STRATEGY_NOT_RUN",
+        )
 
 
 def test_test_proof_rejects_consistent_sample_and_opportunity_schema_mismatch() -> None:
@@ -383,6 +536,37 @@ def test_test_proof_rejects_opportunity_schema_mismatch_for_each_decision_state(
             samples=(sample,),
             expected_events=((matching_event, 1), (other_event, 2)),
             opportunity_by_event={matching_event: mismatch, other_event: matching},
+        )
+
+
+def test_test_proof_rejects_evaluated_not_run_vector_schema_mismatch() -> None:
+    from trading_bot.adapters.database.repositories.learning_scorer_test_opportunity_proofs import (
+        LearningScorerTestOpportunityProofRepository,
+        _TestMembershipRow,
+    )
+
+    scorer_schema_hash = "a" * 64
+    sample = _TestMembershipRow(
+        sample_id="sample-matching-scorer-schema",
+        sample_hash="b" * 64,
+        outcome_id=uuid4(),
+        outcome_hash="c" * 64,
+        feature_snapshot_hash="d" * 64,
+        feature_schema_hash=scorer_schema_hash,
+    )
+    not_run_event = "test-event-evaluated-not-run-schema-mismatch"
+    not_run = SimpleNamespace(
+        input_state="EVALUATED",
+        strategy_state="NOT_RUN",
+        feature_schema_hash="e" * 64,
+    )
+
+    with pytest.raises(ValueError, match="Decision opportunity TEST"):
+        LearningScorerTestOpportunityProofRepository._validate_test_vector_schemas(
+            scorer_vector_schema_hash=scorer_schema_hash,
+            samples=(sample,),
+            expected_events=((not_run_event, 1),),
+            opportunity_by_event={not_run_event: not_run},
         )
 
 

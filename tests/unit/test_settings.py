@@ -106,6 +106,60 @@ def test_other_process_roles_reject_ingestion_workspace_identity() -> None:
         )
 
 
+def test_admin_report_reader_credential_accepts_only_its_admin_role() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        process_role="admin-web",
+        admin_report_reader_database_user="crypidian_admin_report_reader",
+        admin_report_reader_database_password_file=Path(
+            "/run/secrets/database_admin_report_reader_password"
+        ),
+    )
+
+    assert settings.admin_report_reader_database_user == "crypidian_admin_report_reader"
+    assert settings.admin_report_reader_database_password_file == Path(
+        "/run/secrets/database_admin_report_reader_password"
+    )
+
+    with pytest.raises(ValidationError, match="crypidian_admin_report_reader"):
+        AppSettings(
+            _env_file=None,
+            process_role="admin-web",
+            admin_report_reader_database_user="crypidian_admin_web",
+            admin_report_reader_database_password_file=Path("/run/secrets/wrong_password"),
+        )
+
+    with pytest.raises(ValidationError, match="admin-web"):
+        AppSettings(
+            _env_file=None,
+            process_role="market-signal-worker",
+            market_signal_workspace_id=UUID("33333333-3333-4333-8333-333333333333"),
+            admin_report_reader_database_user="crypidian_admin_report_reader",
+            admin_report_reader_database_password_file=Path(
+                "/run/secrets/database_admin_report_reader_password"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("user", "password_file"),
+    [
+        ("crypidian_admin_report_reader", None),
+        (None, Path("/run/secrets/database_admin_report_reader_password")),
+    ],
+)
+def test_admin_report_reader_credential_requires_both_identity_fields(
+    user: str | None, password_file: Path | None
+) -> None:
+    with pytest.raises(ValidationError, match="Cần đủ user và password_file"):
+        AppSettings(
+            _env_file=None,
+            process_role="admin-web",
+            admin_report_reader_database_user=user,
+            admin_report_reader_database_password_file=password_file,
+        )
+
+
 @pytest.mark.parametrize("tick_seconds", [0, -0.1, 300.1])
 def test_ingestion_worker_rejects_out_of_bounds_tick_interval(tick_seconds: float) -> None:
     with pytest.raises(ValidationError, match="ingestion_worker_tick_seconds"):

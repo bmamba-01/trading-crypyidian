@@ -1,8 +1,8 @@
 """Trang Admin "Kết quả tín hiệu" (CRY-430), chỉ đọc.
 
-Đọc ``signal_outcome`` (đã chấm bởi worker) qua role ``admin-web`` (RLS theo workspace), ghép tên
-bot và trạng thái gửi Telegram của tín hiệu để so tín hiệu **đã gửi** với tín hiệu **không gửi**
-(bị lọc/SUPPRESSED/hết hạn hoặc bot không có đăng ký). Quyền ``WORKSPACE_READ``; không ghi gì.
+Đọc ``signal_outcome`` (đã chấm bởi worker) qua report-reader theo quyền hiện hành của từng bot,
+ghép tên bot và trạng thái gửi Telegram để so tín hiệu **đã gửi** với tín hiệu **không gửi**. Quyền
+``WORKSPACE_READ`` ở ứng dụng; PostgreSQL lọc tiếp theo membership và ``REPORT_READ``.
 """
 
 from __future__ import annotations
@@ -10,10 +10,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import literal, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import (
@@ -21,7 +22,10 @@ from trading_bot.adapters.database.models import (
     SignalOutcomeRecord,
     TelegramSignalDelivery,
 )
+from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
+from trading_bot.application.bot_reporting import AdminReportReadUnitOfWork
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.domain.strategy.signal_outcome import HORIZON_MULTIPLES, METHOD_VERSION
 from trading_bot.domain.strategy.signal_outcome_summary import (
@@ -39,6 +43,27 @@ DELIVERY_VI = {"sent": "Đã gửi", "held": "Bị lọc/giữ lại", "none": "
 TOUCH_VI = {"TP1": "TP1 trước", "SL": "SL trước", "NONE": "Chưa chạm"}
 LABEL_VI = {1: "Đúng", 0: "Hòa", -1: "Sai"}
 STATUS_VI = {"SCORED": "Đã chấm", "DATA_GAP": "Thiếu nến", "INVALID_SIGNAL": "Tín hiệu lỗi"}
+_SIGNAL_OUTCOME_VIEW_FIELDS = (
+    "id",
+    "workspace_id",
+    "bot_id",
+    "decision_id",
+    "method_version",
+    "horizon_bars",
+    "status",
+    "symbol",
+    "timeframe",
+    "direction",
+    "strategy_release_id",
+    "signal_at",
+    "first_touch",
+    "same_bar_conflict",
+    "seconds_to_first_touch",
+    "mfe_r",
+    "mae_r",
+    "outcome_r",
+    "label",
+)
 
 
 class SignalOutcomeReviewError(Exception):
@@ -48,7 +73,7 @@ class SignalOutcomeReviewError(Exception):
         self.message = message
 
 
-def _row(record: SignalOutcomeRecord) -> OutcomeRow:
+def _row(record: Any) -> OutcomeRow:
     return OutcomeRow(
         status=record.status,
         label=record.label,
@@ -70,22 +95,45 @@ class SignalOutcomeReviewService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         unit_of_work: Callable[..., Any] = UnitOfWork,
+        grants: Callable[[Any], Any] = BotGrantRepository,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._unit_of_work = unit_of_work
+        self._grants = grants
         self._now = now or (lambda: datetime.now(UTC))
 
-    def _uow(self, principal: Principal) -> Any:
+    def _uow(self, principal: Principal, *, bot_id: UUID | None = None) -> Any:
         if not authorize(principal, Permission.WORKSPACE_READ):
             raise SignalOutcomeReviewError(403, "Bạn không có quyền xem kết quả tín hiệu.")
-        return self._unit_of_work(
+        if self._report_reader_sessions is None:
+            raise SignalOutcomeReviewError(503, "Kho dữ liệu báo cáo chưa sẵn sàng.")
+        return AdminReportReadUnitOfWork(
             self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=self._unit_of_work,
             workspace_id=principal.workspace_id,
+            bot_id=bot_id,
             actor_membership_id=principal.membership_id,
             snapshot_read_only=True,
         )
+
+    @staticmethod
+    def _outcome_query() -> Any:
+        return select(*(getattr(SignalOutcomeRecord, name) for name in _SIGNAL_OUTCOME_VIEW_FIELDS))
+
+    async def _require_report_read(
+        self, session: AsyncSession, principal: Principal, bot_id: UUID
+    ) -> None:
+        try:
+            await self._grants(session).require(
+                principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+            )
+        except PermissionError as error:
+            raise SignalOutcomeReviewError(404, "Không tìm thấy kết quả tín hiệu.") from error
 
     async def overview(
         self,
@@ -103,7 +151,9 @@ class SignalOutcomeReviewService:
         days = PERIOD_DAYS.get(period, 30)
         since = self._now() - timedelta(days=days)
         workspace = principal.workspace_id
-        async with self._uow(principal) as unit:
+        async with self._uow(principal, bot_id=bot_id) as unit:
+            if bot_id is not None:
+                await self._require_report_read(unit.authorization_session, principal, bot_id)
             session = unit.session
             bots: dict[UUID, str] = dict(
                 (
@@ -142,22 +192,43 @@ class SignalOutcomeReviewService:
                 filters.append(SignalOutcomeRecord.symbol == symbol)
             if timeframe:
                 filters.append(SignalOutcomeRecord.timeframe == timeframe)
-            delivered = exists().where(
-                TelegramSignalDelivery.workspace_id == SignalOutcomeRecord.workspace_id,
-                TelegramSignalDelivery.decision_id == SignalOutcomeRecord.decision_id,
-                TelegramSignalDelivery.status == "SENT",
+            delivered = (
+                select(literal(1))
+                .select_from(TelegramSignalDelivery)
+                .where(
+                    TelegramSignalDelivery.workspace_id == SignalOutcomeRecord.workspace_id,
+                    TelegramSignalDelivery.bot_id == SignalOutcomeRecord.bot_id,
+                    TelegramSignalDelivery.decision_id == SignalOutcomeRecord.decision_id,
+                    TelegramSignalDelivery.status == "SENT",
+                )
+                .exists()
             )
-            held = exists().where(
-                TelegramSignalDelivery.workspace_id == SignalOutcomeRecord.workspace_id,
-                TelegramSignalDelivery.decision_id == SignalOutcomeRecord.decision_id,
+            held = (
+                select(literal(1))
+                .select_from(TelegramSignalDelivery)
+                .where(
+                    TelegramSignalDelivery.workspace_id == SignalOutcomeRecord.workspace_id,
+                    TelegramSignalDelivery.bot_id == SignalOutcomeRecord.bot_id,
+                    TelegramSignalDelivery.decision_id == SignalOutcomeRecord.decision_id,
+                )
+                .exists()
             )
             result = await session.execute(
-                select(SignalOutcomeRecord, delivered.label("sent"), held.label("queued"))
+                select(
+                    *(getattr(SignalOutcomeRecord, name) for name in _SIGNAL_OUTCOME_VIEW_FIELDS),
+                    delivered.label("sent"),
+                    held.label("queued"),
+                )
                 .where(*filters)
                 .order_by(SignalOutcomeRecord.signal_at.desc(), SignalOutcomeRecord.id)
                 .limit(MAX_ROWS)
             )
-            records = [(record, bool(sent), bool(queued)) for record, sent, queued in result.all()]
+            records = []
+            for mapping in result.mappings().all():
+                row = dict(mapping)
+                sent = bool(row.pop("sent"))
+                queued = bool(row.pop("queued"))
+                records.append((SimpleNamespace(**row), sent, queued))
         delivery_of = {
             record.id: ("sent" if sent else "held" if queued else "none")
             for record, sent, queued in records

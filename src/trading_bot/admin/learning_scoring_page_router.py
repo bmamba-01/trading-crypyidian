@@ -62,6 +62,8 @@ _SCORE_EVENT_DECISION_LABELS: dict[ScorerEventDecision, str] = {
     "ABSTAIN": "Không chấm được",
 }
 _ACTIVE_REPORT_STATUSES = frozenset({"ACCEPTED_SHADOW_ONLY", "ACCEPTED_PAPER_GATE_ELIGIBLE"})
+_SCORER_CLASS_LABELS = ((-1, "PnL âm"), (0, "PnL trung tính"), (1, "PnL dương"))
+_SCORER_PREDICTION_LABELS = ("PnL âm", "PnL trung tính", "PnL dương", "Không chấm được (ABSTAIN)")
 
 
 @router.get(
@@ -281,9 +283,7 @@ async def learning_scoring_admin_page(
             "class_support_labels": (
                 tuple(
                     (
-                        {-1: "PnL âm", 0: "PnL trung tính", 1: "PnL dương"}.get(
-                            label, f"Nhóm {label}"
-                        ),
+                        dict(_SCORER_CLASS_LABELS).get(label, f"Nhóm {label}"),
                         count,
                     )
                     for label, count in report_summary.class_support
@@ -291,6 +291,19 @@ async def learning_scoring_admin_page(
                 if report_summary
                 else ()
             ),
+            "confusion_matrix_rows": (
+                tuple(
+                    (label, row)
+                    for (_class_value, label), row in zip(
+                        _SCORER_CLASS_LABELS,
+                        report_summary.confusion_matrix,
+                        strict=True,
+                    )
+                )
+                if report_summary and report_summary.confusion_matrix is not None
+                else ()
+            ),
+            "confusion_matrix_prediction_labels": _SCORER_PREDICTION_LABELS,
             "score_event_page": score_event_page,
             "score_event_rows": tuple(
                 {

@@ -130,8 +130,9 @@ def _service(store: dict[str, Any]) -> Any:
     from trading_bot.application.market_scanner import MarketScannerService
 
     return MarketScannerService(
-        object(),  # type: ignore[arg-type]
-        unit_of_work=lambda sessions, **kwargs: _Unit(store, **kwargs),
+        "admin",
+        report_reader_sessions="report-reader",  # type: ignore[arg-type]
+        unit_of_work=lambda sessions, **kwargs: _Unit(store, session_factory=sessions, **kwargs),
         repository=lambda session: _Repository(store),
     )
 
@@ -160,7 +161,12 @@ async def test_service_reads_preferred_source_and_records_only_on_run() -> None:
     criteria = ScanCriteria(min_quote_volume_24h=0.0)
     viewed = await _service(store).scan(owner, timeframe="1d", criteria=criteria, now=NOW)
     assert store["audits"] == []
-    assert store["units"][-1]["snapshot_read_only"] is True
+    assert store["units"][-1] == {
+        "session_factory": "report-reader",
+        "workspace_id": owner.workspace_id,
+        "actor_membership_id": owner.membership_id,
+        "snapshot_read_only": True,
+    }
     # Có nguồn REST thật → không đọc nguồn mẫu; XRP chưa có nến 1d → bị loại kèm lý do.
     assert ("BTCUSDT", "BINANCE_USDM_REST_BACKFILL", 33) in store["loads"]
     assert {row["symbol"]: row["reason"] for row in viewed["excluded"]}["XRPUSDT"].startswith(
@@ -171,7 +177,10 @@ async def test_service_reads_preferred_source_and_records_only_on_run() -> None:
     (audit,) = store["audits"]
     assert audit["action"] == "market_scan.run"
     assert audit["reason"] == viewed["summary"]
-    assert store["units"][-1]["snapshot_read_only"] is False
+    assert store["units"][-2]["session_factory"] == "report-reader"
+    assert store["units"][-2]["snapshot_read_only"] is True
+    assert store["units"][-1]["session_factory"] == "admin"
+    assert "snapshot_read_only" not in store["units"][-1]
     with pytest.raises(MarketScannerError) as bad:
         await _service(store).scan(owner, timeframe="5m", criteria=criteria)
     assert bad.value.status_code == 422

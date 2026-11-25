@@ -13,10 +13,12 @@ import pytest
 from test_admin_web_views import WORKSPACE, _client
 
 from trading_bot.application.signal_outcome_review import (
+    _SIGNAL_OUTCOME_VIEW_FIELDS,
     SignalOutcomeReviewError,
     SignalOutcomeReviewService,
 )
-from trading_bot.auth.policy import Principal
+from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.strategy.signal_outcome_summary import (
     OutcomeRow,
     bucket_key,
@@ -117,6 +119,91 @@ def test_service_requires_workspace_read() -> None:
     with pytest.raises(SignalOutcomeReviewError) as error:
         asyncio.run(service.overview(nobody))
     assert error.value.status_code == 403
+
+
+def test_service_fails_closed_when_report_reader_is_unavailable() -> None:
+    service = SignalOutcomeReviewService(None)  # type: ignore[arg-type]
+    owner = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.OWNER}), CREATED)
+
+    with pytest.raises(SignalOutcomeReviewError) as error:
+        asyncio.run(service.overview(owner))
+
+    assert error.value.status_code == 503
+
+
+def test_service_separates_authorization_session_from_report_reader() -> None:
+    from trading_bot.application.bot_reporting import AdminReportReadUnitOfWork
+
+    class StubUnit:
+        def __init__(self, sessions: str, **_kwargs: Any) -> None:
+            self.session = f"{sessions}-session"
+
+        async def __aenter__(self) -> StubUnit:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+    service = SignalOutcomeReviewService(
+        "admin", report_reader_sessions="report-reader", unit_of_work=StubUnit
+    )  # type: ignore[arg-type]
+    owner = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.OWNER}), CREATED)
+
+    async def inspect_units() -> None:
+        async with service._uow(owner) as unit:
+            assert isinstance(unit, AdminReportReadUnitOfWork)
+            assert unit.authorization_session == "admin-session"
+            assert unit.session == "report-reader-session"
+
+    asyncio.run(inspect_units())
+
+
+def test_outcome_query_selects_only_fields_used_by_admin_view() -> None:
+    selected = {
+        column.key for column in SignalOutcomeReviewService._outcome_query().selected_columns
+    }
+
+    assert selected == set(_SIGNAL_OUTCOME_VIEW_FIELDS)
+    assert {"entry_price", "stop_price", "tp1_price", "input_hash", "bar_sources"}.isdisjoint(
+        selected
+    )
+
+
+def test_selected_bot_requires_report_read_through_authorization_session() -> None:
+    calls: list[tuple[Any, Principal, UUID, BotPermission]] = []
+
+    class GrantRecorder:
+        def __init__(self, session: Any) -> None:
+            self.session = session
+
+        async def require(
+            self, principal: Principal, *, bot_id: UUID, permission: BotPermission
+        ) -> None:
+            calls.append((self.session, principal, bot_id, permission))
+
+    service = SignalOutcomeReviewService(None, grants=GrantRecorder)  # type: ignore[arg-type]
+    owner = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.OWNER}), CREATED)
+
+    asyncio.run(service._require_report_read("admin-auth-session", owner, BOT))
+
+    assert calls == [("admin-auth-session", owner, BOT, BotPermission.REPORT_READ)]
+
+
+def test_selected_bot_without_report_read_is_not_found() -> None:
+    class DenyGrants:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def require(self, *_args: Any, **_kwargs: Any) -> None:
+            raise PermissionError("Thiếu quyền báo cáo.")
+
+    service = SignalOutcomeReviewService(None, grants=DenyGrants)  # type: ignore[arg-type]
+    analyst = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.ANALYST_REVIEWER}), CREATED)
+
+    with pytest.raises(SignalOutcomeReviewError) as error:
+        asyncio.run(service._require_report_read("admin-auth-session", analyst, BOT))
+
+    assert error.value.status_code == 404
 
 
 class _Stub:

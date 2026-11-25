@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -40,6 +41,7 @@ from trading_bot.application.bot_config_resolver import (
     load_strategy_releases,
     validate_bot_overlay,
 )
+from trading_bot.application.bot_reporting import AdminReportReadUnitOfWork
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.runtime_risk_profile import (
     RiskProfileRuntimeError,
@@ -135,12 +137,61 @@ class BotConfigAdminService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         action_challenge_service: ActionChallengeService | None = None,
         require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._action_challenge_service = action_challenge_service
         self._require_action_step_up = require_action_step_up
+
+    async def _find_exit_backtest(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        draft: BotConfigVersion,
+        head: BotConfigVersion | None,
+    ) -> SimpleNamespace | None:
+        """Đọc receipt OWNER_DRAFT qua report-reader trong phạm vi hiện hành."""
+        from sqlalchemy import select
+
+        from trading_bot.adapters.database.models import ProposalBacktestRecord
+
+        if self._report_reader_sessions is None:
+            raise BotAdminError(503, "Kho dữ liệu báo cáo chưa sẵn sàng.")
+        async with AdminReportReadUnitOfWork(
+            self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=UnitOfWork,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            try:
+                await BotGrantRepository(unit.authorization_session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise BotAdminError(403, "Không đủ quyền xem backtest của bot.") from error
+            result = await unit.session.execute(
+                select(ProposalBacktestRecord.id, ProposalBacktestRecord.verdict)
+                .where(
+                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
+                    ProposalBacktestRecord.bot_id == bot_id,
+                    ProposalBacktestRecord.source == "OWNER_DRAFT",
+                    ProposalBacktestRecord.proposal["draft_overlay_hash"].astext
+                    == draft.overlay_hash,
+                    ProposalBacktestRecord.proposal["head_overlay_hash"].astext
+                    == (head.overlay_hash if head is not None else ""),
+                )
+                .order_by(ProposalBacktestRecord.created_at.desc())
+                .limit(1)
+            )
+            row = result.mappings().first()
+        return SimpleNamespace(**dict(row)) if row is not None else None
 
     # --- Bot -------------------------------------------------------------------------------
 
@@ -416,9 +467,8 @@ class BotConfigAdminService:
                     }
                 )
             if exit_changed(overlay, head) and (
-                await find_exit_backtest(
-                    unit.session,
-                    workspace_id=principal.workspace_id,
+                await self._find_exit_backtest(
+                    principal,
                     bot_id=bot_id,
                     draft=draft,
                     head=head,
@@ -494,9 +544,8 @@ class BotConfigAdminService:
             if exit_changed(overlay, head):
                 # CRY-428 (owner 17/11/2026): đổi thông số thoát phải có backtest gốc vs mới của
                 # đúng bản nháp; owner tự quyết dù kết luận thế nào.
-                exit_backtest = await find_exit_backtest(
-                    unit.session,
-                    workspace_id=principal.workspace_id,
+                exit_backtest = await self._find_exit_backtest(
+                    principal,
                     bot_id=bot_id,
                     draft=draft,
                     head=head,
@@ -626,40 +675,81 @@ class BotConfigAdminService:
         self, principal: Principal, *, bot_id: UUID, limit: int = 10
     ) -> list[dict[str, Any]]:
         """Kết quả backtest đề xuất AI của bot, mới nhất trước (chỉ đọc)."""
+        from trading_bot.application.proposal_backtest import DRAFTABLE_VERDICTS
+
+        rows = await self._proposal_backtest_rows(principal, bot_id=bot_id, limit=limit)
+        return [
+            {
+                "id": str(row["id"]),
+                "created_at": row["created_at"],
+                "verdict": row["verdict"],
+                "changes": list(row["proposal"].get("changes") or []),
+                "rationale": str(row["proposal"].get("rationale") or ""),
+                "baseline": dict(row["result"].get("baseline") or {}),
+                "variant": dict(row["result"].get("variant") or {}),
+                "notes": list(row["result"].get("notes") or []),
+                "window": row["result"].get("window"),
+                "source": row["source"],
+                "draft_id": row["proposal"].get("draft_id"),
+                # Kết quả backtest bản nháp của owner (CRY-428) không tạo nháp mới được.
+                "draftable": row["source"] == "AI_PROPOSAL"
+                and row["verdict"] in DRAFTABLE_VERDICTS,
+            }
+            for row in rows
+        ]
+
+    async def _proposal_backtest_rows(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        backtest_id: UUID | None = None,
+        limit: int = 10,
+        require_config_write: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Đọc proposal qua report-reader, ghép quyền admin và RLS trong cùng snapshot."""
         from sqlalchemy import select
 
         from trading_bot.adapters.database.models import ProposalBacktestRecord
-        from trading_bot.application.proposal_backtest import DRAFTABLE_VERDICTS
 
-        async with self._uow(principal, bot_id=bot_id) as unit:
-            await self._require(unit, principal, bot_id, BotPermission.READ)
-            rows = await unit.session.scalars(
-                select(ProposalBacktestRecord)
-                .where(
-                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
-                    ProposalBacktestRecord.bot_id == bot_id,
-                )
-                .order_by(ProposalBacktestRecord.created_at.desc())
-                .limit(limit)
+        async with AdminReportReadUnitOfWork(
+            self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=UnitOfWork,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            grants = BotGrantRepository(unit.authorization_session)
+            for permission in (
+                (BotPermission.REPORT_READ, BotPermission.CONFIG_WRITE)
+                if require_config_write
+                else (BotPermission.REPORT_READ,)
+            ):
+                try:
+                    await grants.require(principal, bot_id=bot_id, permission=permission)
+                except PermissionError as error:
+                    raise BotAdminError(
+                        403, "Không đủ quyền xem hoặc áp dụng đề xuất AI."
+                    ) from error
+            query = select(
+                ProposalBacktestRecord.id,
+                ProposalBacktestRecord.source,
+                ProposalBacktestRecord.verdict,
+                ProposalBacktestRecord.created_at,
+                ProposalBacktestRecord.proposal,
+                ProposalBacktestRecord.result,
+            ).where(
+                ProposalBacktestRecord.workspace_id == principal.workspace_id,
+                ProposalBacktestRecord.bot_id == bot_id,
             )
-            return [
-                {
-                    "id": str(row.id),
-                    "created_at": row.created_at,
-                    "verdict": row.verdict,
-                    "changes": list(row.proposal.get("changes") or []),
-                    "rationale": str(row.proposal.get("rationale") or ""),
-                    "baseline": dict(row.result.get("baseline") or {}),
-                    "variant": dict(row.result.get("variant") or {}),
-                    "notes": list(row.result.get("notes") or []),
-                    "window": row.result.get("window"),
-                    "source": row.source,
-                    "draft_id": row.proposal.get("draft_id"),
-                    # Kết quả backtest bản nháp của owner (CRY-428) không tạo nháp mới được.
-                    "draftable": row.source == "AI_PROPOSAL" and row.verdict in DRAFTABLE_VERDICTS,
-                }
-                for row in rows.all()
-            ]
+            if backtest_id is not None:
+                query = query.where(ProposalBacktestRecord.id == backtest_id)
+            else:
+                query = query.order_by(ProposalBacktestRecord.created_at.desc()).limit(limit)
+            rows = await unit.session.execute(query)
+            return [dict(row) for row in rows.mappings().all()]
 
     async def create_draft_from_proposal(
         self,
@@ -674,22 +764,19 @@ class BotConfigAdminService:
         Kết quả backtest phải còn khớp cấu hình hiện hành (nếu không phải backtest lại). Quyền,
         idempotency (mỗi kết quả một bản nháp) và MFA khi đổi khối risk đi qua ``create_draft``.
         """
-        from sqlalchemy import select
-
-        from trading_bot.adapters.database.models import ProposalBacktestRecord
         from trading_bot.application.proposal_backtest import draft_overlay_from_backtest
 
+        records = await self._proposal_backtest_rows(
+            principal,
+            bot_id=bot_id,
+            backtest_id=backtest_id,
+            require_config_write=True,
+        )
+        record = records[0] if records else None
+        if record is None or record["source"] != "AI_PROPOSAL":
+            raise BotAdminError(404, "Không tìm thấy kết quả backtest đề xuất của bot này.")
         async with self._uow(principal, bot_id=bot_id) as unit:
             await self._require(unit, principal, bot_id, BotPermission.CONFIG_WRITE)
-            record = await unit.session.scalar(
-                select(ProposalBacktestRecord).where(
-                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
-                    ProposalBacktestRecord.bot_id == bot_id,
-                    ProposalBacktestRecord.id == backtest_id,
-                )
-            )
-            if record is None or record.source != "AI_PROPOSAL":
-                raise BotAdminError(404, "Không tìm thấy kết quả backtest đề xuất của bot này.")
             head = await BotConfigVersionRepository(unit.session).get_head(
                 workspace_id=principal.workspace_id, bot_id=bot_id
             )
@@ -697,7 +784,7 @@ class BotConfigAdminService:
                 raise BotAdminError(409, "Bot chưa có cấu hình đã publish.")
             try:
                 payload = draft_overlay_from_backtest(
-                    head.overlay_json, record.proposal, record.result
+                    head.overlay_json, record["proposal"], record["result"]
                 )
                 overlay = BotConfigOverlay.model_validate(payload)
             except (ValueError, ValidationError) as error:
@@ -911,34 +998,6 @@ def exit_changed(overlay: BotConfigOverlay, baseline: BotConfigVersion | None) -
     """Khối ``exit`` (ghi đè thoát lệnh) khác bản đang publish."""
     before = exit_section(baseline.overlay_json) if baseline is not None else {}
     return exit_section(overlay) != before
-
-
-async def find_exit_backtest(
-    session: AsyncSession,
-    *,
-    workspace_id: UUID,
-    bot_id: UUID,
-    draft: BotConfigVersion,
-    head: BotConfigVersion | None,
-) -> Any:
-    """Backtest OWNER_DRAFT của đúng bản nháp này trên đúng bản đang publish (mới nhất)."""
-    from sqlalchemy import select
-
-    from trading_bot.adapters.database.models import ProposalBacktestRecord
-
-    return await session.scalar(
-        select(ProposalBacktestRecord)
-        .where(
-            ProposalBacktestRecord.workspace_id == workspace_id,
-            ProposalBacktestRecord.bot_id == bot_id,
-            ProposalBacktestRecord.source == "OWNER_DRAFT",
-            ProposalBacktestRecord.proposal["draft_overlay_hash"].astext == draft.overlay_hash,
-            ProposalBacktestRecord.proposal["head_overlay_hash"].astext
-            == (head.overlay_hash if head is not None else ""),
-        )
-        .order_by(ProposalBacktestRecord.created_at.desc())
-        .limit(1)
-    )
 
 
 def _parse_stored(record: BotConfigVersion) -> BotConfigOverlay:

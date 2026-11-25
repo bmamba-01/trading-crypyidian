@@ -121,16 +121,21 @@ def _summary() -> ScorerReportSummary:
         test_sample_count=9,
         opportunity_count=90,
         class_support=((-1, 3), (0, 2), (1, 4)),
+        confusion_matrix=((1, 0, 1, 1), (0, 2, 0, 0), (0, 0, 3, 1)),
         coverage=0.75,
         abstain_count=2,
         log_loss=0.41,
         brier_score=0.18,
         expected_calibration_error=0.08,
+        false_veto_count=1,
         false_veto_rate=0.25,
         candidate_retention=0.67,
         candidate_count=6,
         scored_candidate_count=4,
         approved_candidate_count=3,
+        no_candidate_count=80,
+        input_excluded_count=2,
+        not_run_count=2,
     )
 
 
@@ -219,11 +224,26 @@ def test_scoring_admin_page_is_no_store_metadata_only_and_keeps_modes_locked() -
     assert 'id="scorer-mode"' in response.text
     assert 'option value="SHADOW" disabled' in response.text
     assert 'option value="PAPER_GATE" disabled' in response.text
-    assert "Chưa có báo cáo scorer TEST đã lưu trong không gian làm việc này." in response.text
     assert "máy chủ sẽ xác minh lại quyền hiện hành" in response.text.lower()
     assert "PAPER_GATE vẫn đi qua các cổng RiskEngine thông thường" in response.text
     assert 'name="actor' not in response.text
     assert service.principals == [principal]
+
+
+def test_scoring_admin_page_shows_legacy_report_without_confusion_matrix() -> None:
+    legacy_summary = replace(
+        _summary(), not_run_count=None, input_excluded_count=4, confusion_matrix=None
+    )
+    client, _, _ = _client(report_summary=legacy_summary)
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert "Chưa chạy hoặc bị loại (proof v2 gộp)" in response.text
+    assert "Proof v2 gộp EVALUATED + NOT_RUN và INPUT_EXCLUDED" in response.text
+    assert "Đầu vào bị loại (INPUT_EXCLUDED)" not in response.text
+    assert "Ma trận nhầm lẫn chưa có trong báo cáo cũ." in response.text
+    assert 'id="learning-scoring-confusion-matrix"' not in response.text
 
 
 def test_scoring_admin_page_only_shows_cas_disable_for_recent_totp_approver() -> None:
@@ -342,15 +362,52 @@ def test_scoring_admin_page_shows_only_persisted_aggregate_report_metadata() -> 
     assert response.status_code == 200
     assert "Báo cáo scorer TEST gần nhất" in response.text
     assert "Chưa kết luận" in response.text
-    assert "Độ phủ chấm điểm" in response.text
-    assert "75.0%" in response.text
-    assert "Sai số hiệu chuẩn kỳ vọng (ECE)" in response.text
-    assert "8.0%" in response.text
+    assert "Báo cáo INCONCLUSIVE" in response.text
+    assert "FP lớp PnL dương" in response.text
+    assert "FN lớp PnL dương" in response.text
+    assert "False-veto theo hành động scorer" in response.text
+    assert "Không tạo ứng viên (NO_CANDIDATE)" in response.text
+    assert "Đầu vào bị loại (INPUT_EXCLUDED)" in response.text
+    assert "NO_CANDIDATE không đồng nghĩa với tín hiệu bị bỏ lỡ, lệnh hoặc trade" in response.text
+    assert "không tạo nhãn PnL" in response.text
+    assert "1 / 4 mẫu PnL dương" in response.text
+    assert "FP lớp PnL dương</dt><dd>1</dd>" in response.text
+    assert "FN lớp PnL dương</dt><dd>1</dd>" in response.text
+    assert "FN gồm cả trường hợp ABSTAIN" in response.text
+    assert "VETO và ABSTAIN không đồng nghĩa với lỗi phân lớp" in response.text
+    assert "75.0%" not in response.text
+    assert "8.0%" not in response.text
+    assert "67.0%" not in response.text
     assert "3 pnl âm · 2 pnl trung tính · 4 pnl dương" in response.text.lower()
+    assert "Ma trận nhầm lẫn trên mẫu TEST" in response.text
+    assert "Nhãn thực tế" in response.text
+    assert "ABSTAIN" in response.text
+    assert "không phải ma trận hành động paper" in response.text.lower()
+    assert "class_predictions" not in response.text
+    assert 'id="learning-scoring-confusion-matrix"' in response.text
+    assert "Không tạo ứng viên (NO_CANDIDATE)" in response.text
+    assert "Đầu vào bị loại (INPUT_EXCLUDED)" in response.text
+    assert "Cơ hội chưa chạy strategy (NOT_RUN)" in response.text
+    assert "NO_CANDIDATE không đồng nghĩa với tín hiệu bị bỏ lỡ, lệnh hoặc trade" in response.text
+    assert "không tạo nhãn PnL" in response.text
     assert "Số cơ hội được duyệt" in response.text
     assert "aaaaaaaaaaaaaaaa…" in response.text
     assert "bbbbbbbbbbbbbbbb…" in response.text
     assert "ffffffffffffffff…" in response.text
+
+
+def test_scoring_admin_page_does_not_split_legacy_v2_input_excluded_count() -> None:
+    legacy_summary = replace(_summary(), not_run_count=None, input_excluded_count=4)
+    client, _service, _principal = _client(report_summary=legacy_summary)
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert "Chưa chạy hoặc bị loại (proof v2 gộp)" in response.text
+    assert "Proof v2 gộp EVALUATED + NOT_RUN và INPUT_EXCLUDED" in response.text
+    assert "Chưa chạy hoặc bị loại (proof v2 gộp)</dt><dd>4</dd>" in response.text
+    assert "Đầu vào bị loại (INPUT_EXCLUDED)" not in response.text
+    assert "NOT_RUN)" not in response.text
     assert "candidate_completeness_verified" not in response.text
     assert "sample_ids" not in response.text
     assert "test_payload" not in response.text.lower()

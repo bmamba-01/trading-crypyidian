@@ -457,8 +457,8 @@ def test_research_sources_desktop_view(sources_server_url: str) -> None:
         # 2. Xác nhận tiêu đề và nội dung chính
         content = page.content()
         assert "Nguồn nghiên cứu và quyền sử dụng" in content
-        assert "Chỉ quản lý metadata và policy ngoại tuyến" in content
-        assert "Evidence tham chiếu" in content
+        assert "Chỉ quản lý siêu dữ liệu và chính sách ngoại tuyến" in content
+        assert "Tài liệu quyền tham chiếu" in content
 
         # 3. Xác nhận liên kết 'Nguồn dữ liệu' trong thanh điều hướng
         nav_link = page.locator("nav.main-nav a[href='/admin/research-sources']")
@@ -472,7 +472,7 @@ def test_research_sources_desktop_view(sources_server_url: str) -> None:
         # 5. Xác nhận chi tiết nguồn binance-news-feed
         assert "Binance Official Research" in content
         assert "https://api.binance.com/research/feed" in content
-        assert "Quota hiện hành" in content
+        assert "Hạn mức hiện tại" in content
         assert "Số yêu cầu: 15 / 100" in content
 
         # 6. Mở khối 'Tạo nguồn ứng viên'
@@ -644,16 +644,31 @@ def test_license_scope_digest_upload_and_review_selection_desktop_mobile(
             assert page.locator("#scope-symbols").input_value() == "BTCUSDT"
             upload_form = page.get_by_role("form", name="Tải lên bằng chứng quyền")
             assert upload_form.count() == 1
-            upload_form.locator('input[type="file"]').set_input_files(
+            assert page.get_by_text("Chọn tệp", exact=True).is_visible()
+            assert page.locator("#license-evidence-file-status").inner_text() == (
+                "Chưa chọn tài liệu"
+            )
+            picker_button = page.locator(".license-file-picker__button")
+            picker_box = picker_button.bounding_box()
+            assert picker_box is not None
+            assert picker_box["width"] >= 44
+            assert picker_box["height"] >= 44
+            with page.expect_file_chooser() as chooser_info:
+                picker_button.click()
+            chooser_info.value.set_files(
                 {
                     "name": "contract-private.txt",
                     "mimeType": "text/plain",
                     "buffer": file_bytes,
                 }
             )
-            upload_form.get_by_role("button", name="Tải lên và tính SHA-256").click()
-            page.get_by_text(expected_digest, exact=True).wait_for(state="visible", timeout=5000)
-            page.reload(wait_until="networkidle")
+            assert page.locator("#license-evidence-file-status").inner_text() == (
+                "Đã chọn tài liệu để tải lên"
+            )
+            # Giao diện tự tải lại sau khi ghi digest để khôi phục metadata từ máy chủ.
+            # Chờ đúng navigation này thay vì gọi reload lần hai khi trang đang rời đi.
+            with page.expect_navigation(wait_until="networkidle"):
+                upload_form.get_by_role("button", name="Tải lên và tính SHA-256").click()
             page.get_by_text(expected_digest, exact=True).wait_for(state="visible", timeout=5000)
             assert "contract-private.txt" not in page.content()
             assert file_bytes.decode() not in page.content()

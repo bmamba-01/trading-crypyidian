@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.orm import load_only
 
 from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.bot_runtime_entities import BotRuntimeLeaseRecord
@@ -27,6 +29,102 @@ from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.paper_recovery import verify_paper_ledger_consistency
 from trading_bot.domain.execution.paper_state import PaperExecutionSnapshot
 from trading_bot.domain.execution.runtime_control import FencingToken
+
+_REPORT_INTENT_LOAD = (
+    OrderIntentRecord.id,
+    OrderIntentRecord.bot_id,
+    OrderIntentRecord.workspace_id,
+    OrderIntentRecord.account_id,
+    OrderIntentRecord.idempotency_key,
+    OrderIntentRecord.plan_hash,
+    OrderIntentRecord.settings_version_id,
+    OrderIntentRecord.strategy_release_id,
+    OrderIntentRecord.strategy_release_hash,
+    OrderIntentRecord.feature_snapshot_id,
+    OrderIntentRecord.candidate_id,
+    OrderIntentRecord.quote_asset,
+    OrderIntentRecord.risk_decision_id,
+    OrderIntentRecord.risk_reservation_id,
+    OrderIntentRecord.symbol,
+    OrderIntentRecord.side,
+    OrderIntentRecord.quantity,
+    OrderIntentRecord.filled_quantity,
+    OrderIntentRecord.status,
+    OrderIntentRecord.evidence,
+)
+_REPORT_PLAN_LOAD = (
+    TradePlanRecord.id,
+    TradePlanRecord.bot_id,
+    TradePlanRecord.workspace_id,
+    TradePlanRecord.account_id,
+    TradePlanRecord.plan_hash,
+    TradePlanRecord.payload,
+)
+_REPORT_FILL_LOAD = (
+    FillRecord.id,
+    FillRecord.bot_id,
+    FillRecord.workspace_id,
+    FillRecord.account_id,
+    FillRecord.mode,
+    FillRecord.intent_id,
+    FillRecord.fill_role,
+    FillRecord.fill_key,
+    FillRecord.bar_key,
+    FillRecord.fill_policy_version,
+    FillRecord.quantity,
+    FillRecord.price,
+    FillRecord.fee_amount,
+    FillRecord.slippage_amount,
+    FillRecord.occurred_at,
+    FillRecord.lineage,
+)
+_REPORT_POSITION_EVENT_LOAD = (
+    PositionEventRecord.id,
+    PositionEventRecord.bot_id,
+    PositionEventRecord.workspace_id,
+    PositionEventRecord.account_id,
+    PositionEventRecord.mode,
+    PositionEventRecord.intent_id,
+    PositionEventRecord.event_key,
+    PositionEventRecord.event_type,
+    PositionEventRecord.quantity,
+    PositionEventRecord.occurred_at,
+    PositionEventRecord.payload,
+)
+_REPORT_TRADE_LOAD = (
+    TradeRecord.id,
+    TradeRecord.bot_id,
+    TradeRecord.workspace_id,
+    TradeRecord.account_id,
+    TradeRecord.intent_id,
+    TradeRecord.status,
+    TradeRecord.gross_pnl,
+    TradeRecord.fee_total,
+    TradeRecord.funding_total,
+    TradeRecord.slippage_total,
+    TradeRecord.total_cost,
+    TradeRecord.net_pnl,
+    TradeRecord.lineage,
+)
+_REPORT_COST_LOAD = (
+    TradeCostRecord.id,
+    TradeCostRecord.bot_id,
+    TradeCostRecord.workspace_id,
+    TradeCostRecord.account_id,
+    TradeCostRecord.trade_id,
+    TradeCostRecord.cost_type,
+    TradeCostRecord.amount,
+    TradeCostRecord.source_event_id,
+)
+_REPORT_RESERVATION_LOAD = (
+    RiskReservationRecord.id,
+    RiskReservationRecord.bot_id,
+    RiskReservationRecord.workspace_id,
+    RiskReservationRecord.account_id,
+    RiskReservationRecord.risk_decision_id,
+    RiskReservationRecord.plan_hash,
+    RiskReservationRecord.status,
+)
 
 
 class PaperCheckpointConflict(RuntimeError):
@@ -178,6 +276,38 @@ class PaperCheckpointRepository:
         )
         return row.revision, snapshot
 
+    async def load_latest_for_report_reader(
+        self, uow: UnitOfWork, *, account_id: UUID
+    ) -> tuple[int, PaperExecutionSnapshot] | None:
+        """Đọc checkpoint bằng projection cột hẹp dành riêng cho report-reader."""
+        row = (
+            await uow.session.execute(
+                select(
+                    PaperExecutionCheckpointRecord.revision,
+                    PaperExecutionCheckpointRecord.schema_version,
+                    PaperExecutionCheckpointRecord.policy_hash,
+                    PaperExecutionCheckpointRecord.snapshot_hash,
+                    PaperExecutionCheckpointRecord.snapshot_payload,
+                )
+                .where(
+                    PaperExecutionCheckpointRecord.bot_id == uow.session.info.get("bot_id"),
+                    PaperExecutionCheckpointRecord.workspace_id == uow.workspace_id,
+                    PaperExecutionCheckpointRecord.account_id == account_id,
+                )
+                .order_by(PaperExecutionCheckpointRecord.revision.desc())
+                .limit(1)
+            )
+        ).first()
+        if row is None:
+            return None
+        snapshot = PaperExecutionSnapshot(
+            schema_version=row.schema_version,
+            policy_hash=row.policy_hash,
+            payload=row.snapshot_payload,
+            content_hash=row.snapshot_hash,
+        )
+        return row.revision, snapshot
+
     async def verify_ledger_consistency(
         self,
         uow: UnitOfWork,
@@ -186,10 +316,46 @@ class PaperCheckpointRepository:
         snapshot: PaperExecutionSnapshot,
     ) -> None:
         """Đọc mọi ledger trong workspace/account rồi đối soát trước khi hydrate."""
+        await self._verify_ledger_consistency(
+            uow,
+            account_id=account_id,
+            snapshot=snapshot,
+            report_reader_columns=False,
+        )
+
+    async def verify_ledger_consistency_for_report_reader(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        snapshot: PaperExecutionSnapshot,
+    ) -> None:
+        """Đối soát ledger với loader chỉ lấy cột được cấp cho report-reader."""
+        await self._verify_ledger_consistency(
+            uow,
+            account_id=account_id,
+            snapshot=snapshot,
+            report_reader_columns=True,
+        )
+
+    async def _verify_ledger_consistency(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        snapshot: PaperExecutionSnapshot,
+        report_reader_columns: bool,
+    ) -> None:
+        def model_query(model: Any, columns: tuple[Any, ...]) -> Any:
+            statement: Any = select(model)
+            if report_reader_columns:
+                statement = statement.options(load_only(*columns))
+            return statement
+
         intents = list(
             (
                 await uow.session.scalars(
-                    select(OrderIntentRecord).where(
+                    model_query(OrderIntentRecord, _REPORT_INTENT_LOAD).where(
                         OrderIntentRecord.bot_id == uow.session.info.get("bot_id"),
                         OrderIntentRecord.workspace_id == uow.workspace_id,
                         OrderIntentRecord.account_id == account_id,
@@ -200,7 +366,7 @@ class PaperCheckpointRepository:
         plans = list(
             (
                 await uow.session.scalars(
-                    select(TradePlanRecord).where(
+                    model_query(TradePlanRecord, _REPORT_PLAN_LOAD).where(
                         TradePlanRecord.bot_id == uow.session.info.get("bot_id"),
                         TradePlanRecord.workspace_id == uow.workspace_id,
                         TradePlanRecord.account_id == account_id,
@@ -211,7 +377,7 @@ class PaperCheckpointRepository:
         fills = list(
             (
                 await uow.session.scalars(
-                    select(FillRecord).where(
+                    model_query(FillRecord, _REPORT_FILL_LOAD).where(
                         FillRecord.bot_id == uow.session.info.get("bot_id"),
                         FillRecord.workspace_id == uow.workspace_id,
                         FillRecord.account_id == account_id,
@@ -222,7 +388,7 @@ class PaperCheckpointRepository:
         position_events = list(
             (
                 await uow.session.scalars(
-                    select(PositionEventRecord).where(
+                    model_query(PositionEventRecord, _REPORT_POSITION_EVENT_LOAD).where(
                         PositionEventRecord.bot_id == uow.session.info.get("bot_id"),
                         PositionEventRecord.workspace_id == uow.workspace_id,
                         PositionEventRecord.account_id == account_id,
@@ -233,7 +399,7 @@ class PaperCheckpointRepository:
         trades = list(
             (
                 await uow.session.scalars(
-                    select(TradeRecord).where(
+                    model_query(TradeRecord, _REPORT_TRADE_LOAD).where(
                         TradeRecord.bot_id == uow.session.info.get("bot_id"),
                         TradeRecord.workspace_id == uow.workspace_id,
                         TradeRecord.account_id == account_id,
@@ -244,7 +410,7 @@ class PaperCheckpointRepository:
         costs = list(
             (
                 await uow.session.scalars(
-                    select(TradeCostRecord).where(
+                    model_query(TradeCostRecord, _REPORT_COST_LOAD).where(
                         TradeCostRecord.bot_id == uow.session.info.get("bot_id"),
                         TradeCostRecord.workspace_id == uow.workspace_id,
                         TradeCostRecord.account_id == account_id,
@@ -255,7 +421,7 @@ class PaperCheckpointRepository:
         reservations = list(
             (
                 await uow.session.scalars(
-                    select(RiskReservationRecord).where(
+                    model_query(RiskReservationRecord, _REPORT_RESERVATION_LOAD).where(
                         RiskReservationRecord.bot_id == uow.session.info.get("bot_id"),
                         RiskReservationRecord.workspace_id == uow.workspace_id,
                         RiskReservationRecord.account_id == account_id,

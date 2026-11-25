@@ -1,0 +1,121 @@
+"""Compose E2E cho lineage QA sai timeframe trước khi scorer gate lấy source lock."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+from scripts.docker_image import ensure_image_available
+
+from tests.e2e.test_wp06_learning_feature_vector_parity import isolated_compose_resources
+
+
+def test_scorer_source_gate_rejects_mismatched_persisted_bar_before_lock() -> None:
+    root = Path(__file__).parents[2]
+    probe = root / "tests/e2e/probes/wp06_scorer_job_source_scope_lineage_mismatch.py"
+    assert probe.is_file()
+    with isolated_compose_resources(root) as resources:
+        base = [
+            "docker",
+            "compose",
+            "--project-name",
+            resources.project,
+            "--project-directory",
+            str(root),
+            "-f",
+            str(resources.compose_file),
+        ]
+        environment = os.environ | {"CRYPIDIAN_APP_IMAGE": resources.image}
+        image_created = ensure_image_available(root, resources.image)
+
+        def compose(*args: str) -> subprocess.CompletedProcess[str]:
+            result = subprocess.run(
+                [*base, *args],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=360,
+            )
+            if result.returncode != 0:
+                raise AssertionError(
+                    f"Compose {args!r} failed ({result.returncode}):\n"
+                    f"{result.stdout[-4000:]}\n{result.stderr[-6000:]}"
+                )
+            return result
+
+        try:
+            compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+            compose("run", "--rm", "--no-deps", "db-provisioner")
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+            heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
+            assert heads.stdout.count("(head)") == 1, heads.stdout
+            check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+            assert "No new upgrade operations detected" in check.stdout + check.stderr
+
+            result = compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "--volume",
+                f"{root / 'tests'}:/e2e-tests:ro",
+                "migrator",
+                "python",
+                "/e2e-tests/e2e/probes/wp06_scorer_job_source_scope_lineage_mismatch.py",
+            )
+            outcome = json.loads(result.stdout.strip().splitlines()[-1])
+            assert outcome == {
+                "timeframe_lineage_denial_exact": True,
+                "timeframe_completed_before_lock_release": True,
+                "timeframe_not_blocked_by_source_lock": True,
+                "timeframe_no_rights_or_decision_writes": True,
+                "symbol_lineage_denial_exact": True,
+                "symbol_completed_before_lock_release": True,
+                "symbol_not_blocked_by_source_lock": True,
+                "symbol_no_rights_or_decision_writes": True,
+                "provider_lineage_denial_exact": True,
+                "provider_completed_before_lock_release": True,
+                "provider_not_blocked_by_source_lock": True,
+                "provider_no_rights_or_decision_writes": True,
+                "revision_guard_denial_exact": True,
+                "revision_no_rights_or_decision_writes": True,
+                "checksum_guard_denial_exact": True,
+                "checksum_no_rights_or_decision_writes": True,
+                "source_event_guard_denial_exact": True,
+                "source_event_no_rights_or_decision_writes": True,
+                "source_guard_denial_exact": True,
+                "source_no_rights_or_decision_writes": True,
+                "missing_bar_guard_denial_exact": True,
+                "missing_bar_no_rights_or_decision_writes": True,
+                "guard_cases_no_rights_or_decision_writes": True,
+                "no_policy_or_license_rows_seeded": True,
+            }
+            check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+            assert "No new upgrade operations detected" in check.stdout + check.stderr
+        finally:
+            compose("down", "--volumes", "--remove-orphans")
+            for resource in ("container", "volume", "network"):
+                command = [
+                    "docker",
+                    resource,
+                    "ls",
+                    "--quiet",
+                    "--filter",
+                    f"label=com.docker.compose.project={resources.project}",
+                ]
+                if resource == "container":
+                    command.append("--all")
+                inventory = subprocess.run(command, capture_output=True, text=True, check=True)
+                assert not inventory.stdout.strip(), (resource, inventory.stdout)
+            if image_created:
+                subprocess.run(
+                    ["docker", "image", "rm", resources.image],
+                    capture_output=True,
+                    check=True,
+                    timeout=120,
+                )

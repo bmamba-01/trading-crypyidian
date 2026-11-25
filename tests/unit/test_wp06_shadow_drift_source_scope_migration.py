@@ -72,6 +72,109 @@ def test_shadow_gate_is_fixed_inference_and_uses_exact_persisted_bar_lineage() -
     assert "SELECT policy.*" not in gate
 
 
+def test_shadow_source_scope_sql_checks_every_license_use_dimension() -> None:
+    """Giữ regression guard cho các chiều rights trước khi ghi fingerprint."""
+    sql = _upgrade_sql()
+    gate_start = sql.index("CREATE FUNCTION public.wp06_authorize_shadow_inference_source_scope(")
+    scope_start = sql.index("IF policy_row.license_scope->>'source_id'", gate_start)
+    scope_end = sql.index("source_license_evidence AS evidence", scope_start)
+    scope_contract = sql[scope_start:scope_end]
+
+    for predicate in (
+        "policy_row.license_scope->>'source_id' IS DISTINCT FROM group_row.source_id",
+        "policy_row.license_scope->>'provider' IS DISTINCT FROM policy_row.provider",
+        "policy_row.license_scope->>'product' IS DISTINCT FROM policy_row.product",
+        "policy_row.license_scope->>'venue' IS DISTINCT FROM policy_row.venue",
+        "policy_row.license_scope->>'contract' IS DISTINCT FROM policy_row.contract",
+        "policy_row.license_scope->'symbols'",
+        "policy_row.license_scope->'intervals'",
+        "policy_row.license_scope->>'data_start'",
+        "policy_row.license_scope->>'data_end'",
+        "policy_row.license_scope->'allowed_purposes'",
+        "policy_row.license_scope->'allowed_outputs'",
+        "policy_row.license_scope->'derived_use'",
+        "policy_row.license_scope->'max_retention_days'",
+    ):
+        assert predicate in scope_contract
+
+
+def test_shadow_inference_hash_pattern_survives_migration_f_string_rendering() -> None:
+    sql = _upgrade_sql()
+    start = sql.index("CREATE FUNCTION public.wp06_authorize_shadow_inference_source_scope(")
+    end = sql.index("ALTER FUNCTION public.wp06_authorize_shadow_inference_source_scope(", start)
+    gate = sql[start:end]
+
+    for predicate in (
+        "source_scope_row.decision_scope_fingerprint !~ '^[0-9a-f]{64}$'",
+        "policy_row.license_digest !~ '^[0-9a-f]{64}$'",
+        "policy_row.license_scope_hash !~ '^[0-9a-f]{64}$'",
+        "policy_row.policy_fingerprint !~ '^[0-9a-f]{64}$'",
+    ):
+        assert predicate in gate
+
+
+def test_scoped_shadow_hash_documents_preserve_python_sorted_json_order() -> None:
+    sql = _upgrade_sql()
+    idempotency_start = sql.index(
+        "CREATE OR REPLACE FUNCTION public.wp06_shadow_observation_idempotency_key("
+    )
+    canonical_start = sql.index(
+        "CREATE OR REPLACE FUNCTION public.wp06_shadow_observation_canonical_document(",
+        idempotency_start,
+    )
+    idempotency = sql[idempotency_start:canonical_start]
+    idempotency_scope_start = idempotency.index(
+        "END IF;", idempotency.index("IF row_value.source_scope_fingerprint IS NULL")
+    )
+    idempotency_scope = idempotency[idempotency_scope_start:]
+    assert "pg_catalog.json_build_object" in idempotency_scope
+    assert "pg_catalog.jsonb_build_object" not in idempotency_scope
+    idempotency_keys = (
+        "'active_artifact_hash'",
+        "'active_pointer_version'",
+        "'active_registry_id'",
+        "'active_registry_revision'",
+        "'challenger_reason'",
+        "'challenger_registry_id'",
+        "'challenger_revision'",
+        "'incumbent_decision_hash'",
+        "'incumbent_decision_id'",
+        "'incumbent_strategy_release_hash'",
+        "'registry_approval_event_hash'",
+        "'registry_approval_event_id'",
+        "'registry_approval_event_sequence'",
+        "'rights_eligible'",
+        "'rights_fingerprint'",
+        "'rights_known_at'",
+        "'rights_policy_id'",
+        "'rights_policy_sequence'",
+        "'rights_source_id'",
+        "'schema_compatible'",
+        "'snapshot_coverage'",
+        "'snapshot_hash'",
+        "'snapshot_quality_ok'",
+        "'source_scope_fingerprint'",
+        "'workspace_id'",
+    )
+    assert [idempotency_scope.index(key) for key in idempotency_keys] == sorted(
+        idempotency_scope.index(key) for key in idempotency_keys
+    )
+
+    canonical_end = sql.index(
+        "CREATE OR REPLACE FUNCTION public.wp06_lock_learning_shadow_cohort(", canonical_start
+    )
+    canonical = sql[canonical_start:canonical_end]
+    canonical_scope_start = canonical.index(
+        "END IF;", canonical.index("IF row_value.source_scope_fingerprint IS NULL")
+    )
+    canonical_scope = canonical[canonical_scope_start:]
+    assert "pg_catalog.jsonb_build_object" not in canonical_scope
+    assert "'source_scope_fingerprint'" in canonical_scope
+    assert canonical_scope.index("'source_scope_fingerprint'") < canonical_scope.rindex(
+        "'workspace_id'"
+    )
+
+
 def test_shadow_scope_gates_are_executable_by_dedicated_observer_only() -> None:
     sql = _upgrade_sql()
     source_ids_start = sql.index("CREATE FUNCTION public.wp06_shadow_drift_decision_source_ids(")

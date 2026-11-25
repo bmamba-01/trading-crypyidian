@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from trading_bot.adapters.database.models.bot_entities import BotInstance
 
@@ -23,7 +24,15 @@ async def bind_account_bot(
         )
         return cached
     bot = await session.scalar(
-        select(BotInstance).where(
+        select(BotInstance)
+        .options(
+            load_only(
+                BotInstance.id,
+                BotInstance.workspace_id,
+                BotInstance.trading_account_id,
+            )
+        )
+        .where(
             BotInstance.workspace_id == workspace_id, BotInstance.trading_account_id == account_id
         )
     )

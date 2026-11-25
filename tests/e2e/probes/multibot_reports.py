@@ -7,7 +7,7 @@ Phase:
   plan/decision/reservation ghi bằng ORM dưới RLS runtime đúng bot.
 - `oracle` (migrator): tổng ledger độc lập bằng SQL thô theo bot + digest bảng ledger để chứng
   minh báo cáo không ghi/sửa hàng nào.
-- `rls` (admin-web, `crypidian_admin_web`): workspace khác/membership giả không thấy trade.
+- `rls` (reader riêng): workspace khác/membership giả/thiếu REPORT_READ không thấy trade.
 Ngữ cảnh đến từ test qua stdin (không chứa bí mật).
 """
 
@@ -481,5 +481,39 @@ def rls():
     return observed
 
 
-PHASES = {"prepare": prepare, "ledger": ledger, "oracle": oracle, "rls": rls}
+def reader_scope():
+    """Kiểm RLS reader bằng membership và bot đã seed trong đúng Compose QA."""
+    workspace_id = UUID(STATE["workspaces"]["qa"])
+    membership_id = UUID(STATE["members"]["qa.owner"])
+    bot_id = UUID(STATE["bots"]["A"])
+    with connect() as connection:
+        with connection.transaction():
+            _scope(connection, workspace_id, membership_id)
+            can_access = connection.execute(
+                "SELECT public.wp06_admin_report_reader_can_access(%s, %s)",
+                (workspace_id, bot_id),
+            ).fetchone()[0]
+            bot_rows = connection.execute(
+                "SELECT count(*) FROM bot_instance WHERE workspace_id = %s AND id = %s",
+                (workspace_id, bot_id),
+            ).fetchone()[0]
+            trade_rows = connection.execute(
+                "SELECT count(*) FROM trade WHERE workspace_id = %s AND bot_id = %s",
+                (workspace_id, bot_id),
+            ).fetchone()[0]
+    return {
+        "identity": "crypidian_admin_report_reader",
+        "can_access": can_access,
+        "bot_rows": bot_rows,
+        "trade_rows": trade_rows,
+    }
+
+
+PHASES = {
+    "prepare": prepare,
+    "ledger": ledger,
+    "oracle": oracle,
+    "rls": rls,
+    "reader_scope": reader_scope,
+}
 print(json.dumps(PHASES[PHASE](), sort_keys=True))

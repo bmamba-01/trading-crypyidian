@@ -35,6 +35,7 @@ from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
+from trading_bot.common.http_limits import BodyTooLargeError
 from trading_bot.domain.research.license_scope import scope_sha256
 from trading_bot.domain.research.source_policy import SourcePolicyState
 from trading_bot.domain.research.source_registry import SourcePolicyTransitionError
@@ -258,6 +259,9 @@ class _EvidenceRoute(APIRoute):
                 response = JSONResponse(
                     status_code=422, content={"detail": "Dữ liệu upload không hợp lệ."}
                 )
+            except BodyTooLargeError:
+                # Chuyển tín hiệu tới middleware để trả 413 thay vì che thành lỗi 500.
+                raise
             except Exception:
                 response = JSONResponse(
                     status_code=500, content={"detail": "Không thể ghi bằng chứng."}

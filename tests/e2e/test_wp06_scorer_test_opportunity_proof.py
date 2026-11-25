@@ -100,6 +100,11 @@ def test_postgres_scorer_test_opportunity_proof_rls_hash_and_downgrade() -> None
             assert observed["workspace_scope"] is True
             assert observed["grants_exact"] is True
             assert observed["canonical_hash_parity"] is True
+            assert observed["v3_not_run_vector_and_input_excluded_pass_validator"] is True
+            assert observed["v3_invalid_state_rejected"] is True
+            assert observed["v3_invalid_reason_rejected"] is True
+            assert observed["v3_invalid_count_rejected"] is True
+            assert observed["null_schema_version_rejected"] is True
             assert observed["bad_direct_insert_rejected"] is True
             assert observed["whitespace_tamper_rejected"] is True
             assert observed["key_order_tamper_rejected"] is True

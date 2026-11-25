@@ -264,27 +264,56 @@ class RequestRateLimitMiddleware:
         await self.app(scope, receive, send)
 
 
-class _BodyTooLargeError(Exception):
+class BodyTooLargeError(Exception):
     """Báo hiệu body vượt ngưỡng khi đọc luồng không có Content-Length."""
 
 
-class BodySizeLimitMiddleware:
-    """Trả 413 khi body vượt ngưỡng: kiểm Content-Length trước, đếm byte khi stream."""
+BodySizePathOverride = tuple[str, str, int]
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+
+def _matches_path_template(path: str, template: str) -> bool:
+    """So khớp mẫu path theo từng đoạn; `{name}` chỉ khớp một đoạn không rỗng."""
+    path_parts = path.split("/")
+    template_parts = template.split("/")
+    if len(path_parts) != len(template_parts):
+        return False
+    return all(
+        (part[1:-1] and bool(value))
+        if part.startswith("{") and part.endswith("}")
+        else part == value
+        for part, value in zip(template_parts, path_parts, strict=True)
+    )
+
+
+class BodySizeLimitMiddleware:
+    """Trả 413 khi body vượt ngưỡng chung hoặc ngưỡng riêng của route được phép."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int,
+        path_overrides: Sequence[BodySizePathOverride] = (),
+    ) -> None:
         if max_bytes < 1:
             raise ValueError("Ngưỡng kích thước body phải lớn hơn 0")
+        if any(limit < 1 or not method or not path for method, path, limit in path_overrides):
+            raise ValueError("Ngoại lệ giới hạn body phải có method, path và ngưỡng hợp lệ")
         self.app = app
         self.max_bytes = max_bytes
+        self.path_overrides = tuple(
+            (method.upper(), path, limit) for method, path, limit in path_overrides
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        max_bytes = self._max_bytes_for(scope)
         declared = _header(scope, b"content-length")
         if declared is not None:
             try:
-                too_large = any(int(part.strip()) > self.max_bytes for part in declared.split(","))
+                too_large = any(int(part.strip()) > max_bytes for part in declared.split(","))
             except ValueError:
                 too_large = False
             if too_large:
@@ -298,8 +327,8 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
-                    raise _BodyTooLargeError
+                if received > max_bytes:
+                    raise BodyTooLargeError
             return message
 
         async def tracking_send(message: Message) -> None:
@@ -310,15 +339,23 @@ class BodySizeLimitMiddleware:
 
         try:
             await self.app(scope, counting_receive, tracking_send)
-        except _BodyTooLargeError:
+        except BodyTooLargeError:
             if response_started:
                 raise
             await self._reject(scope, receive, send)
+
+    def _max_bytes_for(self, scope: Scope) -> int:
+        method = str(scope.get("method", "")).upper()
+        path = str(scope.get("path", ""))
+        for override_method, template, limit in self.path_overrides:
+            if method == override_method and _matches_path_template(path, template):
+                return limit
+        return self.max_bytes
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
         response = _json_error(
             413,
             "Nội dung yêu cầu vượt giới hạn cho phép.",
-            {"Connection": "close"},
+            {"Connection": "close", "Cache-Control": "no-store"},
         )
         await response(scope, receive, send)

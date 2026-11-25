@@ -13,6 +13,13 @@ config = context.config
 target_metadata = Base.metadata
 
 
+def include_object(object_, name, type_, reflected, compare_to):
+    """Loại snapshot nội bộ của migration khỏi so sánh schema ứng dụng."""
+    if type_ == "table" and reflected and name == "wp06_admin_web_acl_snapshot":
+        return False
+    return True
+
+
 def database_url() -> str:
     configured_url = os.getenv("TRADING_BOT_DATABASE_URL")
     if configured_url:
@@ -37,13 +44,19 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_sync_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

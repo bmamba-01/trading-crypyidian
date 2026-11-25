@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,49 @@ def test_provision_roles_and_local_secrets_include_report_reader() -> None:
     assert "report-reader:" in compose_src
     assert "TRADING_BOT_DATABASE_USER: crypidian_report_reader" in compose_src
     assert "database_report_reader_password" in compose_src
+
+
+def test_admin_report_reader_secret_is_mounted_only_for_admin_and_provisioner() -> None:
+    compose_src = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    secret_name = "database_admin_report_reader_password"
+    admin = _compose_service_block(compose_src, "admin-web")
+    provisioner = _compose_service_block(compose_src, "db-provisioner")
+
+    assert "TRADING_BOT_ADMIN_REPORT_READER_DATABASE_USER: crypidian_admin_report_reader" in admin
+    assert (
+        "TRADING_BOT_ADMIN_REPORT_READER_DATABASE_PASSWORD_FILE: "
+        "/run/secrets/database_admin_report_reader_password"
+    ) in admin
+    assert "TRADING_BOT_ADMIN_REPORT_READER_DATABASE_PASSWORD:" not in admin
+    assert f"      - {secret_name}" in admin
+    assert f"      - {secret_name}" in provisioner
+    services_source = compose_src.split("\nnetworks:\n", maxsplit=1)[0]
+    service_names = re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\n", services_source)
+    for service_name in service_names:
+        if service_name not in {"admin-web", "db-provisioner"}:
+            assert f"      - {secret_name}" not in _compose_service_block(
+                compose_src, service_name
+            ), service_name
+    assert f"  {secret_name}:\n    file: ./.secrets/{secret_name}" in compose_src
+
+
+def _compose_service_block(source: str, service_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(service_name)}:\n(.*?)(?=^  [^ ]|^networks:|^volumes:|^secrets:|\Z)",
+        source,
+    )
+    assert match is not None, service_name
+    return match.group(1)
+
+
+def test_admin_report_reader_role_is_provisioned_as_noinherit() -> None:
+    provision_src = (ROOT / "scripts/provision_database_roles.py").read_text(encoding="utf-8")
+    secrets_src = (ROOT / "scripts/prepare_local_secrets.py").read_text(encoding="utf-8")
+
+    assert '"crypidian_admin_report_reader"' in provision_src
+    assert "/run/secrets/database_admin_report_reader_password" in provision_src
+    assert '"crypidian_admin_report_reader"' in provision_src.split("inheritance = (")[1]
+    assert '"admin_report_reader"' in secrets_src
 
 
 def test_run_ai_analyst_uses_report_reader_without_migrator_or_update() -> None:

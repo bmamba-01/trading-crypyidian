@@ -310,8 +310,8 @@ def _create_exact_scope_gates() -> None:
                         target_workspace, target_decision
                   ) AS scope;
                 IF NOT FOUND
-                   OR source_scope_row.decision_scope_fingerprint !~ '^[0-9a-f]{64}$'
-                   OR source_scope_row.decision_lineage_fingerprint !~ '^[0-9a-f]{64}$'
+                   OR source_scope_row.decision_scope_fingerprint !~ '^[0-9a-f]{{64}}$'
+                   OR source_scope_row.decision_lineage_fingerprint !~ '^[0-9a-f]{{64}}$'
                    OR source_scope_row.timeframe_snapshot_ids IS NULL
                    OR source_scope_row.source_event_digests IS NULL THEN
                     RAISE EXCEPTION 'WP06_SHADOW_INFERENCE_LINEAGE_MISSING';
@@ -417,11 +417,11 @@ def _create_exact_scope_gates() -> None:
                        OR policy_row.license_scope IS NULL
                        OR policy_row.license_evidence_id IS NULL
                        OR policy_row.license_digest IS NULL
-                       OR policy_row.license_digest !~ '^[0-9a-f]{64}$'
+                       OR policy_row.license_digest !~ '^[0-9a-f]{{64}}$'
                        OR policy_row.license_scope_hash IS NULL
-                       OR policy_row.license_scope_hash !~ '^[0-9a-f]{64}$'
+                       OR policy_row.license_scope_hash !~ '^[0-9a-f]{{64}}$'
                        OR policy_row.policy_fingerprint IS NULL
-                       OR policy_row.policy_fingerprint !~ '^[0-9a-f]{64}$'
+                       OR policy_row.policy_fingerprint !~ '^[0-9a-f]{{64}}$'
                        OR NOT public.wp06_license_scope_valid(policy_row.license_scope)
                        OR policy_row.license_scope_hash IS DISTINCT FROM pg_catalog.encode(
                             pg_catalog.sha256(pg_catalog.convert_to(
@@ -622,7 +622,6 @@ def _create_hash_and_shadow_writer_gates() -> None:
             row_value public.learning_shadow_observation
         ) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, pg_temp AS $$
-        DECLARE document jsonb;
         BEGIN
             IF row_value.source_scope_fingerprint IS NULL THEN
                 RETURN public.wp06_sha256_canonical_json(pg_catalog.json_build_object(
@@ -654,7 +653,7 @@ def _create_hash_and_shadow_writer_gates() -> None:
                     'workspace_id', row_value.workspace_id::text
                 ));
             END IF;
-            document := pg_catalog.jsonb_build_object(
+            RETURN public.wp06_sha256_canonical_json(pg_catalog.json_build_object(
                 'active_artifact_hash', row_value.active_artifact_hash,
                 'active_pointer_version', row_value.active_pointer_version,
                 'active_registry_id', row_value.active_registry_id::text,
@@ -680,13 +679,9 @@ def _create_hash_and_shadow_writer_gates() -> None:
                     row_value.snapshot_coverage),
                 'snapshot_hash', row_value.snapshot_hash,
                 'snapshot_quality_ok', row_value.snapshot_quality_ok,
+                'source_scope_fingerprint', row_value.source_scope_fingerprint,
                 'workspace_id', row_value.workspace_id::text
-            );
-            IF row_value.source_scope_fingerprint IS NOT NULL THEN
-                document := document || pg_catalog.jsonb_build_object(
-                    'source_scope_fingerprint', row_value.source_scope_fingerprint);
-            END IF;
-            RETURN public.wp06_sha256_canonical_json(document::json);
+            ));
         END $$
     """)
     op.execute("""
@@ -694,7 +689,6 @@ def _create_hash_and_shadow_writer_gates() -> None:
             row_value public.learning_shadow_observation
         ) RETURNS json LANGUAGE plpgsql STABLE SECURITY DEFINER
         SET search_path = pg_catalog, pg_temp AS $$
-        DECLARE document jsonb;
         BEGIN
             IF row_value.source_scope_fingerprint IS NULL THEN
                 RETURN pg_catalog.json_build_object(
@@ -752,12 +746,12 @@ def _create_hash_and_shadow_writer_gates() -> None:
                     'workspace_id', row_value.workspace_id::text
                 );
             END IF;
-            document := pg_catalog.jsonb_build_object(
+            RETURN pg_catalog.json_build_object(
                 'active_artifact_hash', row_value.active_artifact_hash,
                 'active_pointer_version', row_value.active_pointer_version,
                 'active_registry_id', row_value.active_registry_id::text,
                 'active_registry_revision', row_value.active_registry_revision,
-                'challenger_model', pg_catalog.jsonb_build_object(
+                'challenger_model', pg_catalog.json_build_object(
                     'artifact_hash', row_value.challenger_artifact_hash,
                     'artifact_id', row_value.challenger_artifact_id::text,
                     'fold_plan_hash', row_value.challenger_fold_plan_hash,
@@ -772,12 +766,12 @@ def _create_hash_and_shadow_writer_gates() -> None:
                     'workspace_id', row_value.workspace_id::text
                 ),
                 'challenger_reason', row_value.challenger_reason,
-                'challenger_snapshot_state', pg_catalog.jsonb_build_object(
+                'challenger_snapshot_state', pg_catalog.json_build_object(
                     'coverage', public.wp06_canonical_float_json(row_value.snapshot_coverage),
                     'quality_ok', row_value.snapshot_quality_ok,
                     'schema_compatible', row_value.schema_compatible
                 ),
-                'incumbent_decision', pg_catalog.jsonb_build_object(
+                'incumbent_decision', pg_catalog.json_build_object(
                     'decision_hash', row_value.decision_hash,
                     'decision_id', row_value.incumbent_decision_id::text,
                     'evaluated_at', public.wp06_canonical_utc_timestamp_json(
@@ -788,13 +782,13 @@ def _create_hash_and_shadow_writer_gates() -> None:
                 ),
                 'observation_id', row_value.id::text,
                 'observed_at', public.wp06_canonical_utc_timestamp_json(row_value.observed_at),
-                'snapshot', pg_catalog.jsonb_build_object(
+                'snapshot', pg_catalog.json_build_object(
                     'as_of', public.wp06_canonical_utc_timestamp_json(row_value.snapshot_as_of),
                     'schema_hash', row_value.snapshot_schema_hash,
                     'snapshot_hash', row_value.snapshot_hash,
                     'snapshot_id', row_value.snapshot_id
                 ),
-                'source_rights', pg_catalog.jsonb_build_object(
+                'source_rights', pg_catalog.json_build_object(
                     'eligible', row_value.rights_eligible,
                     'fingerprint', row_value.rights_fingerprint,
                     'known_at', public.wp06_canonical_utc_timestamp_json(row_value.rights_known_at),
@@ -802,13 +796,9 @@ def _create_hash_and_shadow_writer_gates() -> None:
                     'policy_sequence', row_value.rights_policy_sequence,
                     'source_id', row_value.rights_source_id
                 ),
+                'source_scope_fingerprint', row_value.source_scope_fingerprint,
                 'workspace_id', row_value.workspace_id::text
             );
-            IF row_value.source_scope_fingerprint IS NOT NULL THEN
-                document := document || pg_catalog.jsonb_build_object(
-                    'source_scope_fingerprint', row_value.source_scope_fingerprint);
-            END IF;
-            RETURN document::json;
         END $$
     """)
     op.execute("""

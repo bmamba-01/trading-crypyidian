@@ -1,1238 +1,244 @@
-"""Probe SEC-01/SEC-02 chạy trong container Compose; mã được truyền qua stdin.
+"""Probe PostgreSQL để kiểm quyền tối thiểu của login admin-web."""
 
-Pha `acl_snapshot`, `acl_compare`, `seed`, `matrix` chạy bằng login migrator (superuser);
-pha `worker`, `runtime`, `admin` chạy bằng login thật của từng process role.
-Ma trận kỳ vọng ở đây độc lập với migration để phát hiện grant thừa hoặc thiếu.
-"""
+from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
 
 import psycopg
-from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
-from psycopg.types.json import Jsonb
-
-ADMIN = "crypidian_admin_web"
-RUNTIME = "crypidian_trading_runtime"
-GATEWAY = "crypidian_execution_gateway"
-INGESTION = "crypidian_ingestion_worker"
-TRAINER = "crypidian_trainer_worker"
-REPLAY_WRITER = "crypidian_replay_writer"
-LEGACY_TRIGGER_GRANTEE = "crypidian_legacy_trigger_integrator"
-PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER, REPLAY_WRITER)
-WORKER_ROLES = (GATEWAY, INGESTION, TRAINER)
-
-# Bảng identity/auth/config thuộc phạm vi SEC-01.
-IDENTITY_TABLES = (
-    "workspace",
-    "user_account",
-    "user_membership",
-    "role_binding",
-    "session",
-    "mfa_factor",
-    "telegram_binding",
-    "secret_reference",
-    "trading_account",
-    "config_version",
-    "risk_profile_version",
-    "approval_request",
-    "watchlist_version",
-    "watchlist_item",
-    "strategy_release",
-    "workspace_settings_version",
-)
-# Quyền cấp bảng kỳ vọng sau SEC-01; UPDATE theo cột nằm ở COLUMN_UPDATE.
-TABLE_PRIVILEGES = {
-    ADMIN: {
-        "workspace": {"SELECT", "INSERT", "UPDATE"},
-        "user_account": {"SELECT", "INSERT", "UPDATE"},
-        "user_membership": {"SELECT", "INSERT"},
-        "role_binding": {"SELECT", "INSERT"},
-        "session": {"SELECT", "INSERT"},
-        "mfa_factor": {"SELECT", "INSERT"},
-        "telegram_binding": {"SELECT", "INSERT"},
-        "telegram_link_request": {"SELECT", "INSERT"},
-        "telegram_binding_challenge": {"SELECT", "INSERT"},
-        "secret_reference": {"SELECT", "INSERT"},
-        "trading_account": {"SELECT", "INSERT"},
-        "config_version": {"SELECT"},
-        "risk_profile_version": {"SELECT", "INSERT"},
-        "approval_request": {"SELECT"},
-        "watchlist_version": {"SELECT"},
-        "watchlist_item": {"SELECT"},
-        "strategy_release": {"SELECT"},
-        "workspace_settings_version": {"SELECT", "INSERT", "UPDATE"},
-    },
-    RUNTIME: {
-        "workspace": {"SELECT"},
-        "trading_account": {"SELECT", "INSERT"},
-        "config_version": {"SELECT"},
-        "risk_profile_version": {"SELECT"},
-        "approval_request": {"SELECT"},
-        "strategy_release": {"SELECT"},
-        "workspace_settings_version": {"SELECT"},
-    },
-}
-COLUMN_UPDATE = {
-    ADMIN: {
-        # Cột lock-only (như R4): chỉ để SELECT ... FOR UPDATE, không phải dữ liệu nghiệp vụ.
-        "user_membership": {"created_at"},
-        "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at", "last_seen_at"},
-        "mfa_factor": {"verified_at", "last_used_counter"},
-        # TG-4: topic tín hiệu / PAPER report do Admin tạo.
-        "telegram_binding": {"revoked_at", "signal_thread_id", "report_thread_id"},
-        "telegram_link_request": {"expires_at", "consumed_at"},
-        "telegram_binding_challenge": {"consumed_at"},
-        "trading_account": {"updated_at"},
-    },
-    RUNTIME: {"trading_account": {"updated_at"}},
-}
-POLICY_ROLES = {
-    "user_membership": {ADMIN},
-    "role_binding": {ADMIN},
-    "session": {ADMIN},
-    "mfa_factor": {ADMIN},
-    "telegram_binding": {ADMIN},
-    "telegram_link_request": {ADMIN},
-    "telegram_binding_challenge": {ADMIN},
-    "secret_reference": {ADMIN},
-    "watchlist_version": {ADMIN},
-    "watchlist_item": {ADMIN},
-    "trading_account": {ADMIN, RUNTIME},
-    "risk_profile_version": {ADMIN, RUNTIME},
-    "strategy_release": {ADMIN, RUNTIME},
-    "workspace_settings_version": {ADMIN, RUNTIME},
-}
-DML = ("SELECT", "INSERT", "UPDATE", "DELETE")
-# Bảng MB-02/MB-03 (tích hợp đợt 2): chỉ grant trực tiếp, không qua crypidian_app; worker
-# không có quyền. Kiểm cùng ma trận với bảng identity/config.
-MULTIBOT_TABLES = (
-    "bot_config_version",
-    "bot_config_request",
-    "shared_signal_evidence",
-    "bot_decision_job",
-    "bot_decision",
-)
-TABLE_PRIVILEGES[ADMIN] |= {
-    "bot_config_version": {"SELECT", "INSERT", "UPDATE"},
-    "bot_config_request": {"SELECT", "INSERT"},
-    "shared_signal_evidence": {"SELECT"},
-    "bot_decision_job": {"SELECT"},
-    "bot_decision": {"SELECT"},
-}
-TABLE_PRIVILEGES[RUNTIME] |= {
-    "bot_config_version": {"SELECT"},
-    "shared_signal_evidence": {"SELECT", "INSERT"},
-    "bot_decision_job": {"SELECT", "INSERT"},
-    "bot_decision": {"SELECT", "INSERT"},
-}
-# Runtime chỉ chuyển trạng thái job (và khóa FOR UPDATE) qua quyền cấp cột; MB-05 thêm cột
-# retry/poison job (attempts, last_error_code, next_attempt_at).
-COLUMN_UPDATE[RUNTIME] |= {
-    "bot_decision_job": {
-        "status",
-        "completed_at",
-        "attempts",
-        "last_error_code",
-        "next_attempt_at",
-    }
-}
-# Bảng registry runtime MB-05: admin ghi ý định control/resolution, runtime giữ lease ghi
-# lease/state/incident; không DELETE, UPDATE chỉ cấp cột (SEC R10).
-RUNTIME_REGISTRY_TABLES = (
-    "workspace_runtime_control",
-    "bot_runtime_control",
-    "bot_runtime_lease",
-    "bot_runtime_state",
-    "account_activity_incident",
-)
-MULTIBOT_TABLES += RUNTIME_REGISTRY_TABLES
-TABLE_PRIVILEGES[ADMIN] |= {
-    "workspace_runtime_control": {"SELECT", "INSERT"},
-    "bot_runtime_control": {"SELECT", "INSERT"},
-    "bot_runtime_lease": {"SELECT"},
-    "bot_runtime_state": {"SELECT"},
-    "account_activity_incident": {"SELECT"},
-}
-TABLE_PRIVILEGES[RUNTIME] |= {
-    "workspace_runtime_control": {"SELECT"},
-    "bot_runtime_control": {"SELECT"},
-    "bot_runtime_lease": {"SELECT", "INSERT"},
-    "bot_runtime_state": {"SELECT", "INSERT"},
-    "account_activity_incident": {"SELECT", "INSERT"},
-}
-COLUMN_UPDATE[RUNTIME] |= {
-    "bot_runtime_lease": {"owner_id", "fencing_token", "acquired_at", "renewed_at", "expires_at"},
-    "bot_runtime_state": {
-        "readiness",
-        "reason_code",
-        "applied_bot_control_revision",
-        "applied_workspace_control_revision",
-        "last_checkpoint_revision",
-        "activity_cursor",
-        "activity_checked_at",
-        "activity_status",
-        "fanout_exclusion_code",
-        "heartbeat_at",
-        "fencing_token",
-        "updated_at",
-    },
-}
-COLUMN_UPDATE[ADMIN] |= {
-    "account_activity_incident": {
-        "status",
-        "resolution_code",
-        "resolution_reason",
-        "resolved_by",
-        "resolved_at",
-    }
-}
-# MB-07a (migration f7b9d1e3a5c8): disable bot cập nhật đúng cột `trading_account.status`
-# (ruling 29/34); bảng dedup Telegram chỉ admin-web SELECT/INSERT và DELETE (policy chỉ cho xóa
-# hàng quá 7 ngày — retention, fix round 1), FORCE RLS, policy đọc `workspace_isolation`.
-COLUMN_UPDATE[ADMIN]["trading_account"] = {"updated_at", "status"}
-MULTIBOT_TABLES += (
-    "telegram_update_receipt",
-    "telegram_link_request",
-    "telegram_binding_challenge",
-)
-TABLE_PRIVILEGES[ADMIN] |= {"telegram_update_receipt": {"SELECT", "INSERT", "DELETE"}}
-POLICY_ROLES["telegram_update_receipt"] = {ADMIN}
-FORCE_RLS_TABLES = (
-    "telegram_update_receipt",
-    "telegram_link_request",
-    "telegram_binding_challenge",
-)
 
 
-def identity(name):
-    return uuid5(NAMESPACE_URL, "crypidian-sec01-e2e:" + name)
-
-
-W1, W2 = identity("w1"), identity("w2")
-M1, M2 = identity("m1"), identity("m2")
-A1, A2 = identity("a1"), identity("a2")
-
-
-def insert(connection, table, **values):
-    values.setdefault("id", identity(table + str(values.get("workspace_id", ""))))
-    connection.execute(
-        sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
-            sql.Identifier(table),
-            sql.SQL(",").join(map(sql.Identifier, values)),
-            sql.SQL(",").join(sql.Placeholder() for _ in values),
-        ),
-        tuple(values.values()),
+def main() -> None:
+    password_file = Path(os.environ["WP06_ADMIN_PASSWORD_FILE"])
+    connection = psycopg.connect(
+        host="postgres",
+        dbname="crypidian",
+        user="crypidian_admin_web",
+        password=password_file.read_text(encoding="utf-8").strip(),
     )
-
-
-def acl_state(connection):
-    """Trạng thái quyền so sánh được: bảng, cột, schema, policy, membership."""
-    relations = connection.execute(
-        "SELECT c.relname, COALESCE(r.rolname, 'PUBLIC'), g.rolname, x.privilege_type, "
-        "x.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) x "
-        "LEFT JOIN pg_roles r ON r.oid = x.grantee JOIN pg_roles g ON g.oid = x.grantor "
-        "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'S')"
-    ).fetchall()
-    columns = connection.execute(
-        "SELECT c.relname, a.attname, COALESCE(r.rolname, 'PUBLIC'), g.rolname, "
-        "x.privilege_type, x.is_grantable FROM pg_attribute a "
-        "JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "CROSS JOIN LATERAL aclexplode(a.attacl) x "
-        "LEFT JOIN pg_roles r ON r.oid = x.grantee JOIN pg_roles g ON g.oid = x.grantor "
-        "WHERE n.nspname = 'public' AND a.attacl IS NOT NULL"
-    ).fetchall()
-    schema = connection.execute(
-        "SELECT COALESCE(r.rolname, 'PUBLIC'), g.rolname, x.privilege_type, x.is_grantable "
-        "FROM pg_namespace n "
-        "CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) x "
-        "LEFT JOIN pg_roles r ON r.oid = x.grantee JOIN pg_roles g ON g.oid = x.grantor "
-        "WHERE n.nspname = 'public'"
-    ).fetchall()
-    policies = connection.execute(
-        "SELECT tablename, policyname, permissive, "
-        "array_to_string(ARRAY(SELECT unnest(roles) ORDER BY 1), ','), cmd, qual, with_check "
-        "FROM pg_policies WHERE schemaname = 'public'"
-    ).fetchall()
-    members = connection.execute(
-        "SELECT r.rolname, m.rolname, g.rolname, a.admin_option, a.inherit_option, "
-        "a.set_option FROM pg_auth_members a JOIN pg_roles r ON r.oid = a.roleid "
-        "JOIN pg_roles m ON m.oid = a.member JOIN pg_roles g ON g.oid = a.grantor "
-        "WHERE r.rolname LIKE 'crypidian%' OR m.rolname LIKE 'crypidian%'"
-    ).fetchall()
-    # MB-04 fix: owner, SECURITY DEFINER, search_path và EXECUTE của hàm trong schema public.
-    functions = connection.execute(
-        "SELECT p.oid::regprocedure::text, pg_get_userbyid(p.proowner), p.prosecdef, "
-        "coalesce(array_to_string(p.proconfig, ';'), ''), COALESCE(r.rolname, 'PUBLIC'), "
-        "x.privilege_type FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-        "CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x "
-        "LEFT JOIN pg_roles r ON r.oid = x.grantee WHERE n.nspname = 'public'"
-    ).fetchall()
-    return {
-        name: sorted([list(map(str, row)) for row in rows])
-        for name, rows in (
-            ("relations", relations),
-            ("columns", columns),
-            ("schema", schema),
-            ("policies", policies),
-            ("members", members),
-            ("functions", functions),
-        )
-    }
-
-
-# MB-04 fix (I1): hàm SECURITY DEFINER chỉ do role NOLOGIN riêng sở hữu và grant tối thiểu.
-DEFINER_OWNERS = {
-    "crypidian_backtest_persist_owner",
-    "crypidian_bot_provisioner",
-    "crypidian_candidate_locker",
-    "crypidian_learning_batch_reader",
-    "crypidian_learning_evaluation_reader",
-    "crypidian_learning_source_rights_reader",
-    "crypidian_manifest_comparator",
-    "crypidian_risk_reservation_guard",
-    "crypidian_scorer_deployment_guard",
-    "crypidian_scorer_deployment_pointer_writer",
-    "crypidian_scorer_deployment_rights_reader",
-    "crypidian_paper_entry_block_reader",
-    "crypidian_learning_model_registry_guard",
-    "crypidian_learning_shadow_integrity_guard",
-    # WP06 incident entry hold (f5b7d9e1a3c6 + b2d4f6a8c0e3) và paper performance (c7e9a1b3d5f8).
-    "crypidian_learning_incident_guard",
-    "crypidian_learning_incident_reader",
-    "crypidian_learning_paper_performance_evaluator",
-    "crypidian_learning_paper_performance_report_writer",
-    "crypidian_risk_aggregator",
-    "crypidian_source_expiry_scanner",
-    "crypidian_source_rights_emitter",
-    "crypidian_audit_chain_guard",
-}
-FUNCTION_EXECUTE = {
-    "begin_backtest_job_persist(uuid,uuid,text,integer)": {REPLAY_WRITER},
-    "complete_backtest_job_persist(uuid,uuid,text,integer,uuid[])": {REPLAY_WRITER},
-    "enqueue_expired_source_policy_events(integer)": {INGESTION},
-    "emit_source_policy_rights_event()": set(),
-    "emit_source_item_revision_rights_event()": set(),
-    "emit_source_item_takedown_rights_event()": set(),
-    "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer,text,text[])": {
-        RUNTIME
-    },
-    "workspace_account_risk_state(uuid,timestamp with time zone,integer,text,text[])": {
-        RUNTIME,
-        ADMIN,
-    },
-}
-
-
-def check_functions(connection):
-    """Không hàm SECURITY DEFINER nào do superuser/role login sở hữu; EXECUTE đúng ma trận."""
-    problems = []
-    definers = connection.execute(
-        "SELECT p.oid::regprocedure::text, pg_get_userbyid(p.proowner), "
-        "coalesce(array_to_string(p.proconfig, ';'), ''), o.rolcanlogin, o.rolsuper, "
-        "o.rolbypassrls FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-        "JOIN pg_roles o ON o.oid = p.proowner WHERE n.nspname = 'public' AND p.prosecdef"
-    ).fetchall()
-    for signature, owner, config, can_login, superuser, bypass in definers:
-        if owner not in DEFINER_OWNERS or can_login or superuser or bypass:
-            problems.append(("definer owner", signature, owner))
-        if "search_path=pg_catalog, pg_temp" not in config:
-            problems.append(("definer search_path", signature, config))
-    definer_roles = connection.execute(
-        "SELECT rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
-        "rolcreatedb, rolinherit, EXISTS (SELECT 1 FROM pg_auth_members m "
-        "WHERE m.roleid = r.oid OR m.member = r.oid) FROM pg_roles r "
-        "WHERE rolname IN ('crypidian_source_expiry_scanner', 'crypidian_source_rights_emitter') "
-        "ORDER BY rolname"
-    ).fetchall()
-    if len(definer_roles) != 2 or any(
-        role != (False, False, False, False, False, False, False, False) for role in definer_roles
-    ):
-        problems.append(("source rights definer role posture", definer_roles))
-    for signature, allowed in FUNCTION_EXECUTE.items():
-        for role in (*PROCESS_ROLES, "crypidian_app"):
-            granted = connection.execute(
-                "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, signature)
-            ).fetchone()[0]
-            if granted is not (role in allowed):
-                problems.append(("execute", signature, role, granted))
-        public = connection.execute(
-            "SELECT EXISTS (SELECT 1 FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce("
-            "p.proacl, acldefault('f', p.proowner))) x WHERE p.oid = %s::regprocedure "
-            "AND x.grantee = 0)",
-            (signature,),
-        ).fetchone()[0]
-        if public:
-            problems.append(("public execute", signature))
-
-    guard_signature = "public.protect_risk_reservation_transition()"
-    guard = connection.execute(
-        "SELECT p.prosecdef, pg_get_userbyid(p.proowner), "
-        "coalesce(array_to_string(p.proconfig, ';'), ''), o.rolcanlogin, o.rolsuper, "
-        "o.rolbypassrls, o.rolcreaterole, o.rolcreatedb, o.rolreplication, o.rolinherit, "
-        "EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = o.oid OR m.member = o.oid), "
-        "pg_get_functiondef(p.oid), "
-        "EXISTS (SELECT 1 FROM pg_proc f CROSS JOIN LATERAL aclexplode(coalesce("
-        "f.proacl, acldefault('f', f.proowner))) x WHERE f.oid = p.oid AND x.grantee = 0), "
-        "ARRAY(SELECT pg_get_userbyid(x.grantee) FROM aclexplode(coalesce("
-        "p.proacl, acldefault('f', p.proowner))) x WHERE x.grantee <> p.proowner) "
-        "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-        "JOIN pg_roles o ON o.oid = p.proowner "
-        "WHERE n.nspname = 'public' AND p.oid = to_regprocedure(%s)",
-        (guard_signature,),
-    ).fetchone()
-    if guard is None:
-        problems.append(("risk guard missing", guard_signature))
-    else:
-        (
-            security_definer,
-            owner,
-            config,
-            can_login,
-            superuser,
-            bypass,
-            create_role,
-            create_database,
-            replication,
-            inherit,
-            membership,
-            definition,
-            public_execute,
-            other_acl_grantees,
-        ) = guard
-        if security_definer:
-            problems.append(("risk guard must be SECURITY INVOKER", guard_signature))
-        if owner != "crypidian_risk_reservation_guard" or any(
-            (
-                can_login,
-                superuser,
-                bypass,
-                create_role,
-                create_database,
-                replication,
-                inherit,
-                membership,
-            )
-        ):
-            problems.append(
-                (
-                    "risk guard owner unsafe",
-                    owner,
-                    can_login,
-                    superuser,
-                    bypass,
-                    create_role,
-                    create_database,
-                    replication,
-                    inherit,
-                    membership,
-                )
-            )
-        if "search_path=pg_catalog, pg_temp" not in config:
-            problems.append(("risk guard search_path", config))
-        normalized_definition = definition.lower().replace('"', "")
-        if normalized_definition.count("from public.venue_order_intent") != 4:
-            problems.append(("risk guard venue table not schema-qualified",))
-        if public_execute or other_acl_grantees:
-            problems.append(
-                ("risk guard unexpected function ACL", public_execute, other_acl_grantees)
-            )
-        for role in ("crypidian_app", *PROCESS_ROLES):
-            granted = connection.execute(
-                "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, guard_signature)
-            ).fetchone()[0]
-            if granted:
-                problems.append(("risk guard execute", role, granted))
-
-    trigger_created = False
-    trigger_table = "wp03_risk_guard_trigger_probe"
-    connection.execute(f"DROP TABLE IF EXISTS public.{trigger_table}")
-    connection.execute(f"CREATE TABLE public.{trigger_table} (id integer)")
-    connection.execute(f"GRANT TRIGGER ON TABLE public.{trigger_table} TO {INGESTION}")
     try:
-        with connection.transaction():
-            connection.execute(f"SET LOCAL ROLE {INGESTION}")
-            connection.execute(
-                f"CREATE TRIGGER wp03_trigger_probe BEFORE UPDATE ON public.{trigger_table} "
-                "FOR EACH ROW EXECUTE FUNCTION public.protect_risk_reservation_transition()"
-            )
-    except InsufficientPrivilege as error:
-        message = str(error).lower()
-        if "permission denied for function" not in message or (
-            "protect_risk_reservation_transition" not in message
-        ):
-            problems.append(("trigger probe denied for unexpected reason", str(error)))
-        trigger_created = False
-    else:
-        trigger_created = True
-        connection.execute(f"DROP TRIGGER wp03_trigger_probe ON public.{trigger_table}")
+        row = connection.execute(
+            """
+            SELECT
+                pg_has_role('crypidian_admin_web', 'crypidian_app', 'USAGE'),
+                has_column_privilege(
+                    'crypidian_admin_web', 'public.trade', 'net_pnl', 'SELECT'
+                ),
+                has_column_privilege(
+                    'crypidian_admin_web', 'public.learning_score_event',
+                    'class_probabilities', 'SELECT'
+                ),
+                has_table_privilege(
+                    'crypidian_admin_web', 'public.user_account', 'SELECT'
+                ),
+                has_table_privilege(
+                    'crypidian_admin_web', 'public.bot_config_version', 'SELECT'
+                ),
+                has_table_privilege(
+                    'crypidian_admin_web', 'public.paper_execution_checkpoint', 'SELECT'
+                )
+            """
+        ).fetchone()
+        outcome = {
+            "inherits_application_role": bool(row[0]),
+            "can_read_trade_net_pnl": bool(row[1]),
+            "can_read_score_probabilities": bool(row[2]),
+            "can_read_auth_account": bool(row[3]),
+            "can_read_bot_config": bool(row[4]),
+            "can_read_paper_checkpoint": bool(row[5]),
+        }
+        print(json.dumps(outcome, sort_keys=True))
     finally:
-        connection.execute(f"DROP TABLE IF EXISTS public.{trigger_table}")
-    if trigger_created:
-        problems.append(("nonprivileged role can create risk guard trigger", INGESTION))
+        connection.close()
 
-    absent = connection.execute(
-        "SELECT to_regprocedure('public.get_workspace_risk_aggregate(uuid,timestamptz)')"
-    ).fetchone()[0]
-    if absent is not None:
-        problems.append(("dead legacy aggregate still present",))
-    assert not problems, problems
-    return {"definers": len(definers)}
-
-
-def seed(connection):
-    """Dữ liệu hai workspace; superuser bỏ qua RLS khi seed."""
-    version = connection.execute("SELECT current_setting('server_version_num')::int").fetchone()
-    assert version[0] >= 180006, f"SEC-02: server_version_num={version[0]} < 180006"
-    for workspace, slug, user, member, account in (
-        (W1, "sec01-w1", identity("u1"), M1, A1),
-        (W2, "sec01-w2", identity("u2"), M2, A2),
-    ):
-        insert(
-            connection,
-            "workspace",
-            id=workspace,
-            name=slug,
-            slug=slug,
-            mode="PAPER",
-            status="ACTIVE",
-        )
-        insert(
-            connection,
-            "user_account",
-            id=user,
-            email_normalized=f"{slug}@example.test",
-            password_hash="unused",
-            status="ACTIVE",
-        )
-        insert(
-            connection,
-            "user_membership",
-            id=member,
-            workspace_id=workspace,
-            user_id=user,
-            status="ACTIVE",
-        )
-        insert(
-            connection, "role_binding", workspace_id=workspace, membership_id=member, role="owner"
-        )
-        insert(
-            connection,
-            "session",
-            workspace_id=workspace,
-            membership_id=member,
-            token_hash=slug.ljust(64, "a"),
-            expires_at=datetime(2999, 1, 1, tzinfo=UTC),
-        )
-        insert(
-            connection,
-            "mfa_factor",
-            workspace_id=workspace,
-            membership_id=member,
-            factor_type="TOTP",
-            secret_reference="ref-" + slug,
-        )
-        insert(
-            connection,
-            "secret_reference",
-            workspace_id=workspace,
-            provider="local_mfa",
-            reference_key="ref-" + slug,
-            status="ACTIVE",
-        )
-        insert(
-            connection,
-            "telegram_binding",
-            workspace_id=workspace,
-            membership_id=member,
-            telegram_user_id="tg-" + slug,
-        )
-        insert(
-            connection,
-            "trading_account",
-            id=account,
-            workspace_id=workspace,
-            name="acct-" + slug,
-            venue="binance_usdm",
-            mode="PAPER",
-            environment="local",
-            status="ENABLED",
-            max_notional=10000,
-        )
-        insert(
-            connection,
-            "risk_profile_version",
-            workspace_id=workspace,
-            name="base",
-            version=1,
-            max_risk_fraction=Decimal("0.01"),
-            settings=Jsonb({}),
-            is_active=False,
-        )
-        insert(
-            connection,
-            "strategy_release",
-            workspace_id=workspace,
-            name="h01",
-            version=1,
-            status="PUBLISHED",
-            recipe=Jsonb({}),
-            content_hash="a" * 64,
-        )
-        insert(
-            connection,
-            "watchlist_version",
-            id=identity("wl" + slug),
-            workspace_id=workspace,
-            name="core",
-            version=1,
-            status="ACTIVE",
-        )
-        insert(
-            connection,
-            "watchlist_item",
-            workspace_id=workspace,
-            watchlist_version_id=identity("wl" + slug),
-            symbol="BTCUSDT",
-            enabled=True,
-            weight=Decimal("1"),
-        )
-        insert(
-            connection,
-            "workspace_settings_version",
-            id=identity("wsv" + slug),
-            workspace_id=workspace,
-            version=1,
-            schema_version=1,
-            settings_json=Jsonb({"seed": True}),
-            settings_hash="b" * 64,
-            status="DRAFT",
-            revision=1,
-            created_by=member,
-        )
-        bot = connection.execute(
-            "SELECT id FROM bot_instance WHERE workspace_id=%s AND trading_account_id=%s",
-            (workspace, account),
-        ).fetchone()[0]
-        insert(
-            connection,
-            "config_version",
-            workspace_id=workspace,
-            bot_id=bot,
-            trading_account_id=account,
-            version=1,
-            config=Jsonb({}),
-            config_hash="c" * 64,
-        )
-        insert(
-            connection,
-            "approval_request",
-            workspace_id=workspace,
-            subject_type="workspace",
-            subject_id=workspace,
-            requested_by=member,
-            status="PENDING",
-        )
-    return {"server_version_num": version[0]}
-
-
-def check_matrix(connection):
-    """has_table_privilege/has_column_privilege cho 5 process role và crypidian_app."""
-    problems = []
-    for role in (*PROCESS_ROLES, "crypidian_app"):
-        for table in (*IDENTITY_TABLES, *MULTIBOT_TABLES):
-            expected = TABLE_PRIVILEGES.get(role, {}).get(table, set())
-            actual = {
-                privilege
-                for privilege in DML
-                if connection.execute(
-                    "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
-                ).fetchone()[0]
-            }
-            if actual != expected:
-                problems.append((role, table, sorted(actual), sorted(expected)))
-            columns = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
-                    "AND attnum > 0 AND NOT attisdropped",
-                    (table,),
-                ).fetchall()
-            ]
-            updatable = {
-                column
-                for column in columns
-                if connection.execute(
-                    "SELECT has_column_privilege(%s, %s, %s, 'UPDATE')", (role, table, column)
-                ).fetchone()[0]
-            }
-            expected_update = (
-                set(columns)
-                if "UPDATE" in expected
-                else COLUMN_UPDATE.get(role, {}).get(table, set())
-            )
-            if updatable != expected_update:
-                problems.append((role, table, "UPDATE cols", sorted(updatable)))
-    assert not problems, problems
-    for role in PROCESS_ROLES:
-        member = connection.execute(
-            "SELECT pg_has_role(%s, 'crypidian_app', 'MEMBER')", (role,)
-        ).fetchone()[0]
-        assert member is (role in (ADMIN, RUNTIME)), (role, member)
-        # Membership bị thu hồi; schema vẫn dùng được nhờ grant trực tiếp.
-        assert connection.execute(
-            "SELECT has_schema_privilege(%s, 'public', 'USAGE')", (role,)
-        ).fetchone()[0]
-    for table, roles in POLICY_ROLES.items():
-        actual_roles = connection.execute(
-            "SELECT roles::text[] FROM pg_policies WHERE schemaname='public' AND tablename=%s "
-            "AND policyname='workspace_isolation'",
-            (table,),
-        ).fetchone()[0]
-        assert set(actual_roles) == roles, (table, actual_roles)
-    receipt_policies = {
-        row[0]: (set(row[1]), row[2])
-        for row in connection.execute(
-            "SELECT policyname, roles::text[], cmd FROM pg_policies "
-            "WHERE schemaname='public' AND tablename='telegram_update_receipt'"
-        ).fetchall()
-    }
-    assert receipt_policies == {
-        "workspace_isolation": ({ADMIN}, "SELECT"),
-        "receipt_insert": ({ADMIN}, "INSERT"),
-        "receipt_purge": ({ADMIN}, "DELETE"),
-    }, receipt_policies
-    for table in FORCE_RLS_TABLES:
-        enabled, forced = connection.execute(
-            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",
-            (table,),
-        ).fetchone()
-        assert (enabled, forced) == (True, True), (table, enabled, forced)
-    privileges = {
-        (role, table, privilege): expected
-        for role, table, privilege, expected in (
-            # R1: worker giữ đúng grant trực tiếp cho việc của mình, mất DML vận hành của group.
-            (INGESTION, "market_bar", "INSERT", True),
-            (INGESTION, "ingestion_cursor", "UPDATE", True),
-            (TRAINER, "backtest_run", "INSERT", False),
-            (REPLAY_WRITER, "backtest_run", "INSERT", True),
-            (REPLAY_WRITER, "backtest_run_dataset_rights", "INSERT", True),
-            # WP-07C: replay writer ghi kết quả; trainer đọc chẩn đoán đến khi Task 3 thu hẹp.
-            (TRAINER, "market_instrument", "SELECT", False),
-            (TRAINER, "market_bar", "SELECT", False),
-            (TRAINER, "market_funding", "SELECT", False),
-            (TRAINER, "market_open_interest", "SELECT", False),
-            (GATEWAY, "audit_event", "INSERT", True),
-            (INGESTION, "outbox_event", "INSERT", False),
-            (INGESTION, "outbox_event", "SELECT", True),
-            (TRAINER, "outbox_event", "SELECT", True),
-            (TRAINER, "order_intent", "SELECT", False),
-            (GATEWAY, "outbox_event", "UPDATE", False),
-            (INGESTION, "feature_snapshot", "INSERT", False),
-            # R2: admin/runtime vẫn thừa hưởng bảng vận hành từ group (SEC-01b còn mở).
-            (RUNTIME, "outbox_event", "INSERT", True),
-            (ADMIN, "order_intent", "SELECT", True),
-            (RUNTIME, "bot_instance", "SELECT", True),
-            (RUNTIME, "bot_grant", "SELECT", False),
-        )
-    }
-    for (role, table, privilege), expected in privileges.items():
-        actual = connection.execute(
-            "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
-        ).fetchone()[0]
-        assert actual is expected, (role, table, privilege, actual)
-    ingestion_outbox_columns = connection.execute(
-        "SELECT has_column_privilege(%s, 'public.outbox_event', 'status', 'UPDATE'), "
-        "has_column_privilege(%s, 'public.outbox_event', 'payload', 'UPDATE'), "
-        "has_column_privilege(%s, 'public.outbox_event', 'workspace_id', 'UPDATE')",
-        (INGESTION, INGESTION, INGESTION),
-    ).fetchone()
-    assert ingestion_outbox_columns == (True, False, False), ingestion_outbox_columns
-    tables = len(IDENTITY_TABLES) + len(MULTIBOT_TABLES)
-    return {"matrix_rows": len(PROCESS_ROLES + ("crypidian_app",)) * tables}
-
-
-def scope(connection, workspace=W1, member="", bot=""):
-    connection.execute(
-        "SELECT set_config('app.workspace_id', %s, true), set_config('app.membership_id', %s, "
-        "true), set_config('app.bot_id', %s, true)",
-        (str(workspace), str(member), str(bot)),
-    )
-
-
-def denied(connection, statement, params=(), *, privilege=True):
-    """Câu lệnh phải bị DB từ chối 42501 (mặc định: thiếu quyền bảng/cột, không phải RLS)."""
-    try:
-        with connection.transaction():
-            scope(connection, member=M1)
-            connection.execute(statement, params)
-    except psycopg.Error as error:
-        rejected_by_privilege = "permission denied" in str(error) or not privilege
-        if error.sqlstate != "42501" or not rejected_by_privilege:
-            raise AssertionError((statement, error.sqlstate, str(error))) from error
+    if os.environ.get("WP06_EXPECT_RESTORED_ROLE") == "1":
         return
-    raise AssertionError(f"DB phải từ chối: {statement}")
 
-
-def scalar(connection, statement, params=(), workspace=W1, member=""):
-    with connection.transaction():
-        scope(connection, workspace=workspace, member=member)
-        return connection.execute(statement, params).fetchone()[0]
-
-
-# Mọi role không phải admin đều phải bị chặn ở các thao tác identity/config này.
-IDENTITY_ATTACKS = (
-    (
-        "INSERT INTO role_binding (id, workspace_id, membership_id, role) "
-        "VALUES (gen_random_uuid(), %s, %s, 'analyst_reviewer')",
-        (W1, M1),
-    ),
-    (
-        "INSERT INTO user_membership (id, workspace_id, user_id, status) "
-        "VALUES (gen_random_uuid(), %s, %s, 'ACTIVE')",
-        (W1, identity("u2")),
-    ),
-    (
-        "INSERT INTO session (id, workspace_id, membership_id, token_hash, expires_at) "
-        "VALUES (gen_random_uuid(), %s, %s, 'forged', now() + interval '1 day')",
-        (W1, M1),
-    ),
-    (
-        "INSERT INTO mfa_factor (id, workspace_id, membership_id, factor_type, secret_reference) "
-        "VALUES (gen_random_uuid(), %s, %s, 'TOTP', 'forged')",
-        (W1, M1),
-    ),
-    (
-        "INSERT INTO secret_reference (id, workspace_id, provider, reference_key, status) "
-        "VALUES (gen_random_uuid(), %s, 'local_mfa', 'forged', 'ACTIVE')",
-        (W1,),
-    ),
-    (
-        "INSERT INTO telegram_binding (id, workspace_id, membership_id, "
-        "telegram_user_id, revoked_at) "
-        "VALUES (gen_random_uuid(), %s, %s, 'forged', now())",
-        (W1, M1),
-    ),
-    ("UPDATE workspace_settings_version SET status = 'PUBLISHED' WHERE workspace_id = %s", (W1,)),
-    (
-        "INSERT INTO workspace_settings_version (id, workspace_id, version, schema_version, "
-        "settings_json, settings_hash, status, revision, created_by) VALUES "
-        "(gen_random_uuid(), %s, 9, 1, '{}', repeat('d', 64), 'DRAFT', 1, %s)",
-        (W1, M1),
-    ),
-    (
-        "INSERT INTO risk_profile_version (id, workspace_id, name, version, max_risk_fraction, "
-        "settings, is_active) VALUES (gen_random_uuid(), %s, 'loose', 9, 1, '{}', true)",
-        (W1,),
-    ),
-    ("UPDATE trading_account SET max_notional = 999999 WHERE workspace_id = %s", (W1,)),
-    ("UPDATE trading_account SET status = 'DISABLED' WHERE workspace_id = %s", (W1,)),
-    ("DELETE FROM trading_account WHERE workspace_id = %s", (W1,)),
-    ("UPDATE approval_request SET status = 'APPROVED' WHERE workspace_id = %s", (W1,)),
-    (
-        "INSERT INTO strategy_release (id, workspace_id, name, version, status, recipe, "
-        "content_hash) VALUES (gen_random_uuid(), %s, 'evil', 9, 'PUBLISHED', '{}', "
-        "repeat('e', 64))",
-        (W1,),
-    ),
-    ("SELECT * FROM mfa_factor", ()),
-    ("SELECT * FROM session", ()),
-    ("SELECT * FROM secret_reference", ()),
-    ("SELECT * FROM user_membership", ()),
-    ("SELECT * FROM role_binding", ()),
-    ("SELECT * FROM telegram_binding", ()),
-    ("SELECT * FROM watchlist_item", ()),
-)
-
-
-RUNTIME_REGISTRY_ATTACKS = (
-    (
-        "INSERT INTO workspace_runtime_control (id, workspace_id, revision, kill_state, "
-        "reason_code, reason_text, changed_by, correlation_id) VALUES (gen_random_uuid(), %s, "
-        "1, 'ACTIVE', 'forged', 'forged', %s, gen_random_uuid())",
-        (W1, M1),
-    ),
-    (
-        "INSERT INTO bot_runtime_control (id, workspace_id, bot_id, account_id, revision, "
-        "entry_state, reason_code, reason_text, changed_by, correlation_id) SELECT "
-        "gen_random_uuid(), workspace_id, id, trading_account_id, 1, 'ENABLED', 'forged', "
-        "'forged', %s, gen_random_uuid() FROM bot_instance",
-        (M1,),
-    ),
-    ("UPDATE bot_runtime_lease SET bot_id = bot_id", ()),
-    ("DELETE FROM bot_runtime_lease", ()),
-    ("DELETE FROM bot_runtime_state", ()),
-    ("UPDATE bot_runtime_state SET account_id = account_id", ()),
-    ("UPDATE account_activity_incident SET status = 'RESOLVED'", ()),
-    ("DELETE FROM account_activity_incident", ()),
-    ("UPDATE bot_decision_job SET evidence_hash = evidence_hash", ()),
-    ("DELETE FROM bot_decision_job", ()),
-)
-ADMIN_REGISTRY_ATTACKS = (
-    "INSERT INTO bot_runtime_lease (id, workspace_id, bot_id, account_id, owner_id, "
-    "fencing_token, expires_at) SELECT gen_random_uuid(), workspace_id, id, trading_account_id, "
-    "'admin', 1, now() + interval '1 minute' FROM bot_instance",
-    "UPDATE bot_runtime_lease SET fencing_token = fencing_token + 1",
-    "INSERT INTO bot_runtime_state (id, workspace_id, bot_id, account_id, readiness, "
-    "heartbeat_at, fencing_token) SELECT gen_random_uuid(), workspace_id, id, "
-    "trading_account_id, 'READY', now(), 1 FROM bot_instance",
-    "UPDATE bot_runtime_state SET readiness = 'READY'",
-    "UPDATE workspace_runtime_control SET kill_state = 'ACTIVE'",
-    "DELETE FROM workspace_runtime_control",
-    "UPDATE bot_runtime_control SET entry_state = 'ENABLED'",
-    "DELETE FROM bot_runtime_control",
-    "UPDATE account_activity_incident SET fingerprint = fingerprint",
-    "DELETE FROM account_activity_incident",
-)
-
-
-def worker(connection, role):
-    assert connection.execute("SELECT current_user").fetchone()[0] == role
-    for statement, params in IDENTITY_ATTACKS:
-        denied(connection, statement, params)
-    for table in (
-        "trading_account",
-        "workspace_settings_version",
-        "strategy_release",
-        "risk_profile_version",
-        "config_version",
-        "approval_request",
-        "workspace",
-    ):
-        denied(connection, sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
-    denied(connection, "SET LOCAL ROLE crypidian_app")
-    if role in (INGESTION, TRAINER):
-        assert scalar(connection, "SELECT count(*) FROM outbox_event") == 0
-    if role == INGESTION:
-        denied(
-            connection,
-            "UPDATE outbox_event SET payload = '{}'::jsonb WHERE workspace_id = %s",
-            (W1,),
-        )
-    elif role != TRAINER:
-        denied(connection, "SELECT count(*) FROM outbox_event")
-    own_job = {
-        INGESTION: "SELECT count(*) FROM market_bar",
-        TRAINER: "SELECT count(*) FROM backtest_run",
-        REPLAY_WRITER: "SELECT count(*) FROM backtest_run",
-        GATEWAY: "SELECT has_table_privilege(current_user, 'audit_event', 'INSERT')",
-    }[role]
-    assert scalar(connection, own_job) is not None
-    denied_count = len(IDENTITY_ATTACKS) + 8 + (role != TRAINER)
-    return {"role": role, "denied": denied_count}
-
-
-def runtime(connection):
-    assert connection.execute("SELECT current_user").fetchone()[0] == RUNTIME
-    for statement, params in IDENTITY_ATTACKS:
-        denied(connection, statement, params)
-    denied(connection, "UPDATE trading_account SET mode = 'PAPER' WHERE id = %s", (A1,))
-    denied(
-        connection,
-        "INSERT INTO config_version (id, workspace_id, bot_id, trading_account_id, "
-        "version, config, config_hash) SELECT gen_random_uuid(), workspace_id, id, "
-        "trading_account_id, 9, '{}', repeat('f', 64) FROM bot_instance",
+    reader_password_file = Path(os.environ["WP06_ADMIN_REPORT_READER_PASSWORD_FILE"])
+    reader = psycopg.connect(
+        host="postgres",
+        dbname="crypidian",
+        user="crypidian_admin_report_reader",
+        password=reader_password_file.read_text(encoding="utf-8").strip(),
     )
-    # MB-05: runtime không ghi control/resolution, không xóa/sửa identity lease/state/job.
-    for statement, params in RUNTIME_REGISTRY_ATTACKS:
-        denied(connection, statement, params)
-    # Group crypidian_app không còn quyền identity: SET ROLE không mở lại đường ghi.
-    with connection.transaction():
-        scope(connection)
-        connection.execute("SET LOCAL ROLE crypidian_app")
-        try:
-            with connection.transaction():
-                connection.execute("SELECT count(*) FROM session")
-        except psycopg.Error as error:
-            if error.sqlstate != "42501":
-                raise AssertionError(str(error)) from error
-        else:
-            raise AssertionError("crypidian_app vẫn đọc được session")
-    # Đường code runtime vẫn chạy và RLS workspace không đổi.
-    assert scalar(connection, "SELECT count(*) FROM trading_account") == 1
-    assert scalar(connection, "SELECT count(*) FROM trading_account", workspace=W2) == 1
-    assert scalar(connection, "SELECT count(*) FROM trading_account", workspace="") == 0
-    for table in ("strategy_release", "risk_profile_version", "workspace_settings_version"):
-        query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
-        assert scalar(connection, query) == 1, table
-    assert scalar(connection, "SELECT count(*) FROM approval_request") == 1
-    assert scalar(connection, "SELECT count(*) FROM workspace") == 2
-    with connection.transaction():
-        scope(connection)
-        locked = connection.execute(
-            "SELECT id FROM trading_account WHERE id = %s FOR UPDATE", (A1,)
-        ).fetchone()
-        assert locked == (A1,)
-        touched = connection.execute(
-            "UPDATE trading_account SET updated_at = now() WHERE id = %s", (A1,)
-        ).rowcount
-        assert touched == 1
-        connection.execute(
-            "INSERT INTO trading_account (id, workspace_id, name, venue, mode, environment, "
-            "status, max_notional) VALUES (%s, %s, 'runtime-paper', 'binance_usdm', 'PAPER', "
-            "'local', 'ENABLED', 1000)",
-            (identity("runtime-account"), W1),
-        )
-        assert (
-            connection.execute(
-                "SELECT count(*) FROM bot_instance WHERE trading_account_id = %s",
-                (identity("runtime-account"),),
-            ).fetchone()[0]
-            == 1
-        )
-    return {"role": RUNTIME, "denied": len(IDENTITY_ATTACKS) + 3 + len(RUNTIME_REGISTRY_ATTACKS)}
-
-
-def admin(connection):
-    assert connection.execute("SELECT current_user").fetchone()[0] == ADMIN
-    for statement in (
-        "UPDATE session SET expires_at = now() + interval '10 years'",
-        "UPDATE session SET token_hash = 'stolen'",
-        "UPDATE mfa_factor SET secret_reference = 'swapped'",
-        "UPDATE trading_account SET mode = 'PAPER'",
-        "UPDATE trading_account SET environment = 'production'",
-        "UPDATE user_membership SET user_id = user_id",
-        # Fix round 1: không code nào sửa status membership (predicate RLS MB-01) hay cap account.
-        "UPDATE user_membership SET status = 'SUSPENDED'",
-        "UPDATE trading_account SET max_notional = 999999",
-        # MB-07a: `UPDATE (status)` đã được cấp; chuyển trạng thái kiểm ở `admin_account_status`.
-        "UPDATE trading_account SET name = 'renamed'",
-        "UPDATE role_binding SET role = 'owner'",
-        "DELETE FROM role_binding",
-        "DELETE FROM session",
-        "DELETE FROM mfa_factor",
-        "DELETE FROM user_membership",
-        "DELETE FROM trading_account",
-        "DELETE FROM workspace_settings_version",
-        "UPDATE approval_request SET status = 'APPROVED'",
-        "INSERT INTO strategy_release (id, workspace_id, name, version, status, recipe, "
-        "content_hash) VALUES (gen_random_uuid(), "
-        "current_setting('app.workspace_id')::uuid, 'evil', 9, 'PUBLISHED', '{}', "
-        "repeat('e', 64))",
-        *ADMIN_REGISTRY_ATTACKS,
-    ):
-        denied(connection, statement)
-    admin_account_status(connection)
-    admin_telegram_receipt(connection)
-    with connection.transaction():
-        scope(connection, member=M1)
-        for table in (
-            "session",
-            "mfa_factor",
-            "secret_reference",
-            "user_membership",
-            "role_binding",
-            "telegram_binding",
-            "watchlist_item",
-        ):
-            query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
-            assert connection.execute(query).fetchone()[0] == 1, table
-        # Luồng admin thật: khóa/sửa đúng cột code dùng, tạo binding, secret, risk profile, draft.
-        connection.execute("SELECT id FROM user_membership WHERE id = %s FOR UPDATE", (M1,))
-        connection.execute("SELECT id FROM mfa_factor FOR UPDATE")
-        assert (
-            connection.execute(
-                "UPDATE session SET revoked_at = now(), csrf_token_hash = 'x', "
-                "mfa_verified_at = now(), last_seen_at = now()"
-            ).rowcount
-            == 1
-        )
-        assert (
-            connection.execute(
-                "UPDATE mfa_factor SET last_used_counter = 7, verified_at = now()"
-            ).rowcount
-            == 1
-        )
-        connection.execute(
-            "INSERT INTO role_binding (id, workspace_id, membership_id, role) "
-            "VALUES (gen_random_uuid(), %s, %s, 'analyst_reviewer')",
-            (W1, M1),
-        )
-        connection.execute(
-            "INSERT INTO secret_reference (id, workspace_id, provider, reference_key, status) "
-            "VALUES (gen_random_uuid(), %s, 'local_mfa', 'ref-admin', 'ACTIVE') RETURNING id",
-            (W1,),
-        )
-        connection.execute(
-            "INSERT INTO risk_profile_version (id, workspace_id, name, version, "
-            "max_risk_fraction, settings, is_active) VALUES (gen_random_uuid(), %s, 'base', 2, "
-            "0.01, '{}', false) RETURNING created_at",
-            (W1,),
-        )
-        draft = identity("admin-draft")
-        connection.execute(
-            "INSERT INTO workspace_settings_version (id, workspace_id, version, schema_version, "
-            "settings_json, settings_hash, status, revision, created_by) VALUES "
-            "(%s, %s, 2, 1, '{}', repeat('d', 64), 'DRAFT', 1, %s)",
-            (draft, W1, M1),
-        )
-        assert (
-            connection.execute(
-                "UPDATE workspace_settings_version SET status = 'PUBLISHED', approved_by = %s, "
-                "published_at = now(), effective_at = now() WHERE id = %s",
-                (M1, draft),
-            ).rowcount
-            == 1
-        )
-        # MB-02 tạo bot bằng INSERT account PAPER (trigger tạo bot) rồi khóa account FOR UPDATE.
-        connection.execute(
-            "INSERT INTO trading_account (id, workspace_id, name, venue, mode, environment, "
-            "status, max_notional) VALUES (%s, %s, 'admin-paper', 'binance_usdm', 'PAPER', "
-            "'local', 'DISABLED', 1000) RETURNING created_at",
-            (identity("admin-account"), W1),
-        )
-        assert (
-            connection.execute(
-                "SELECT count(*) FROM bot_instance WHERE trading_account_id = %s",
-                (identity("admin-account"),),
-            ).fetchone()[0]
-            == 1
-        )
-        assert connection.execute(
-            "SELECT id FROM trading_account WHERE id = %s FOR UPDATE", (A1,)
-        ).fetchone() == (A1,)
-        connection.execute("SELECT id FROM workspace WHERE id = %s FOR UPDATE", (W1,))
-    # RLS workspace của admin không đổi: GUC W2 không thấy dữ liệu W1.
-    assert (
-        scalar(
-            connection,
-            "SELECT count(*) FROM session WHERE workspace_id = %s",
-            (W1,),
-            workspace=W2,
-            member=M2,
-        )
-        == 0
-    )
-    assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace=W2, member=M2) == 1
-    assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace="") == 0
-    return {"role": ADMIN, "denied": 19 + len(ADMIN_REGISTRY_ATTACKS)}
-
-
-def admin_account_status(connection):
-    """MB-07a (migration f7b9d1e3a5c8): admin-web chỉ ENABLED → DISABLED; rollback dữ liệu."""
-    with connection.transaction(force_rollback=True):
-        scope(connection, member=M1)
-        status = connection.execute(
-            "SELECT status FROM trading_account WHERE id = %s", (A1,)
-        ).fetchone()[0]
-        assert status == "ENABLED", status
-        disabled = connection.execute(
-            "UPDATE trading_account SET status = 'DISABLED' WHERE id = %s", (A1,)
-        ).rowcount
-        assert disabled == 1
-        outcome = "ALLOWED"
-        guard_state = connection.execute(
-            "SELECT current_user, current_setting('app.bot_enable_authorized', true), "
-            "pg_get_functiondef('public.mb07a_guard_account_status()'::regprocedure)"
-        ).fetchone()
-        try:
-            with connection.transaction():
-                connection.execute(
-                    "UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (A1,)
+    try:
+        reader_row = reader.execute(
+            """
+            SELECT
+                r.rolcanlogin,
+                r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication
+                    OR r.rolbypassrls,
+                pg_has_role(
+                    'crypidian_admin_report_reader',
+                    'crypidian_admin_report_scope_owner',
+                    'USAGE'
+                ),
+                has_table_privilege(
+                    'crypidian_admin_report_reader', 'public.trade', 'INSERT'
+                ),
+                has_column_privilege(
+                    'crypidian_admin_report_reader', 'public.paper_execution_checkpoint',
+                    'snapshot_payload', 'SELECT'
+                ),
+                has_table_privilege(
+                    'crypidian_admin_report_reader', 'public.paper_execution_checkpoint', 'INSERT'
+                ),
+                public.wp06_admin_report_reader_can_access(
+                    '00000000-0000-0000-0000-000000000001',
+                    '00000000-0000-0000-0000-000000000002'
+                ),
+                (SELECT count(*) FROM public.trade),
+                (SELECT count(*) FROM public.bot_decision),
+                (SELECT count(*) FROM public.paper_execution_checkpoint),
+                has_table_privilege(
+                    current_user, 'public.signal_outcome', 'INSERT'
+                ) OR has_any_column_privilege(
+                    current_user, 'public.signal_outcome', 'INSERT'
+                ),
+                has_table_privilege(
+                    current_user, 'public.signal_outcome', 'UPDATE'
+                ) OR has_any_column_privilege(
+                    current_user, 'public.signal_outcome', 'UPDATE'
+                ),
+                has_table_privilege(current_user, 'public.signal_outcome', 'DELETE'),
+                has_table_privilege(current_user, 'public.signal_outcome', 'TRUNCATE'),
+                has_table_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'INSERT'
+                ) OR has_any_column_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'INSERT'
+                ),
+                has_table_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'UPDATE'
+                ) OR has_any_column_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'UPDATE'
+                ),
+                has_table_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'DELETE'
+                ),
+                has_table_privilege(
+                    current_user, 'public.telegram_signal_delivery', 'TRUNCATE'
+                ),
+                ARRAY(
+                    SELECT relation_name
+                    FROM unnest(ARRAY[
+                        'bot_instance', 'paper_account_seed', 'trade', 'trade_cost',
+                        'trade_plan', 'order_intent', 'fill', 'position_event',
+                        'risk_reservation', 'bot_decision', 'proposal_backtest',
+                        'shared_signal_evidence', 'analyst_run', 'run_report',
+                        'bot_runtime_state', 'outbox_event', 'market_instrument',
+                        'market_bar', 'market_mark_price', 'market_live_quote',
+                        'ingestion_gap', 'paper_execution_checkpoint', 'signal_outcome',
+                        'telegram_signal_delivery'
+                    ]) AS relation_name
+                    WHERE has_table_privilege(
+                        current_user, 'public.' || relation_name, 'SELECT'
+                    )
+                    ORDER BY relation_name
+                ),
+                (
+                    SELECT jsonb_object_agg(
+                        relation_name,
+                        COALESCE(readable_columns, ARRAY[]::text[])
+                    )
+                    FROM unnest(ARRAY[
+                        'bot_instance', 'paper_account_seed', 'trade', 'trade_cost',
+                        'trade_plan', 'order_intent', 'fill', 'position_event',
+                        'risk_reservation', 'bot_decision', 'proposal_backtest',
+                        'shared_signal_evidence', 'analyst_run', 'run_report',
+                        'bot_runtime_state', 'outbox_event', 'market_instrument',
+                        'market_bar', 'market_mark_price', 'market_live_quote',
+                        'ingestion_gap', 'paper_execution_checkpoint', 'signal_outcome',
+                        'telegram_signal_delivery'
+                    ]) AS report_tables(relation_name)
+                    LEFT JOIN LATERAL (
+                        SELECT array_agg(a.attname ORDER BY a.attname) AS readable_columns
+                        FROM pg_catalog.pg_attribute AS a
+                        JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
+                        JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public'
+                          AND c.relname = report_tables.relation_name
+                          AND a.attnum > 0
+                          AND NOT a.attisdropped
+                          AND has_column_privilege(current_user, c.oid, a.attnum, 'SELECT')
+                    ) AS column_acl ON true
+                ),
+                has_column_privilege(current_user, 'public.trade', 'net_pnl', 'SELECT'),
+                has_column_privilege(current_user, 'public.order_intent', 'quantity', 'SELECT'),
+                has_column_privilege(current_user, 'public.order_intent', 'evidence', 'SELECT'),
+                has_column_privilege(
+                    current_user, 'public.order_intent', 'filled_quantity', 'SELECT'
+                ),
+                has_column_privilege(current_user, 'public.bot_decision', 'payload', 'SELECT'),
+                has_column_privilege(
+                    current_user, 'public.bot_decision', 'decision_hash', 'SELECT'
+                ),
+                has_column_privilege(
+                    current_user, 'public.shared_signal_evidence', 'symbol', 'SELECT'
+                ),
+                has_column_privilege(
+                    current_user, 'public.shared_signal_evidence', 'observed_at', 'SELECT'
+                ),
+                has_column_privilege(
+                    current_user, 'public.shared_signal_evidence', 'canonical_json', 'SELECT'
+                ),
+                has_column_privilege(
+                    current_user, 'public.shared_signal_evidence', 'source_refs', 'SELECT'
+                ),
+                has_column_privilege(
+                    current_user, 'public.position_event', 'payload', 'SELECT'
                 )
-        except psycopg.Error as error:
-            outcome = f"{error.sqlstate}:{str(error).splitlines()[0]}"
-        assert outcome == "23514:MB07A_ACCOUNT_STATUS_TRANSITION_DENIED", {
-            "outcome": outcome,
-            "current_user": guard_state[0],
-            "enable_marker": guard_state[1],
-            "guard_has_marker": "app.bot_enable_authorized" in guard_state[2],
-        }
-        with connection.transaction():
-            connection.execute("SELECT set_config('app.bot_enable_authorized', 'on', true)")
-            enabled = connection.execute(
-                "UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (A1,)
-            ).rowcount
-            assert enabled == 1
-
-
-def admin_telegram_receipt(connection):
-    """Receipt Telegram: admin-web INSERT/SELECT; DELETE chỉ xóa được hàng quá 7 ngày."""
-    with connection.transaction(force_rollback=True):
-        scope(connection, member=M1)
-        connection.execute(
-            "INSERT INTO telegram_update_receipt (id, workspace_id, update_id) "
-            "VALUES (gen_random_uuid(), %s, 4242)",
-            (W1,),
+            FROM pg_catalog.pg_roles AS r
+            WHERE r.rolname = current_user
+            """
+        ).fetchone()
+        print(
+            json.dumps(
+                {
+                    "report_reader_can_login": bool(reader_row[0]),
+                    "report_reader_has_unsafe_role_attributes": bool(reader_row[1]),
+                    "report_reader_inherits_scope_owner": bool(reader_row[2]),
+                    "report_reader_can_insert_trade": bool(reader_row[3]),
+                    "report_reader_can_select_paper_checkpoint": bool(reader_row[4]),
+                    "report_reader_can_insert_paper_checkpoint": bool(reader_row[5]),
+                    "report_reader_scope_without_identity": bool(reader_row[6]),
+                    "report_reader_unscoped_trade_rows": reader_row[7],
+                    "report_reader_unscoped_decision_rows": reader_row[8],
+                    "report_reader_unscoped_paper_checkpoint_rows": reader_row[9],
+                    "report_reader_signal_outcome_dml": {
+                        "insert": bool(reader_row[10]),
+                        "update": bool(reader_row[11]),
+                        "delete": bool(reader_row[12]),
+                        "truncate": bool(reader_row[13]),
+                    },
+                    "report_reader_telegram_delivery_dml": {
+                        "insert": bool(reader_row[14]),
+                        "update": bool(reader_row[15]),
+                        "delete": bool(reader_row[16]),
+                        "truncate": bool(reader_row[17]),
+                    },
+                    "report_reader_table_wide_select": reader_row[18],
+                    "report_reader_selectable_columns": reader_row[19],
+                    "report_reader_columns": {
+                        "trade.net_pnl": bool(reader_row[20]),
+                        "order_intent.quantity": bool(reader_row[21]),
+                        "order_intent.evidence": bool(reader_row[22]),
+                        "order_intent.filled_quantity": bool(reader_row[23]),
+                        "bot_decision.payload": bool(reader_row[24]),
+                        "bot_decision.decision_hash": bool(reader_row[25]),
+                        "shared_signal_evidence.symbol": bool(reader_row[26]),
+                        "shared_signal_evidence.observed_at": bool(reader_row[27]),
+                        "shared_signal_evidence.canonical_json": bool(reader_row[28]),
+                        "shared_signal_evidence.source_refs": bool(reader_row[29]),
+                        "position_event.payload": bool(reader_row[30]),
+                    },
+                },
+                sort_keys=True,
+            )
         )
-        visible = connection.execute(
-            "SELECT count(*) FROM telegram_update_receipt WHERE update_id = 4242"
-        ).fetchone()[0]
-        assert visible == 1
-        purged = connection.execute(
-            "DELETE FROM telegram_update_receipt WHERE update_id = 4242"
-        ).rowcount
-        assert purged == 0, "receipt gần đây phải bất biến (policy receipt_purge)"
-        denied_update = False
-        try:
-            with connection.transaction():
-                connection.execute("UPDATE telegram_update_receipt SET update_id = 1")
-        except psycopg.Error as error:
-            denied_update = error.sqlstate == "42501"
-        assert denied_update
+    finally:
+        reader.close()
 
 
-password = Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]).read_text().strip()
-with psycopg.connect(
-    host="postgres",
-    dbname="crypidian",
-    user=os.environ["TRADING_BOT_DATABASE_USER"],
-    password=password,
-    autocommit=True,
-) as database:
-    phase = os.environ["SEC01_PHASE"]
-    if phase == "acl_snapshot":
-        result = acl_state(database)
-    elif phase == "acl_compare":
-        before, after = json.loads(os.environ["SEC01_SNAPSHOT"]), acl_state(database)
-        difference = {
-            key: {
-                "missing": [row for row in before[key] if row not in after[key]],
-                "extra": [row for row in after[key] if row not in before[key]],
-            }
-            for key in before
-            if before[key] != after[key]
-        }
-        assert not difference, difference
-        result = {"acl_restored": True}
-    elif phase == "seed":
-        with database.transaction():
-            result = seed(database)
-    elif phase == "grant_legacy_trigger_execute":
-        database.execute(f"CREATE ROLE {LEGACY_TRIGGER_GRANTEE} NOLOGIN")
-        database.execute(
-            "GRANT EXECUTE ON FUNCTION public.protect_risk_reservation_transition() "
-            f"TO {LEGACY_TRIGGER_GRANTEE}"
-        )
-        result = {
-            "execute": database.execute(
-                "SELECT has_function_privilege(%s, "
-                "'public.protect_risk_reservation_transition()', 'EXECUTE')",
-                (LEGACY_TRIGGER_GRANTEE,),
-            ).fetchone()[0]
-        }
-    elif phase == "legacy_trigger_execute":
-        result = {
-            "execute": database.execute(
-                "SELECT has_function_privilege(%s, "
-                "'public.protect_risk_reservation_transition()', 'EXECUTE')",
-                (LEGACY_TRIGGER_GRANTEE,),
-            ).fetchone()[0]
-        }
-    elif phase == "matrix":
-        result = check_matrix(database) | check_functions(database)
-    elif phase == "worker":
-        result = worker(database, os.environ["TRADING_BOT_DATABASE_USER"])
-    elif phase == "runtime":
-        result = runtime(database)
-    elif phase == "admin":
-        result = admin(database)
-    else:
-        raise AssertionError(phase)
-    print(json.dumps(result, default=str))
+if __name__ == "__main__":
+    main()

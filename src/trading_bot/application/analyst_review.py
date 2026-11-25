@@ -1,27 +1,30 @@
 """Trang Admin xem lượt AI Analyst và backtest đề xuất (CRY-383, AI-2/admin-page), chỉ đọc.
 
-Đọc ``analyst_run`` (đầu ra AI, lỗi validator, bối cảnh đã đưa AI) và ``proposal_backtest`` qua
-role ``admin-web`` (RLS theo workspace). Quyền ``WORKSPACE_READ``; không ghi gì. Đầu ra AI chỉ là
-gợi ý: trang hiển thị nguyên văn kèm trạng thái validator, không tự áp vào bot.
+Đọc ``analyst_run`` và ``run_report`` qua report-reader theo workspace; backtest đề xuất tiếp
+tục chịu RLS ``REPORT_READ`` theo từng bot. Chỉ chọn cột giao diện cần và không đọc ``raw_stdout``.
+Đầu ra AI chỉ là gợi ý: trang hiển thị kèm trạng thái validator, không tự áp vào bot.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import load_only
 
 from trading_bot.adapters.database.models import (
     AnalystRunRecord,
     ProposalBacktestRecord,
     RunReportRecord,
 )
+from trading_bot.application.bot_reporting import AdminReportReadUnitOfWork
 from trading_bot.application.outbox import UnitOfWork
-from trading_bot.auth.policy import Permission, Principal, authorize
+from trading_bot.auth.policy import Permission, Principal, Role, authorize
 
 VERDICT_VI = {
     "BETTER": "Tốt hơn",
@@ -31,6 +34,30 @@ VERDICT_VI = {
 }
 CONFIDENCE_VI = {"low": "Thấp", "medium": "Trung bình", "high": "Cao"}
 MAX_LIST = 100
+_WORKSPACE_REPORT_ROLES = frozenset({Role.OWNER, Role.STRATEGY_ADMIN, Role.RISK_ADMIN})
+_ANALYST_RUN_VIEW_FIELDS = (
+    "id",
+    "workspace_id",
+    "created_at",
+    "topic_key",
+    "engine",
+    "model",
+    "cli_version",
+    "session_id",
+    "resumed",
+    "prompt_version",
+    "output_version",
+    "run_report_hash",
+    "input_sha256",
+    "valid",
+    "error",
+    "exit_code",
+    "cost_usd",
+    "usage",
+    "validation_errors",
+    "structured_output",
+    "context",
+)
 
 
 class AnalystReviewError(Exception):
@@ -113,7 +140,7 @@ def _context_view(context: Mapping[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _backtest_view(row: ProposalBacktestRecord) -> dict[str, Any]:
+def _backtest_view(row: SimpleNamespace) -> dict[str, Any]:
     result = row.result or {}
     return {
         "id": str(row.id),
@@ -138,20 +165,36 @@ class AnalystReviewService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         unit_of_work: Callable[..., Any] = UnitOfWork,
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._unit_of_work = unit_of_work
 
     def _uow(self, principal: Principal) -> Any:
         if not authorize(principal, Permission.WORKSPACE_READ):
             raise AnalystReviewError(403, "Bạn không có quyền xem phân tích AI.")
-        return self._unit_of_work(
+        if not principal.roles.intersection(_WORKSPACE_REPORT_ROLES):
+            raise AnalystReviewError(403, "Vai trò của bạn không được xem báo cáo toàn workspace.")
+        if self._report_reader_sessions is None:
+            raise AnalystReviewError(503, "Kho dữ liệu báo cáo chưa sẵn sàng.")
+        return AdminReportReadUnitOfWork(
             self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=self._unit_of_work,
             workspace_id=principal.workspace_id,
             actor_membership_id=principal.membership_id,
             snapshot_read_only=True,
         )
+
+    @staticmethod
+    def _analyst_run_query() -> Any:
+        return select(*(getattr(AnalystRunRecord, name) for name in _ANALYST_RUN_VIEW_FIELDS))
+
+    @staticmethod
+    def _analyst_run_rows(result: Any) -> list[SimpleNamespace]:
+        return [SimpleNamespace(**dict(row)) for row in result.mappings().all()]
 
     async def list_runs(
         self,
@@ -165,15 +208,15 @@ class AnalystReviewService:
         limit = max(1, min(int(limit), MAX_LIST))
         async with self._uow(principal) as unit:
             session = unit.session
-            query = select(AnalystRunRecord).where(
+            query = self._analyst_run_query().where(
                 AnalystRunRecord.workspace_id == principal.workspace_id
             )
             if topic:
                 query = query.where(AnalystRunRecord.topic_key == topic)
             if valid is not None:
                 query = query.where(AnalystRunRecord.valid.is_(valid))
-            rows = list(
-                await session.scalars(
+            rows = self._analyst_run_rows(
+                await session.execute(
                     query.order_by(AnalystRunRecord.created_at.desc()).limit(limit)
                 )
             )
@@ -205,16 +248,31 @@ class AnalystReviewService:
         """Run Report đã lưu (CRY-380) + các lượt AI đã đọc report này."""
         async with self._uow(principal) as unit:
             row = await unit.session.scalar(
-                select(RunReportRecord).where(
+                select(RunReportRecord)
+                .options(
+                    load_only(
+                        RunReportRecord.id,
+                        RunReportRecord.workspace_id,
+                        RunReportRecord.report_hash,
+                        RunReportRecord.report_version,
+                        RunReportRecord.run_label,
+                        RunReportRecord.window_start,
+                        RunReportRecord.window_end,
+                        RunReportRecord.bot_count,
+                        RunReportRecord.payload,
+                        RunReportRecord.created_at,
+                    )
+                )
+                .where(
                     RunReportRecord.workspace_id == principal.workspace_id,
                     RunReportRecord.report_hash == report_hash,
                 )
             )
             if row is None:
                 raise AnalystReviewError(404, "Không tìm thấy Run Report.")
-            runs = list(
-                await unit.session.scalars(
-                    select(AnalystRunRecord)
+            runs = self._analyst_run_rows(
+                await unit.session.execute(
+                    self._analyst_run_query()
                     .where(
                         AnalystRunRecord.workspace_id == principal.workspace_id,
                         AnalystRunRecord.run_report_hash == report_hash,
@@ -231,24 +289,35 @@ class AnalystReviewService:
 
     async def get_run(self, principal: Principal, run_id: UUID) -> dict[str, Any]:
         async with self._uow(principal) as unit:
-            row = await unit.session.scalar(
-                select(AnalystRunRecord).where(
+            result = await unit.session.execute(
+                self._analyst_run_query().where(
                     AnalystRunRecord.workspace_id == principal.workspace_id,
                     AnalystRunRecord.id == run_id,
                 )
             )
+            row = next(iter(self._analyst_run_rows(result)), None)
             if row is None:
                 raise AnalystReviewError(404, "Không tìm thấy lượt phân tích.")
-            backtests = list(
-                await unit.session.scalars(
-                    select(ProposalBacktestRecord)
-                    .where(
-                        ProposalBacktestRecord.workspace_id == principal.workspace_id,
-                        ProposalBacktestRecord.analyst_run_id == run_id,
-                    )
-                    .order_by(ProposalBacktestRecord.proposal_index)
+            backtest_result = await unit.session.execute(
+                select(
+                    ProposalBacktestRecord.id,
+                    ProposalBacktestRecord.created_at,
+                    ProposalBacktestRecord.proposal_index,
+                    ProposalBacktestRecord.bot_id,
+                    ProposalBacktestRecord.bot_name,
+                    ProposalBacktestRecord.verdict,
+                    ProposalBacktestRecord.proposal,
+                    ProposalBacktestRecord.result,
                 )
+                .where(
+                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
+                    ProposalBacktestRecord.analyst_run_id == run_id,
+                )
+                .order_by(ProposalBacktestRecord.proposal_index)
             )
+            backtests = [
+                SimpleNamespace(**dict(backtest)) for backtest in backtest_result.mappings().all()
+            ]
         usage = row.usage or {}
         return {
             "id": str(row.id),
@@ -308,7 +377,7 @@ def _report_view(row: RunReportRecord) -> dict[str, Any]:
     }
 
 
-def _run_row(row: AnalystRunRecord, backtest_count: int) -> dict[str, Any]:
+def _run_row(row: SimpleNamespace, backtest_count: int) -> dict[str, Any]:
     output = _output_view(row.structured_output)
     return {
         "id": str(row.id),

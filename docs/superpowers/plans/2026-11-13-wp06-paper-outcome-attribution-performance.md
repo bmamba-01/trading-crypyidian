@@ -48,10 +48,10 @@
 - `PaperLifecycleCoordinator.submit_approved(..., bot_decision_id: UUID | None)` passes trusted command lineage into `PaperLedgerRepository.create_intent(..., bot_decision_id=...)`.
 - Retry compares typed decision ID as well as current idempotency payload; legacy flow persists NULL.
 
-- [ ] **Step 1: Viết tests RED** for typed attribution on PaperBotDecisionCommand, NULL legacy flow, idempotency mismatch, cross-bot/workspace FK denial, one-intent-per-decision, and unchanged runtime UPDATE grants/immutable trigger.
-- [ ] **Step 2: Chạy scoped unit tests** và Compose boundary case, xác nhận missing column/FK/assertion.
-- [ ] **Step 3: Add nullable field, constraints, unique index, migration and lifecycle propagation**; update candidate-dispatch query to use typed field while retaining JSON only for legacy audit.
-- [ ] **Step 4: Run unit tests and fresh Compose boundary/multibot E2E**; check no skipped case and active order state unchanged.
+- [x] **Step 1: Viết tests RED** for typed attribution on PaperBotDecisionCommand, NULL legacy flow, idempotency mismatch, cross-bot/workspace FK denial, one-intent-per-decision, and unchanged runtime UPDATE grants/immutable trigger.
+- [x] **Step 2: Chạy scoped unit tests** và Compose boundary case, xác nhận missing column/FK/assertion.
+- [x] **Step 3: Add nullable field, constraints, unique index, migration and lifecycle propagation**; update candidate-dispatch query to use typed field while retaining JSON only for legacy audit.
+- [x] **Step 4: Run unit tests and fresh Compose boundary/multibot E2E**; check no skipped case and active order state unchanged.
 
 ### Task 2: PAPER performance diagnostic policy and pure domain math
 
@@ -67,10 +67,10 @@
 - `score_multiclass_outcomes(probabilities, labels) -> (brier, log_loss)` uses class order `(-1,0,+1)`, validated normalized probabilities and deterministic epsilon clipping.
 - `assess_paper_performance(cohorts, policy) -> PaperPerformanceStatus` returns `DEGRADED` only if both metrics regress in both mature cohorts; deficient input is `INCONCLUSIVE`.
 
-- [ ] **Step 1: Write unit tests RED** for exact labels/probability validation, stable score math, class order, sample/support/coverage requirements, both-vs-one metric regression, two-cohort requirement and UTC boundary.
-- [ ] **Step 2: Run test** and confirm domain contract is missing.
-- [ ] **Step 3: Implement immutable policy/result DTOs** and deterministic Decimal/finite arithmetic without new dependency.
-- [ ] **Step 4: Run tests GREEN**, Ruff and mypy; add EN→VI glossary for mature outcome coverage and proper scoring rule with references.
+- [x] **Step 1: Write unit tests RED** for exact labels/probability validation, stable score math, class order, sample/support/coverage requirements, both-vs-one metric regression, two-cohort requirement and UTC boundary.
+- [x] **Step 2: Run test** and confirm domain contract is missing.
+- [x] **Step 3: Implement immutable policy/result DTOs** and deterministic Decimal/finite arithmetic without new dependency.
+- [x] **Step 4: Run tests GREEN**, Ruff and mypy; add EN→VI glossary for mature outcome coverage and proper scoring rule with references.
 
 ### Task 3: Aggregate-only DB evaluator, report ledger and idempotent service
 
@@ -89,11 +89,15 @@
 - `LearningPaperPerformanceService.assess(workspace_id, target_id, idempotency_key)` resolves frozen TEST baseline/current rights and persists a canonical append-only `LearningPaperPerformanceReport`.
 - Report unique identity pins `as_of`, policy hash, target fingerprint and both cohort membership digests; rights or active target change before persistence yields ineligible/inconclusive.
 
-- [ ] **Step 1: Write tests RED** for exact joins, no/open/late/multi trade, zero PnL, mismatch/legacy exclusion, two target groups, two 30-day matured cohorts, min n/class/coverage, rights race, immutable retry/conflict and no outcome leakage from gateway.
-- [ ] **Step 2: Run focused unit/Compose tests** and confirm missing evaluator/report storage.
-- [ ] **Step 3: Implement limited DB aggregation and report table** with workspace RLS FORCE, append-only triggers, exact frozen report FK/hash, policy hash, membership digest and downgrade populated guard. Do not grant admin direct SELECT to source ledgers.
-- [ ] **Step 4: Implement service** to resolve target fingerprint, DB clock, frozen baseline, exact cohort aggregate, pure policy assessment, idempotency and late CAS/rights verification.
-- [ ] **Step 5: Run focused unit and fresh Compose report E2E**; assert admin cannot select raw score probabilities/trades and another workspace cannot read reports.
+- [x] **Step 1: Write tests RED** for exact joins, no/open/late/multi trade, zero PnL, mismatch/legacy exclusion, two target groups, two 30-day matured cohorts, min n/class/coverage, rights race, immutable retry/conflict and no outcome leakage from gateway.
+- [x] **Step 2: Run focused unit/Compose tests** and confirm missing evaluator/report storage.
+- [x] **Step 3: Implement limited DB aggregation and report table** with workspace RLS FORCE, append-only triggers, exact frozen report FK/hash, policy hash, membership digest and downgrade populated guard. Do not grant admin direct SELECT to source ledgers.
+- [x] **Step 4: Implement service** to resolve target fingerprint, DB clock, frozen baseline, exact cohort aggregate, pure policy assessment, idempotency and late CAS/rights verification.
+- [x] **Step 5: Run focused unit and fresh Compose report E2E**; assert admin cannot select raw score probabilities/trades and another workspace cannot read reports. Rerun 25/11: `uv run pytest -q -rs --tb=short tests/e2e/test_wp06_paper_performance_gateway.py` → **1 passed/34.29s/0 skipped**; source-scope/domain/migration units → **71 passed/0.72s/0 skipped**.
+
+**Open evidence:** Unit and QA Compose gateway coverage verifies aggregate-only ACL, raw-row isolation and fail-closed missing-target behavior. A positive eligible report persistence/cohort-rights denial E2E remains open because there is no legitimate PAPER non-QA entitlement.
+
+**Rerun 25/11/2026:** PostgreSQL Compose on sole Alembic head `f0a2c4e6b8e0` rechecked evaluator/writer ACL, admin denial for raw score probabilities/trades, metadata-only projection, missing-target denial, cross-workspace RLS/read-gateway isolation, populated downgrade guard, downgrade/re-upgrade and `alembic check`. The E2E fixture is metadata-only and has no active target or source entitlement; it does not prove a positive report or cohort rights race.
 
 ### Task 4: Admin report page and operator trigger
 
@@ -112,10 +116,10 @@
 - `POST /api/v1/learning/paper-performance/assess` requires auth, role, CSRF and idempotency; returns sanitized metadata; never changes bot/deployment/hold state.
 - UI explains TEST baseline, decision cohorts/maturity, n/support/coverage, both metrics and that results are not profit claims.
 
-- [ ] **Step 1: Write Playwright/API RED assertions** for Vietnamese UI, report status, warnings, no raw payload, CSRF/idempotency/no bot-state mutation, responsive widths.
-- [ ] **Step 2: Run focused Playwright** and verify route/page missing.
-- [ ] **Step 3: Implement read-only dashboard and explicit diagnostic action** with no automatic side effects.
-- [ ] **Step 4: Run Playwright desktop 1280×800/mobile 390×844**, inspect screenshots and assert no horizontal overflow, no skipped tests.
+- [x] **Step 1: Write Playwright/API RED assertions** for Vietnamese UI, report status, warnings, no raw payload, CSRF/idempotency/no bot-state mutation, responsive widths.
+- [x] **Step 2: Run focused Playwright** and verify route/page missing.
+- [x] **Step 3: Implement read-only dashboard and explicit diagnostic action** with no automatic side effects.
+- [x] **Step 4: Run Playwright desktop 1280×800/mobile 390×844**, inspect screenshots and assert no horizontal overflow, no skipped tests.
 
 ### Task 5: Integrated WP06 traceability and verification
 
@@ -127,10 +131,10 @@
 - Modify: `docs/research/glossary-vi.md`
 
 - [ ] **Step 1: Run full unit suite** and all WP06 Compose E2E affected by intent schema, score event, rights, report, Task9 and migration; 0 skips.
-- [ ] **Step 2: Run desktop/mobile Playwright** and take/inspect screenshots.
-- [ ] **Step 3: Run Ruff check/format, mypy, compileall, Compose config, Alembic single-head/check, and diff check.**
-- [ ] **Step 4: Update WBS/module/project status** to separate completed code from external eligible data/report/active rollback-restart evidence; keep active modes locked.
-- [ ] **Step 5: Record exact URLs/date/test outcomes and remaining blockers in implementation memory; read the new entry back and compare it with diff/output.**
+- [x] **Step 2: Run desktop/mobile Playwright** and take/inspect screenshots.
+- [x] **Step 3: Run Ruff check/format, mypy, compileall, Compose config, Alembic single-head/check, and diff check.**
+- [x] **Step 4: Update WBS/module/project status** to separate completed code from external eligible data/report/active rollback-restart evidence; keep active modes locked.
+- [x] **Step 5: Record exact URLs/date/test outcomes and remaining blockers in implementation memory; read the new entry back and compare it with diff/output.**
 
 ## Trạng thái triển khai 14/11/2026
 
@@ -138,3 +142,14 @@
 - Task 3: aggregate-only gateway/repository/service/report đã implement. PostgreSQL Compose kiểm ACL, role hẹp, admin summary-only và missing-active-target denial; **chưa** có positive aggregate persistence E2E vì chưa có eligible non-QA target.
 - Task 4: admin tiếng Việt responsive đã kiểm Playwright desktop/mobile; screenshot `wp06-paper-performance-{desktop,mobile}.png` được lưu trong `tests/e2e/evidence/`.
 - Task 5: full unit **3906 passed/0 skipped**; Playwright performance/license **5 passed**; performance gateway Compose **1 passed**; Ruff/format/mypy/Compose/Alembic/diff checks đạt. Phần integrated WP06, positive eligible performance report, active scorer rights race và rollback/restart vẫn mở; không mở `SHADOW`/`PAPER_GATE`.
+
+### E2E cách ly workspace cho report — 24/11/2026
+
+`tests/e2e/test_wp06_paper_performance_gateway.py` nay dựng một dòng report metadata-only trong DB Compose riêng, xác nhận workspace sở hữu nhìn thấy metadata, workspace khác không thấy qua RLS và `wp06_read_paper_performance_report` trả tập rỗng. Fixture bị xóa ngay sau assertion và không có active target/source rights; không phải report hợp lệ hoặc bằng chứng entitlement. E2E cuối **1 passed/34.07s/0 skipped**; lô unit `tests/unit/*paper_performance*` **67 passed/1.82s/0 skipped**; Ruff check/format và diff-check đạt. E2E này bổ sung cross-workspace denial, không đóng positive eligible aggregate report, cohort rights/race hay toàn bộ Task 3/5.
+
+## Đối chiếu checklist 21/11/2026
+
+- Task 1–2 và Task 4 vẫn có implementation cùng regression evidence; Task 5 bước 2–5 đã có screenshot desktop/mobile, kiểm tra tĩnh/Alembic, đồng bộ WBS/status và memory đã đọc lại.
+- Task 3 bước 5 giữ mở: Compose chỉ chứng minh ACL aggregate-only, cô lập payload gốc và từ chối khi thiếu target; chưa có E2E report/cohort quyền dương tính đủ điều kiện.
+- Task 5 bước 1 giữ mở: full unit đạt **6.136 passed**, nhưng chưa chạy hết toàn bộ Compose E2E WP06 bị ảnh hưởng trong cùng lượt tích hợp. Không suy diễn các suite chọn lọc thành integrated E2E hoàn tất.
+- Theo lựa chọn A của người dùng, model-card/action latency dùng ledger hiện có; chi tiết nằm trong [WP06F model-card plan](2026-11-21-wp06f-model-card-action-latency.md). CRY-323 và WP06 tiếp tục In Progress vì cỡ mẫu/quyền non-QA chưa đạt; active modes giữ khóa.

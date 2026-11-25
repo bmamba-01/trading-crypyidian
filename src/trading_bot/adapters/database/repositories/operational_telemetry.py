@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models.bot_runtime_entities import (
@@ -43,6 +44,18 @@ from trading_bot.domain.risk.risk_windows import (
 
 _LOSS_LOOKBACK = timedelta(hours=48)
 _FEED_BAR_INTERVAL_SECONDS = 60
+_ADMIN_TELEMETRY_SCOPE_DENIALS = frozenset(
+    {
+        "WP06_ADMIN_TELEMETRY_SCOPE_DENIED",
+        "WP06_ADMIN_TELEMETRY_PERMISSION_DENIED",
+        "WP06_ADMIN_TELEMETRY_BOT_SCOPE_DENIED",
+        "WP06_ADMIN_TELEMETRY_RESUME_SCOPE_DENIED",
+    }
+)
+
+
+class AdminTelemetryScopeDenied(PermissionError):
+    """PostgreSQL đã từ chối scope telemetry hiện hành của admin."""
 
 
 def scope_key_for(bot_id: UUID | None = None) -> str:
@@ -118,6 +131,80 @@ class OperationalTelemetryRepository:
             unprotected_exposure_count=unprotected_exposure_count,
             reconciliation_discrepancy_count=reconciliation_discrepancy_count,
             unknown_order_count=unknown_order_count,
+        )
+        return telemetry, loss_snapshot
+
+    async def collect_admin_projection(
+        self,
+        *,
+        workspace_id: UUID,
+        membership_id: UUID,
+        bot_id: UUID | None,
+        as_of: datetime,
+        consecutive_api_errors: int,
+        operation: str,
+    ) -> tuple[OperationalTelemetry, LossWindowSnapshot]:
+        """Đọc snapshot aggregate đã được PostgreSQL kiểm scope/quyền hiện hành."""
+        try:
+            row = (
+                (
+                    await self._session.execute(
+                        text(
+                            """
+                        SELECT * FROM public.wp06_admin_operational_telemetry_snapshot(
+                            CAST(:workspace_id AS uuid), CAST(:membership_id AS uuid),
+                            CAST(:bot_id AS uuid), CAST(:as_of AS timestamptz),
+                            CAST(:consecutive_api_errors AS integer), CAST(:operation AS text))
+                        """
+                        ),
+                        {
+                            "workspace_id": workspace_id,
+                            "membership_id": membership_id,
+                            "bot_id": bot_id,
+                            "as_of": as_of,
+                            "consecutive_api_errors": max(0, int(consecutive_api_errors)),
+                            "operation": operation,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        except DBAPIError as error:
+            diagnostic = getattr(getattr(error.orig, "diag", None), "message_primary", None)
+            if diagnostic in _ADMIN_TELEMETRY_SCOPE_DENIALS:
+                raise AdminTelemetryScopeDenied(
+                    "Không đủ quyền đọc telemetry vận hành trong phạm vi hiện hành."
+                ) from None
+            raise
+        telemetry = OperationalTelemetry(
+            evaluated_at=as_of,
+            feed_age_seconds=row["feed_age_seconds"],
+            daily_loss=Decimal(row["daily_loss"]),
+            drawdown_pct=(
+                Decimal(row["drawdown_pct"]).quantize(Decimal("0.01"))
+                if row["drawdown_pct"] is not None
+                else None
+            ),
+            consecutive_api_errors=max(0, int(row["consecutive_api_errors"])),
+            outbox_lag_seconds=row["outbox_lag_seconds"],
+            clock_skew_ms=row["clock_skew_ms"],
+            unprotected_exposure_count=row["unprotected_exposure_count"],
+            reconciliation_discrepancy_count=row["reconciliation_discrepancy_count"],
+            unknown_order_count=row["unknown_order_count"],
+        )
+        loss_snapshot = LossWindowSnapshot(
+            as_of=as_of,
+            daily_window_start=row["daily_window_start"],
+            daily_window_end=row["daily_window_end"],
+            rolling_window_start=row["rolling_window_start"],
+            realized_loss_today=Decimal(row["realized_loss_today"]),
+            realized_loss_rolling=Decimal(row["realized_loss_rolling"]),
+            gross_loss_today=Decimal(row["gross_loss_today"]),
+            gross_loss_rolling=Decimal(row["gross_loss_rolling"]),
+            trade_count_today=int(row["trade_count_today"]),
+            trade_count_rolling=int(row["trade_count_rolling"]),
+            timezone_name=str(row["timezone_name"]),
         )
         return telemetry, loss_snapshot
 

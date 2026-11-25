@@ -128,7 +128,51 @@
   font-weight: 500;
   color: var(--text-main);
 }
-.lx-research .source-purpose-options input.ios-switch { width: 34px; height: 44px; flex: 0 0 34px; accent-color: initial; }
+.lx-research .source-purpose-options input.ios-switch {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  accent-color: initial;
+}
+/* Mật độ Admin có ô 40px trên desktop; biểu mẫu nguồn giữ vùng chạm 44px nhất quán. */
+.lx-research .lx-form :is(
+  input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]),
+  select
+) { min-height: 44px; }
+main .lx-page.lx-research :is(button, .btn):not([role="switch"]):not([role="tab"]) {
+  min-height: 44px;
+}
+.license-file-picker {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+main .lx-page.lx-research .license-file-picker input[type="file"] {
+  position: absolute;
+  width: 1px;
+  max-width: 1px;
+  height: 1px;
+  min-height: 1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+.license-file-picker__button { flex: 0 0 auto; margin: 0; cursor: pointer; }
+.license-file-picker__status {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+.license-file-picker:focus-within .license-file-picker__button {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
 .lx-research .license-scope-field label {
   font-size: var(--fs-xs);
   font-weight: 600;

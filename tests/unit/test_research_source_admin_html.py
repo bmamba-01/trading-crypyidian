@@ -29,9 +29,9 @@ def test_html_safe_detail_and_permission_actions():
     page = http.get("/admin/research-sources?source_id=calendar")
     assert page.status_code == 200
     assert page.headers["cache-control"] == "no-store"
-    assert "Lịch sử policy" in page.text
+    assert "Lịch sử chính sách" in page.text
     assert (
-        "Evidence tham chiếu do người quản trị cung cấp — chưa được hệ thống xác minh pháp lý"
+        "Tài liệu quyền do quản trị viên cung cấp — hệ thống chưa thẩm định hiệu lực pháp lý."
         in page.text
     )
     assert 'href="https://example.org/calendar"' not in page.text

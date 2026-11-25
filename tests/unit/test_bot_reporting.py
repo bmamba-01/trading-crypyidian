@@ -1106,6 +1106,7 @@ class Store:
     grants: set[tuple[UUID, UUID, str]] = field(default_factory=set)
     calls: list[str] = field(default_factory=list)
     units: list[dict[str, Any]] = field(default_factory=list)
+    sessions: list[object] = field(default_factory=list)
     ledger: dict[str, tuple[int, Decimal]] | None = None
 
 
@@ -1117,6 +1118,7 @@ class FakeUnitOfWork:
         del sessions
         STORE.units.append(kwargs)
         self.session = object()
+        STORE.sessions.append(self.session)
 
     async def __aenter__(self) -> FakeUnitOfWork:
         STORE.calls.append("uow")
@@ -1283,6 +1285,7 @@ async def _no_published_config(*args: Any, **kwargs: Any) -> None:
 def service() -> BotReportingService:
     return BotReportingService(
         object(),  # type: ignore[arg-type]
+        report_reader_sessions=object(),  # type: ignore[arg-type]
         unit_of_work=FakeUnitOfWork,
         repository=FakeRepository,
         grants=StoreGrants,
@@ -1353,7 +1356,7 @@ async def test_market_chart_data_requires_report_read_on_existing_bot(
         )
         assert len(bars) == 1
         # Có cả nguồn thật và nguồn mẫu cho BTCUSDT 5m → chỉ đọc nguồn REST công khai.
-        assert STORE.calls[-2] == "market_bars:BTCUSDT:5m:BINANCE_USDM_REST_BACKFILL"
+        assert "market_bars:BTCUSDT:5m:BINANCE_USDM_REST_BACKFILL" in STORE.calls
         assert STORE.units[-1]["snapshot_read_only"] is True
         return
     for call in (
@@ -1396,7 +1399,7 @@ async def test_market_overview_requires_report_read_and_reads_one_snapshot(
     ]
     assert "market_quote:BTCUSDT" in STORE.calls
     assert "market_mark:BTCUSDT" in STORE.calls
-    assert STORE.calls.count("uow") == 1
+    assert STORE.calls.count("uow") == 2
     assert STORE.units[-1]["snapshot_read_only"] is True
     assert overview["quote"] is None
     assert overview["candle"]["price_source"] == "last_close"
@@ -1466,6 +1469,30 @@ async def test_setup_board_skips_bots_without_report_read() -> None:
 
 
 @pytest.mark.asyncio
+async def test_setup_board_resolves_config_with_admin_session_and_ledger_with_reader() -> None:
+    config_sessions: list[object] = []
+
+    async def record_config_session(session: object, **kwargs: Any) -> None:
+        del kwargs
+        config_sessions.append(session)
+        return None
+
+    reporting = BotReportingService(
+        object(),
+        report_reader_sessions=object(),
+        unit_of_work=FakeUnitOfWork,
+        repository=FakeRepository,
+        grants=StoreGrants,
+        bot_config_loader=record_config_session,
+    )
+
+    await reporting.get_setup_board(ANALYST, bots=[(BOT_A, "Bot A")], bonus=[])
+
+    assert len(STORE.sessions) == 2
+    assert config_sessions == [STORE.sessions[0]]
+
+
+@pytest.mark.asyncio
 async def test_market_bars_reject_unsupported_timeframe_and_limit() -> None:
     for kwargs in ({"timeframe": "2h", "limit": 10}, {"timeframe": "5m", "limit": 5000}):
         with pytest.raises(BotReportError) as caught:
@@ -1493,16 +1520,18 @@ async def test_query_for_other_workspace_is_not_found_before_touching_database()
 async def test_bot_report_runs_in_read_only_bot_scoped_unit() -> None:
     await service().get_bot_report(bot_query(BOT_A), ANALYST)
 
-    # Một snapshot REPEATABLE READ, READ ONLY cho mọi SELECT của báo cáo (đặt khi mở UoW).
+    # Grant và ledger dùng hai login riêng nhưng cùng scope giao dịch chỉ đọc.
+    expected_scope = {
+        "workspace_id": W1,
+        "bot_id": BOT_A,
+        "actor_membership_id": ANALYST.membership_id,
+        "snapshot_read_only": True,
+    }
     assert STORE.units == [
-        {
-            "workspace_id": W1,
-            "bot_id": BOT_A,
-            "actor_membership_id": ANALYST.membership_id,
-            "snapshot_read_only": True,
-        }
+        expected_scope,
+        expected_scope,
     ]
-    assert STORE.calls[0] == "uow"
+    assert STORE.calls[:2] == ["uow", "uow"]
     assert STORE.calls.index("uow") < STORE.calls.index(f"ledger:{BOT_A}")
 
 
@@ -1542,17 +1571,23 @@ async def test_workspace_report_for_workspace_report_roles(actor: Principal) -> 
         STORE.snapshots[BOT_B].closed_trades[0].net_pnl
     )
     assert report.totals["USDT"].net_pnl == expected
-    # Ledger từng bot và tổng ledger đối soát đọc trong CÙNG một snapshot (một UoW).
+    # Ledger từng bot và tổng ledger đối soát đọc trong cùng reader snapshot.
     assert STORE.units == [
         {
             "workspace_id": W1,
             "bot_id": None,
             "actor_membership_id": actor.membership_id,
             "snapshot_read_only": True,
-        }
+        },
+        {
+            "workspace_id": W1,
+            "bot_id": None,
+            "actor_membership_id": actor.membership_id,
+            "snapshot_read_only": True,
+        },
     ]
-    assert STORE.calls[0] == "uow"
-    assert STORE.calls[-2:] == ["ledger_totals", "exit"]
+    assert STORE.calls[:2] == ["uow", "uow"]
+    assert STORE.calls[-3:] == ["ledger_totals", "exit", "exit"]
 
 
 @pytest.mark.asyncio
@@ -1696,7 +1731,7 @@ async def test_dashboard_batch_uses_one_read_snapshot_and_only_granted_bot_ledge
     )
     assert [r.bot_id for r in reports] == [BOT_A]
     assert reports[0].totals["USDT"].net_pnl == Decimal("4.85")
-    assert len(STORE.units) == 1
+    assert len(STORE.units) == 2
     assert STORE.units[0]["snapshot_read_only"] is True
     assert STORE.units[0]["workspace_id"] == W1
     assert f"ledger:{BOT_B}" not in STORE.calls
@@ -1711,7 +1746,7 @@ async def test_dashboard_batch_workspace_owner_gets_separate_reports_without_agg
     )
     assert [r.bot_id for r in reports] == [BOT_A, BOT_B]
     assert [r.totals["USDT"].net_pnl for r in reports] == [Decimal("4.85"), Decimal("-2.2")]
-    assert len(STORE.units) == 1
+    assert len(STORE.units) == 2
     assert "ledger_totals" not in STORE.calls
 
 

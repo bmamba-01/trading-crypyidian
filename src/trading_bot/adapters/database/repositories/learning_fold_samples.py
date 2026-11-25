@@ -27,10 +27,6 @@ from trading_bot.adapters.database.replay_training_rights import (
     ReplayTrainingOperation,
     authorize_manifest_bundles,
 )
-from trading_bot.adapters.database.repositories.dataset_manifest_eligibility import (
-    DatasetManifestEligibilityRepository,
-)
-from trading_bot.adapters.database.repositories.source_items import SourceItemRepository
 from trading_bot.application.dataset_source_eligibility import (
     DatasetSourceEligibilityDenied,
     DatasetSourceEligibilityGate,
@@ -242,10 +238,7 @@ class LearningFoldSampleRepository:
         if _uses_replay_training_scope(manifest):
             await self._assert_replay_training_eligibility(manifest)
             return ()
-        gate = DatasetSourceEligibilityGate(
-            DatasetManifestEligibilityRepository(self._session),
-            SourceItemRepository(self._session),
-        )
+        gate = DatasetSourceEligibilityGate()
         try:
             return await gate.assert_eligible(
                 workspace_id=manifest.workspace_id,

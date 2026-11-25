@@ -1,8 +1,9 @@
 """Dịch vụ đọc cho chế độ theo dõi bot trực tiếp (LIVE-MON, CRY-429).
 
-Mỗi lần đọc mở **một** transaction READ ONLY/REPEATABLE READ ngắn trên pool của admin-web, đặt
-RLS theo workspace + membership, kiểm grant ``bot:report:read`` từng bot rồi đọc ledger. Không
-giữ kết nối giữa các lần đọc, không khóa hàng và không gọi runtime/sàn, nên không chặn runtime.
+Mỗi lần đọc mở transaction quyền admin và transaction READ ONLY/REPEATABLE READ ngắn trên
+pool report-reader. Session reader đặt RLS theo workspace + membership; PostgreSQL kiểm grant
+hiện hành trên từng hàng trước khi trả ledger. Không giữ kết nối giữa các lần đọc, không khóa
+hàng và không gọi runtime/sàn, nên không chặn runtime.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from trading_bot.adapters.database.repositories.live_monitor import (
     EVENT_SOURCE_LIMIT,
     LiveMonitorRepository,
 )
+from trading_bot.application.bot_reporting import AdminReportReadUnitOfWork
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal
@@ -57,16 +59,26 @@ class LiveMonitorService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        report_reader_sessions: async_sessionmaker[AsyncSession] | None = None,
         unit_of_work: Callable[..., Any] = UnitOfWork,
         repository: Callable[[Any], Any] = LiveMonitorRepository,
         grants: Callable[[Any], Any] = BotGrantRepository,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._sessions = sessions
+        self._report_reader_sessions = report_reader_sessions
         self._unit_of_work = unit_of_work
         self._repository = repository
         self._grants = grants
         self._clock = clock
+
+    def _read_unit(self, **scope: Any) -> AdminReportReadUnitOfWork:
+        return AdminReportReadUnitOfWork(
+            self._sessions,
+            self._report_reader_sessions,
+            unit_of_work=self._unit_of_work,
+            **scope,
+        )
 
     async def read(
         self,
@@ -84,13 +96,12 @@ class LiveMonitorService:
         """
         requested = [bot_id for bot_id in dict.fromkeys(bot_ids) if str(bot_id) in runtime]
         requested = requested[:MAX_LIVE_BOTS]
-        async with self._unit_of_work(
-            self._sessions,
+        async with self._read_unit(
             workspace_id=principal.workspace_id,
             actor_membership_id=principal.membership_id,
             snapshot_read_only=True,
         ) as unit:
-            grants = self._grants(unit.session)
+            grants = self._grants(unit.authorization_session)
             allowed: list[UUID] = []
             for bot_id in requested:
                 try:

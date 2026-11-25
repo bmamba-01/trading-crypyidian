@@ -402,7 +402,16 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             assert page_response is not None
             assert page_response.status == 200
             assert_responsive(browser_page, name)
-        browser_page.goto(f"{base_url}/admin", wait_until="domcontentloaded")
+        analyst_dashboard_response = browser_page.goto(
+            f"{base_url}/admin", wait_until="domcontentloaded"
+        )
+        assert analyst_dashboard_response is not None
+        if analyst_dashboard_response.status >= 500:
+            admin_logs = harness.compose("logs", "--tail", "100", "admin-web").stdout
+            pytest.fail(
+                "Dashboard analyst trả lỗi server "
+                f"{analyst_dashboard_response.status}: {admin_logs[-12000:]}"
+            )
         assert_font_and_fallback(browser_page)
 
         _open_mobile_menu(browser_page)
@@ -566,7 +575,16 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
                 }
             ]
         )
-        browser_page.goto(f"{base_url}/admin", wait_until="domcontentloaded")
+        analyst_dashboard_response = browser_page.goto(
+            f"{base_url}/admin", wait_until="domcontentloaded"
+        )
+        assert analyst_dashboard_response is not None
+        if analyst_dashboard_response.status >= 500:
+            admin_logs = harness.compose("logs", "--tail", "100", "admin-web").stdout
+            pytest.fail(
+                "Dashboard analyst trả lỗi server "
+                f"{analyst_dashboard_response.status}: {admin_logs[-12000:]}"
+            )
         expect(browser_page.locator(".bot-report")).to_have_count(0)
         expect(
             browser_page.get_by_text("Chưa có bot đang hoạt động được cấp quyền xem báo cáo.")
@@ -707,6 +725,12 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             )
         ) as disable_response_info:
             browser_page.get_by_role("button", name="Tắt bot").press("Enter")
+        if disable_response_info.value.status >= 500:
+            admin_logs = harness.compose("logs", "--tail", "100", "admin-web").stdout
+            pytest.fail(
+                "Tắt bot trả lỗi server "
+                f"{disable_response_info.value.status}: {admin_logs[-12000:]}"
+            )
         assert disable_response_info.value.status == 303
         expect(browser_page).to_have_url(f"{base_url}/admin/bots/{bot_id}")
         expect(browser_page.get_by_role("button", name="Bật bot sau đối soát")).to_be_visible()
@@ -741,6 +765,12 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             )
         ) as draft_response_info:
             browser_page.get_by_role("button", name="Tạo bản nháp", exact=True).press("Enter")
+        if draft_response_info.value.status >= 500:
+            admin_logs = harness.compose("logs", "--tail", "100", "admin-web").stdout
+            pytest.fail(
+                "Tạo bản nháp cấu hình trả lỗi server "
+                f"{draft_response_info.value.status}: {admin_logs[-12000:]}"
+            )
         assert draft_response_info.value.status == 303
         expect(
             browser_page.get_by_text(re.compile(r"Bản nháp [0-9a-f-]+ — phiên bản 1"))
@@ -823,8 +853,10 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         expect(browser_page.get_by_role("heading", name="Nhận định (1)")).to_be_visible()
         expect(browser_page.get_by_text("T01 có 12 lệnh đóng.")).to_be_visible()
         expect(browser_page.get_by_text("/bots/0/performance/closed_trades")).to_be_visible()
+        browser_page.locator("details summary").filter(has_text="Kết quả backtest đề xuất").click()
         backtests = browser_page.get_by_role("table", name="Kết quả backtest đề xuất")
         expect(backtests.get_by_text("Tốt hơn")).to_be_visible()
+        browser_page.locator("details summary").filter(has_text="Bối cảnh đã đưa AI").click()
         expect(browser_page.get_by_text("17/11 20:30 · Doanh số bán lẻ")).to_be_visible()
         expect(
             browser_page.get_by_text("ZECUSDT: TRADING — gỡ 20/11 15:00 (giờ VN)")
@@ -965,7 +997,7 @@ def _open_mobile_menu(page: Page) -> None:
 
 
 def assert_responsive(page: Page, name: str) -> None:
-    """Đọc các trang thật ở năm kích thước và kiểm tra reflow tương đương phóng đại 200%."""
+    """Đọc trang ở năm kích thước, kiểm tra reflow và ngưỡng điều khiển cảm ứng."""
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     original_viewport = page.viewport_size
     assert original_viewport is not None
@@ -1019,11 +1051,18 @@ def assert_responsive(page: Page, name: str) -> None:
                 }"""
             )
             assert fits_viewport, f"{name}@{width}: {overflow_diagnostic}"
+        touch_target_required = width <= 899 or page.evaluate(
+            "matchMedia('(pointer: coarse)').matches"
+        )
         for element in page.locator("input:not([type=hidden]), select, textarea, button").all():
-            if element.is_visible():
+            if touch_target_required and element.is_visible():
                 bounds = element.bounding_box()
                 assert bounds is not None
-                assert bounds["height"] >= 44, (name, width, bounds)
+                control = element.evaluate(
+                    "node => ({tag: node.tagName, id: node.id, className: node.className, "
+                    "role: node.getAttribute('role'), minHeight: getComputedStyle(node).minHeight})"
+                )
+                assert bounds["height"] >= 44, (name, width, control, bounds)
         if name in {"dashboard-metrics", "flatten-preview", "reports-metrics", "login"}:
             page.screenshot(path=str(EVIDENCE / f"{name}-{width}.png"), full_page=True)
         if name in {"dashboard-metrics", "reports-metrics"} and width in {390, 1280}:

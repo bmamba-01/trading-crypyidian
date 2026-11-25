@@ -75,8 +75,8 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0. Sau đó hai nhánh tách ra: dev (CK-1
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
     # thành một head; CRY-384/CRY-380 nối analyst_run.context và run_report sau 7707d82de246.
-    # WP06 nối migration caller EVALUATION của scorer TEST proof, rồi lát B (manifest v5).
-    assert heads == ["c6e8a0b2d4f9"]
+    # WP06 nối proof caller EVALUATION, proof TEST v3, rồi aggregate action latency.
+    assert heads == ["f0a2c4e6b8e0"]
     assert graph["0094c0fdba7f"] == "c8d28da699c6"
     assert graph["12e554aace5d"] == "0094c0fdba7f"
     assert graph["f6c8e0a2b4d8"] == "0094c0fdba7f"
@@ -85,6 +85,9 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     assert graph["f6c8e0a2b4db"] == ("f6c8e0a2b4da", "12e554aace5d")
     assert graph["e8a2c4d6f0b3"] == ("f6c8e0a2b4db", "c9d1e3f5a7b4")
     assert graph["c6e8a0b2d4f9"] == "b4c6d8e0f2a9"
+    assert graph["f0a2c4e6b8d1"] == "c6e8a0b2d4f9"
+    assert graph["f0a2c4e6b8d2"] == "f0a2c4e6b8d1"
+    assert graph["f0a2c4e6b8d3"] == "f0a2c4e6b8d2"
     assert graph["f4b6d8e0a2c7"] == "e8a2c4d6f0b3"
     assert graph["e1f3a5b7c9d1"] == "e1a2b3c4d5f6"
     assert graph["e1a2b3c4d5f6"] == "d8e2f4a6b8c0"

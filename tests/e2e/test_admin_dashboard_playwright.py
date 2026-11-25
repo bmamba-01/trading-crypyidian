@@ -392,6 +392,10 @@ class MockBotReportingService:
         """Mock này không có ledger theo bot; Bot Detail phải hiện trạng thái chưa có dữ liệu."""
         raise BotReportError(404, "REPORT_NOT_FOUND", "Không có báo cáo cho bot trong test.")
 
+    async def get_latest_signal(self, principal: Any, *, bot_id: UUID) -> dict[str, Any]:
+        """Mock không có quyết định tín hiệu; Bot Detail giữ thẻ trống theo hợp đồng thật."""
+        return {"latest_decision": None, "card": None}
+
     async def report(self, query: Any) -> dict[str, Any]:
         return {
             "workspace_id": str(WORKSPACE_ID),

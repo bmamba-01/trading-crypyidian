@@ -364,7 +364,9 @@ async def _grant_paper_rights() -> dict[str, Any]:
     source_id = "BINANCE_USDM_REST"
     policy_id = f"{source_id}:task9-paper-demo"
     # Từ d823df5 VERIFIED mới phải mang license scope + evidence của đúng pending trước.
-    license_scope = fixture_license_scope(source_id)
+    license_scope = fixture_license_scope(source_id, symbols=SYMBOLS)
+    if not set(SYMBOLS).issubset(license_scope.symbols):
+        raise AssertionError("License fixture phải bao phủ mọi symbol của PAPER journey.")
     terms = "https://example.invalid/wp06-task9-paper-demo-fixture"
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
         repository = SourceRegistryRepository(unit.session)
@@ -1587,7 +1589,11 @@ async def _observe_holding_pointer_lock() -> dict[str, Any]:
 
         async def append(self, *, observation):
             result = await super().append(observation=observation)
-            if not result.is_duplicate and not rights_receipt_checks:
+            if (
+                not result.is_duplicate
+                and observation.rights_eligible
+                and not rights_receipt_checks
+            ):
                 before_count = await self._session.scalar(
                     select(func.count())
                     .select_from(LearningShadowObservationRecord)
@@ -1682,6 +1688,11 @@ async def _observe_holding_pointer_lock() -> dict[str, Any]:
                     "active_registry_revision": item.active_registry_revision,
                     "active_pointer_version": item.active_pointer_version,
                     "reason": item.challenger_reason.value,
+                    "rights_eligible": item.rights_eligible,
+                    "rights_source_id": item.rights_source_id,
+                    "rights_policy_id": item.rights_policy_id,
+                    "rights_fingerprint": item.rights_fingerprint,
+                    "source_scope_fingerprint": item.source_scope_fingerprint,
                     "schema_compatible": item.schema_compatible,
                 }
                 for item in batch.observations
@@ -1808,10 +1819,7 @@ async def _assess_after_rights_revocation() -> dict[str, Any]:
     from trading_bot.adapters.database.models import LearningDriftAssessmentRecord
     from trading_bot.adapters.database.repositories.learning_drift import LearningDriftRepository
     from trading_bot.adapters.database.repositories.learning_shadow import LearningShadowRepository
-    from trading_bot.application.learning_drift import (
-        LearningDriftApplication,
-        LearningDriftRightsConflict,
-    )
+    from trading_bot.application.learning_drift import LearningDriftApplication
     from trading_bot.application.outbox import UnitOfWork
 
     registry_id = UUID(STATE["third_registry_id"])
@@ -1853,16 +1861,22 @@ async def _assess_after_rights_revocation() -> dict[str, Any]:
         eligible_member_count = sum(member.observation.rights_eligible for member in members)
         assert receipt is None
         assert eligible_member_count >= 1
-        try:
-            await LearningDriftApplication(sessions).assess_cohort(
-                workspace_id=WORKSPACE,
-                challenger_registry_id=registry_id,
-                challenger_revision=revision,
-            )
-        except LearningDriftRightsConflict:
-            rejected = True
-        else:
-            rejected = False
+        run = await LearningDriftApplication(sessions).assess_cohort(
+            workspace_id=WORKSPACE,
+            challenger_registry_id=registry_id,
+            challenger_revision=revision,
+        )
+        assert run is not None, "Cohort có member phải tạo assessment inconclusive."
+        assessment = run.assessment
+        assessment_inconclusive_without_metrics = (
+            assessment.data_quality_status.value == "inconclusive"
+            and assessment.eligible_count == 0
+            and assessment.snapshot_coverage_rate is None
+            and assessment.quality_rate is None
+            and assessment.abstention_rate is None
+            and "rights_unverified" in {reason.value for reason in assessment.reason_codes}
+            and run.proposal is None
+        )
         async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
             after_count = await unit.session.scalar(
                 select(func.count())
@@ -1875,9 +1889,12 @@ async def _assess_after_rights_revocation() -> dict[str, Any]:
             )
         return {
             "current_rights_receipt_missing": receipt is None,
-            "eligible_cohort_rejected": rejected,
-            "assessment_count_unchanged": before_count == after_count,
+            "assessment_inconclusive_without_metrics": assessment_inconclusive_without_metrics,
+            "proposal_created": run.proposal is not None,
+            "assessment_appended": after_count == before_count + 1,
             "eligible_member_count": eligible_member_count,
+            "assessment_member_count": assessment.member_count,
+            "assessment_eligible_count": assessment.eligible_count,
             "assessment_count_before": int(before_count or 0),
             "assessment_count_after": int(after_count or 0),
         }

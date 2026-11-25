@@ -175,16 +175,21 @@ def _report_summary() -> ScorerReportSummary:
         test_sample_count=9,
         opportunity_count=90,
         class_support=((-1, 3), (0, 2), (1, 4)),
+        confusion_matrix=((1, 0, 1, 1), (0, 2, 0, 0), (0, 0, 3, 1)),
         coverage=0.75,
         abstain_count=2,
         log_loss=0.41,
         brier_score=0.18,
         expected_calibration_error=0.08,
+        false_veto_count=1,
         false_veto_rate=0.25,
         candidate_retention=0.67,
         candidate_count=6,
         scored_candidate_count=4,
         approved_candidate_count=3,
+        no_candidate_count=80,
+        input_excluded_count=2,
+        not_run_count=2,
     )
 
 
@@ -305,10 +310,52 @@ def _stop_app(server: uvicorn.Server, thread: threading.Thread, listener: socket
 def _assert_layout(page: Page, *, width: int, height: int) -> None:
     page.set_viewport_size({"width": width, "height": height})
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => resolve()))")
-    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
-        width,
-        page.evaluate("({scroll:document.documentElement.scrollWidth,inner:innerWidth})"),
+    layout = page.evaluate(
+        """() => ({
+          scroll: document.documentElement.scrollWidth,
+          inner: window.innerWidth,
+          matrixChain: (() => {
+            const chain = [];
+            let element = document.querySelector("#learning-scoring-confusion-matrix");
+            while (element) {
+              const rect = element.getBoundingClientRect();
+              chain.push({
+                tag: element.tagName,
+                id: element.id,
+                className: typeof element.className === "string" ? element.className : "",
+                left: Math.round(rect.left),
+                right: Math.round(rect.right),
+                width: Math.round(rect.width),
+                scrollWidth: element.scrollWidth,
+                clientWidth: element.clientWidth,
+                minWidth: getComputedStyle(element).minWidth,
+                overflowX: getComputedStyle(element).overflowX,
+              });
+              element = element.parentElement;
+            }
+            return chain;
+          })(),
+          overflowing: Array.from(document.querySelectorAll("body *"))
+            .map(element => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return {
+                tag: element.tagName,
+                id: element.id,
+                className: typeof element.className === "string" ? element.className : "",
+                right: Math.round(rect.right),
+                width: Math.round(rect.width),
+                scrollWidth: element.scrollWidth,
+                clientWidth: element.clientWidth,
+                minWidth: style.minWidth,
+                overflowX: style.overflowX,
+              };
+            })
+            .filter(element => element.right > window.innerWidth + 1)
+            .slice(0, 12),
+        })"""
     )
+    assert layout["scroll"] <= width, (width, layout)
     minimum_target_height = 44 if width < 768 else 36
     for button in page.get_by_role("button").all():
         if button.is_visible():
@@ -358,9 +405,72 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(
             browser_page.get_by_role("heading", name="Báo cáo scorer TEST gần nhất")
         ).to_be_visible()
+        expected_report_id = (
+            report_read_model.summary.evaluation_report_id
+            if report_read_model.summary is not None
+            else _report_summary().evaluation_report_id
+        )
+        expect(
+            browser_page.get_by_role("link", name="Mở thẻ mô hình và độ trễ PAPER")
+        ).to_have_attribute(
+            "href",
+            f"/admin/learning/model-card?report_id={expected_report_id}",
+        )
+        matrix = browser_page.get_by_role("table", name="Ma trận nhầm lẫn trên mẫu TEST")
+        expect(matrix).to_be_visible()
+        expect(matrix.get_by_role("columnheader", name="Không chấm được (ABSTAIN)")).to_be_visible()
+        expect(matrix.get_by_role("rowheader", name="PnL âm")).to_be_visible()
+        expect(matrix.get_by_role("rowheader", name="PnL trung tính")).to_be_visible()
+        expect(matrix.get_by_role("rowheader", name="PnL dương")).to_be_visible()
+        expect(
+            browser_page.get_by_text("Ma trận này không phải ma trận hành động PAPER.")
+        ).to_be_visible()
         expect(browser_page.get_by_text("Chưa kết luận", exact=True)).to_be_visible()
-        expect(browser_page.get_by_text("75.0%").first).to_be_visible()
-        expect(browser_page.get_by_text("8.0%").first).to_be_visible()
+        expect(browser_page.get_by_text("Báo cáo INCONCLUSIVE")).to_be_visible()
+        expect(browser_page.get_by_text("FP lớp PnL dương", exact=True)).to_be_visible()
+        expect(browser_page.get_by_text("FN lớp PnL dương", exact=True)).to_be_visible()
+        expect(
+            browser_page.get_by_text("False-veto theo hành động scorer", exact=True)
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("Không tạo ứng viên (NO_CANDIDATE)", exact=True)
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("Đầu vào bị loại (INPUT_EXCLUDED)", exact=True)
+        ).to_be_visible()
+        inventory_counts = browser_page.locator("#learning-scoring-opportunity-counts")
+        expect(
+            inventory_counts.locator(".kv").filter(has_text="Không tạo ứng viên").locator("dd")
+        ).to_have_text("80")
+        expect(
+            inventory_counts.locator(".kv").filter(has_text="Đầu vào bị loại").locator("dd")
+        ).to_have_text("2")
+        expect(
+            browser_page.get_by_text(
+                "NO_CANDIDATE không đồng nghĩa với tín hiệu bị bỏ lỡ, lệnh hoặc trade"
+            )
+        ).to_be_visible()
+        expect(browser_page.get_by_text("không tạo nhãn PnL")).to_be_visible()
+        expect(browser_page.get_by_text("1 / 4 mẫu PnL dương", exact=True)).to_be_visible()
+        diagnostics = browser_page.locator("#learning-scoring-positive-class-errors")
+        expect(
+            diagnostics.locator(".kv").filter(has_text="FP lớp PnL dương").locator("dd")
+        ).to_have_text("1")
+        expect(
+            diagnostics.locator(".kv").filter(has_text="FN lớp PnL dương").locator("dd")
+        ).to_have_text("1")
+        expect(browser_page.get_by_text("FN gồm cả trường hợp ABSTAIN")).to_be_visible()
+        expect(
+            browser_page.get_by_text("VETO và ABSTAIN không đồng nghĩa với lỗi phân lớp")
+        ).to_be_visible()
+        expect(browser_page.get_by_text("75.0%", exact=True)).to_have_count(0)
+        expect(browser_page.get_by_text("8.0%", exact=True)).to_have_count(0)
+        expect(browser_page.get_by_text("67.0%", exact=True)).to_have_count(0)
+        expect(
+            browser_page.locator(".kv")
+            .filter(has_text="Cơ hội chưa chạy strategy (NOT_RUN)")
+            .locator("dd")
+        ).to_have_text("2")
         expect(browser_page.get_by_role("button", name="Tắt chấm điểm")).to_be_visible()
         expect(browser_page.get_by_label("Chế độ muốn áp dụng")).to_be_visible()
         expect(browser_page.locator("#scorer-mode option[value='SHADOW']")).to_be_disabled()
@@ -395,19 +505,80 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         browser_page.keyboard.press("Tab")
         expect(browser_page.locator(".skip-link")).to_be_focused()
         _assert_layout(browser_page, width=1280, height=900)
+        deployment_metadata = browser_page.locator(".lx-kpis .kpi-subtext--keep")
+        expect(deployment_metadata).to_be_visible()
+        assert (
+            deployment_metadata.evaluate("element => getComputedStyle(element).whiteSpace")
+            == "normal"
+        )
+        assert deployment_metadata.evaluate("element => element.scrollWidth <= element.clientWidth")
+        assert browser_page.locator("#learning-scoring-confusion-matrix tbody tr").count() == 3
         browser_page.screenshot(path=str(SCREENSHOTS / "wp06-scoring-desktop.png"), full_page=True)
         browser_page.set_viewport_size({"width": 390, "height": 844})
         browser_page.reload(wait_until="load")
         _assert_layout(browser_page, width=390, height=844)
+        mobile_health_value = browser_page.locator(".lx-kpis .kpi-value--text").nth(1)
+        mobile_health_font_size = float(
+            mobile_health_value.evaluate(
+                "element => getComputedStyle(element).fontSize"
+            ).removesuffix("px")
+        )
+        assert mobile_health_font_size <= 17
+        expect(
+            browser_page.locator(".kv")
+            .filter(has_text="Cơ hội chưa chạy strategy (NOT_RUN)")
+            .locator("dd")
+        ).to_have_text("2")
+        expect(browser_page.locator("#learning-scoring-confusion-matrix-wrap")).to_be_hidden()
+        mobile_matrix_rows = browser_page.locator(".lx-confusion__mobile-row")
+        assert mobile_matrix_rows.count() == 3
+        first_matrix_row = mobile_matrix_rows.first
+        expect(first_matrix_row.get_by_text("Nhãn thực tế: PnL âm")).to_be_visible()
+        assert first_matrix_row.locator("dd").all_inner_texts() == ["1", "0", "1", "1"]
+        expect(first_matrix_row.get_by_text("Không chấm được (ABSTAIN)")).to_be_visible()
+        expect(browser_page.locator("#learning-scoring-positive-class-errors")).to_be_visible()
+        expect(browser_page.locator("#learning-scoring-opportunity-counts")).to_be_visible()
+        expect(
+            browser_page.locator("#learning-scoring-opportunity-counts")
+            .locator(".kv")
+            .filter(has_text="Không tạo ứng viên")
+            .locator("dd")
+        ).to_have_text("80")
+        expect(browser_page.get_by_text("1 / 4 mẫu PnL dương", exact=True)).to_be_visible()
         browser_page.screenshot(path=str(SCREENSHOTS / "wp06-scoring-mobile.png"), full_page=True)
+
+        report_read_model.summary = replace(
+            _report_summary(), not_run_count=None, input_excluded_count=4, confusion_matrix=None
+        )
+        browser_page.reload(wait_until="load")
+        expect(
+            browser_page.locator("#learning-scoring-opportunity-counts .kv")
+            .filter(has_text="Chưa chạy hoặc bị loại (proof v2 gộp)")
+            .locator("dd")
+        ).to_have_text("4")
+        expect(
+            browser_page.get_by_text("Ma trận nhầm lẫn chưa có trong báo cáo cũ.")
+        ).to_be_visible()
+        expect(browser_page.locator("#learning-scoring-confusion-matrix")).to_have_count(0)
+        expect(
+            browser_page.get_by_text("Chưa chạy hoặc bị loại (proof v2 gộp)", exact=True)
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("proof v2 gộp EVALUATED + NOT_RUN và INPUT_EXCLUDED")
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("Đầu vào bị loại (INPUT_EXCLUDED)", exact=True)
+        ).to_have_count(0)
+        _assert_layout(browser_page, width=390, height=844)
+        report_read_model.summary = None
+        browser_page.reload(wait_until="load")
+        score_event_read_model.calls.clear()
 
         browser_page.get_by_role("link", name="Sự kiện cũ hơn").click()
         expect(browser_page).to_have_url(f"{app_url}/admin/learning/scoring?score_event_page=2")
-        expect(browser_page.get_by_text("Không chấm được")).to_be_visible()
+        expect(browser_page.get_by_text("Không chấm được", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("MODEL_UNAVAILABLE")).to_be_visible()
         assert score_event_read_model.calls == [
-            (WORKSPACE_ID, 1),
-            (WORKSPACE_ID, 1),
             (WORKSPACE_ID, 2),
         ]
 
@@ -461,9 +632,9 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         assert service.facade.calls[0]["expected_deployment_revision"] == 2
         assert isinstance(service.facade.calls[0]["idempotency_key"], UUID)
         expect(browser_page.get_by_text("Đang tắt").first).to_be_visible()
-        assert len(service.principals) == 6
+        assert len(service.principals) == 8
         assert all(principal.workspace_id == WORKSPACE_ID for principal in service.principals)
-        assert report_read_model.workspaces == [WORKSPACE_ID] * 4
+        assert report_read_model.workspaces == [WORKSPACE_ID] * 6
     finally:
         _stop_app(server, thread, listener)
 

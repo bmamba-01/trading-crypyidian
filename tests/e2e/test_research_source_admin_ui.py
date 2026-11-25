@@ -147,11 +147,19 @@ def serve_app():
 
 def assert_layout(page):
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    undersized = []
     for control in page.locator(
         "input:not([type=hidden]),select,textarea,button,summary,nav a"
     ).all():
         if control.is_visible():
-            assert control.bounding_box()["height"] >= 44
+            box = control.bounding_box()
+            if box["height"] < 44:
+                undersized.append(
+                    f"tag={control.evaluate('(el) => el.tagName')} "
+                    f"id={control.get_attribute('id')!r} name={control.get_attribute('name')!r} "
+                    f"class={control.get_attribute('class')!r} height={box['height']}"
+                )
+    assert not undersized, "Điều khiển dưới 44px:\n" + "\n".join(undersized)
 
 
 def upload_evidence(page: Page, content: bytes) -> None:
@@ -260,8 +268,8 @@ def test_source_policy_owner_reviewer_flow(browser_page: Page, width, height, su
         assert repository.entries["offline-calendar"].current.attribution == "not approved"
         expect(
             page.get_by_text(
-                "Evidence tham chiếu do người quản trị cung cấp — "
-                "chưa được hệ thống xác minh pháp lý",
+                "Tài liệu quyền do quản trị viên cung cấp — "
+                "hệ thống chưa thẩm định hiệu lực pháp lý.",
                 exact=True,
             )
         ).to_be_visible()

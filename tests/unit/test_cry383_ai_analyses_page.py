@@ -20,7 +20,7 @@ from trading_bot.application.analyst_review import (
     _context_view,
     _output_view,
 )
-from trading_bot.auth.policy import Principal
+from trading_bot.auth.policy import Principal, Role
 
 RUN_ID = UUID("6f0c8a52-6c1f-4d7a-9a1e-0f2b9d3c4e5f")
 CREATED = datetime(2026, 11, 16, 16, 35, tzinfo=UTC)
@@ -99,6 +99,32 @@ def test_service_requires_workspace_read() -> None:
     with pytest.raises(AnalystReviewError) as error:
         asyncio.run(service.list_runs(nobody))
     assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize("role", [Role.OPERATOR, Role.ANALYST_REVIEWER])
+def test_workspace_analyst_payload_requires_workspace_wide_report_role(role: Role) -> None:
+    @asynccontextmanager
+    async def never(*_args: Any, **_kwargs: Any):  # pragma: no cover - không được gọi
+        raise AssertionError("Không được mở transaction cho role chỉ có quyền theo bot.")
+        yield
+
+    service = AnalystReviewService(None, unit_of_work=never)  # type: ignore[arg-type]
+    principal = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({role}), CREATED)
+
+    with pytest.raises(AnalystReviewError) as error:
+        asyncio.run(service.list_runs(principal))
+
+    assert error.value.status_code == 403
+
+
+def test_service_fails_closed_when_report_reader_is_unavailable() -> None:
+    service = AnalystReviewService(None)  # type: ignore[arg-type]
+    owner = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.OWNER}), CREATED)
+
+    with pytest.raises(AnalystReviewError) as error:
+        asyncio.run(service.list_runs(owner))
+
+    assert error.value.status_code == 503
 
 
 class _ReviewStub:
