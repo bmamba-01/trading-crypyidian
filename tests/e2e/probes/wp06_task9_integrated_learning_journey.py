@@ -264,14 +264,12 @@ def _seed_market_bars() -> dict[str, Any]:
         for symbol, instrument_id in instrument_ids.items():
             symbol_index = SYMBOLS.index(symbol)
             price_offset = float(symbol_index * 100)
-            # Nến khớp lưới khung thời gian như kline Binance thật: workspace còn nến backfill
-            # synthetic (khớp giờ) do phase `seed` ghi, producer trộn live+backfill theo
-            # open_time nên nến lệch lưới làm khoảng nến không chia hết cho interval. 1h dùng
-            # 260 nến để cửa sổ 256 nến của producer chỉ chứa nến journey; 4h trùng open_time
-            # với nến backfill và nguồn live được ưu tiên.
+            # Nến khớp lưới khung thời gian như kline Binance thật. Producer curriculum
+            # h01-v1 cần ema_200 warmup 3x = 600 nến và cửa sổ 768 nến (CRY-455); 260 nến
+            # cũ chỉ đủ cửa sổ 256 nên mọi feature QUALITY_NOT_READY → 0 quyết định.
             for timeframe, interval, count, breakout in (
-                ("1h", timedelta(hours=1), 260, True),
-                ("4h", timedelta(hours=4), 205, False),
+                ("1h", timedelta(hours=1), 800, True),
+                ("4h", timedelta(hours=4), 640, False),
             ):
                 epoch = datetime(1970, 1, 1, tzinfo=UTC)
                 # Lùi 5 giây để available_at (đóng + 1s) của nến cuối không vượt `now`.

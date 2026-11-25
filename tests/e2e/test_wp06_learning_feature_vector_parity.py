@@ -166,7 +166,7 @@ def _run_parity_compose(root: Path, resources: ComposeParityResources) -> None:
         assert runtime.pop("database_role") == "crypidian_market_signal_worker"
         assert replay.pop("database_role") == "crypidian_backtest_worker"
         assert runtime == replay
-        assert runtime["bar_counts"] == {"1h": 224, "4h": 206}
+        assert runtime["bar_counts"] == {"1h": 640, "4h": 640}
         assert runtime["feature_keys"] == [
             "1h:ema_20",
             "1h:ema_80",

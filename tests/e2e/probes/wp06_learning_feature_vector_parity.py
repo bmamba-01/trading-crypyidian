@@ -86,7 +86,8 @@ def _digest(value: object) -> str:
 
 
 def _request(timeframe: str) -> RestBackfillRequest:
-    hours, count = {"1h": (1, 224), "4h": (4, 206)}[timeframe]
+    # h01-v1 cần ema_200 với warmup 3x → 600 nến; 224/206 làm feature snapshot unusable.
+    hours, count = {"1h": (1, 640), "4h": (4, 640)}[timeframe]
     return RestBackfillRequest(
         symbol="BTCUSDT",
         interval=timeframe,
@@ -448,6 +449,9 @@ async def _main() -> dict[str, Any]:
                     strategy_release_id="h01-v1",
                     symbols=("BTCUSDT",),
                     effective_at=CUTOFF,
+                    # h01-v1 có ema_200: warmup 3x = 600 nến; default 256 làm feature
+                    # snapshot unusable (QUALITY_NOT_READY) ở runtime provider.
+                    max_bars_per_stream=1200,
                 ),
                 evaluated_at=CUTOFF,
             )
