@@ -13,6 +13,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-464 [OPS07F/Task6] Triển khai semantics equity, risk window & hard limits Live (chờ chữ ký Risk Owner thật)
+
+- **Đối chiếu WP-02 / WP-02D & semantics Live:**
+  - `wallet_balance` của Binance USDⓈ-M đã bao gồm realized PnL, phí và funding đã thanh toán nên `venue_equity = wallet_balance + unrealized_pnl` (tương đương `totalMarginBalance`), tuyệt đối không cộng trùng realized PnL.
+  - Phí và funding phát sinh trong kỳ (`fee_and_funding_today`, `fee_and_funding_rolling`) được cộng vào cửa sổ lỗ khi âm để chống ẩn lỗ phí/funding; cửa sổ ngày/trượt dùng `calculate_loss_windows` theo múi giờ và giờ reset đã ghim trong profile.
+  - Mọi lệnh/reservation `UNKNOWN` được cộng thẳng vào tổng exposure đang chiếm dụng và không bao giờ tự giải phóng sức chứa.
+  - Không có giá trị mặc định cho vốn, cap, leverage hay cửa sổ rủi ro: mọi ngưỡng phải được Owner và Risk Approver (2 người khác nhau theo maker-checker) cung cấp tường minh và ký.
+- **Thay đổi:**
+  - `src/trading_bot/domain/risk/live_risk_profile.py`: `SignedLiveRiskProfile` (version + SHA-256 `compute_hash()` + `sign_live_risk_profile_digest`), `VenueEquitySnapshot`, `LiveOrderRiskRequest`, `LiveRiskDecision`, `evaluate_live_risk_limits` (fail-closed cho pause/kill, thiếu/sai chữ ký, maker-checker, hết hạn, sai scope/hash, thiếu/cũ giá mark, vượt cap order/leverage/symbol/account/aggregate/daily/rolling), và `validate_live_risk_cap_change` (giảm cap hiệu lực ngay, tăng cap cần maker-checker).
+  - `src/trading_bot/adapters/database/repositories/live_risk_enforcement.py`: `AtomicLiveRiskEnforcementRepository.evaluate_and_reserve` dùng `SELECT ... FOR UPDATE` khóa hàng `trading_account` trên PostgreSQL, cộng đủ `RESERVED` + `UNKNOWN` trước khi cấp `risk_reservation`.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` & `uv run mypy` trên 2 source files + 2 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_live_risk_profile.py tests/unit/test_risk_windows.py tests/e2e/test_live_risk_reconciliation_e2e.py`: **11 passed in 15.45s** (gồm PostgreSQL Compose E2E chứng minh 2 concurrent reservation x 600 USDT với cap 1000 chỉ có đúng 1 request thắng, reservation `UNKNOWN` vẫn giữ nguyên sau rollback và tiếp tục chiếm 600 USDT capacity, giảm cap xuống 500 và bật pause từ chối ngay lập tức).
+- **Trạng thái & blocker còn mở (đúng điều kiện nghiệm thu CRY-464):**
+  - Toàn bộ hợp đồng code, công thức và atomic enforcement trên PostgreSQL đã hoàn tất và chạy đạt.
+  - Giữ ticket `CRY-464` ở `In Progress` (không tự điền ngưỡng/vốn mặc định và không mở Live) cho tới khi Risk Owner cung cấp và ký bộ ngưỡng production thật (`account_id`, `max_*`, `timezone_name`, `expires_at`).
+
 ### 2026-11-25 — CRY-463 [OPS07F/Task5] Done: Preflight chỉ đọc và đối soát trạng thái sàn
 
 - **Tài liệu Binance USDⓈ-M đã kiểm tra (2026-11-25):**

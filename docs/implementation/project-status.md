@@ -1,5 +1,9 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 25/11/2026 (OPS07F / CRY-463 & CRY-464):**
+- **25/11/2026 — CRY-463 `[OPS07F/Task5]` hoàn tất Done (commit `75ca5dee`):** Preflight chỉ đọc và đối soát trạng thái sàn (`live_preflight.py`, `live_preflight_service.py`, `SqlAlchemyPreflightIncidentRecorder`). Unit + PostgreSQL Compose E2E **16 passed/18.75s**; regression venue/readiness **78 passed/2.78s**. Live vẫn khóa.
+- **25/11/2026 — CRY-464 `[OPS07F/Task6]` hoàn tất code & E2E (giữ In Progress chờ chữ ký Risk Owner thật):** Semantics equity/window/hard limits Live có chữ ký maker-checker (`live_risk_profile.py`) và atomic PostgreSQL enforcement (`live_risk_enforcement.py`). Unit + PostgreSQL Compose E2E **11 passed/15.45s** (concurrent reservation, UNKNOWN rollback, giảm cap/pause tức thời). Không điền default vốn/ngưỡng; chờ Risk Owner ký cấu hình thật.
+
 **Cập nhật 25/11/2026 (CK-12 / CRY-231):**
 - **25/11/2026 — CRY-231 `[CK-12/con-lai]` hoàn tất Done:**
   1. *Lỗ ngày theo múi giờ cấu hình:* Bổ sung hàm `daily_window_start(as_of, policy)` trong `trading_bot.domain.risk.risk_windows`. Sử dụng múi giờ cấu hình rủi ro từ `loss_window_timezone` của workspace settings để tính toán chính xác mốc bắt đầu ngày tại địa phương và chuyển đổi chuẩn về UTC khi truy vấn closed trades. Tích hợp vào `BotReportingService._bot_protection` và `OperationalTelemetryRepository`.
@@ -375,3 +379,7 @@ Theo yêu cầu người dùng, `CRY-374` đã chuyển từ In Progress sang **
 ### CRY-81 [MI-7] — Hậu kiểm R theo nhãn AI — 25/11/2026
 
 Chuyển Backlog → In Progress → **Done** theo yêu cầu focus AI/đánh nhãn. `r_multiples_by_dimensions` (= PnL ròng / 1R đã duyệt) nhóm theo chiến lược × lý do vào × lý do thoát × chế độ lúc vào; trade thiếu 1R được đếm riêng, không gán R = 0. `reporting._candidate_explanation` đưa `context_regime`, `estimated_loss`, `risk_budget` vào `entry_reason` khi candidate có thật. Bảng hiển thị trên `/admin/reports` (`web_router.py`, `reports.html`). Kiểm chứng: unit CRY-81 6 passed; regression report/MT-1/admin **156 passed/10,15s**; Playwright desktop 1440×900 + mobile 390×844/360×780 **3 passed/8,33s**; ruff/mypy/diff-check đạt. Comment **#4854** (nhận) và **#4869** (chốt). Các ticket AI còn lại (CRY-236, CRY-178/180/181, CRY-330/332) vẫn chờ entitlement non-QA và quyết định owner — không dùng fixture để giả quyền thật.
+
+### Setup AI module / CRY-236 — warmup feature vector — 25/11/2026
+
+Rà soát "cần setup gì để chạy": nguyên nhân 10 unit đỏ là h01-v1 cần `ema_200` với warmup `3x = 600` nến nhưng fixture dùng 224/206 nến → `FeatureSnapshot.is_usable=false` → `QUALITY_NOT_READY: 1h:ema_20`. Đã sửa `tests/unit/test_learning_feature_vector.py` (640/640), `tests/e2e/probes/wp06_learning_feature_vector_parity.py` (640/640 + `BotDecisionContext.max_bars_per_stream=1200`, assertion bar_counts 640). Task9 probe tăng 1h 260→800, 4h 205→640 để khớp cửa sổ producer 768; producer tạo được 3 quyết định nhưng `status=ABSTAIN` (artifact chưa hiệu chuẩn) nên assertion CANDIDATE vẫn đỏ — blocker của CRY-330/332. Bằng chứng: unit learning **990 passed/12,35s**; E2E evaluator CLI **1 passed**, learning vector parity **1 passed/29,24s**, training process supervision **1 passed**. Tracker comments **#4878** (CRY-236), **#4879** (CRY-330).
