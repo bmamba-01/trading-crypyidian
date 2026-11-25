@@ -13,6 +13,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — Hoàn tất CRY-453 (`[WP-07B/retention-gap]`) & bổ sung kiểm chứng `CRY-313`
+
+- **Mục tiêu/phạm vi (`CRY-453`):**
+  1. Bổ sung retention 90 ngày cho 2 bảng cùng nhóm còn thiếu là `market_mark_price` (mốc `event_at`) và `market_open_interest` (mốc `observed_at`) qua migration `migrations/versions/d0e1f2a3b4c5_cry453_mark_price_oi_retention.py` (sole head `d0e1f2a3b4c5`): thêm `expires_at` (`NOT NULL`), backfill 90 ngày, index `(workspace_id, expires_at)`, dùng trigger `enforce_live_market_retention_immutability()`, cấp `GRANT DELETE` cho `crypidian_ingestion_worker`.
+  2. Cập nhật `MarketMarkPrice` & `MarketOpenInterest` (`market_entities.py`), `MarketDataRepository` (`append_open_interest`, `append_mark_price`, `_prune_versioned_table`, `prune_expired_live_market` dọn cả 5 bảng dưới RLS).
+  3. Gắn cơ chế tự dọn định kỳ `prune_interval = 1h` vào `FundingRateCollector.collect_once` & `prune_expired` (`src/trading_bot/application/funding_rate_collector.py`).
+- **Mục tiêu/phạm vi (`CRY-313` & `CRY-334` — rà soát & bổ sung kiểm thử + tách GAP):**
+  1. `CRY-313` (`WP-06C/no-entry`): bổ sung `test_v3_not_run_blocks_paper_gate_eligibility_even_when_metrics_pass` trong `tests/unit/test_learning_scorer_test_opportunity_proofs.py` (**153 passed in 34.79s**, `ruff`/`mypy` sạch). Tạo ticket GAP **`CRY-454`** cho gate dữ liệu `non-QA` và ngưỡng `1.000/100` mẫu thật; giữ `CRY-313` ở `In Progress`.
+  2. `CRY-334` (`WP-06/WP06.13-race-matrix`): cập nhật `test_wp06_paper_performance_scope_near_miss.py`, `test_wp06_shadow_drift_scope_near_miss.py`, `test_wp06_paper_performance_source_scope.py` kiểm tra sole head linh hoạt; bổ sung 2 kịch bản vào `test_wp06_replay_rights_races.py` & `wp06_replay_rights_race.py` (multi-scenario revoke giữa execution/persistence và policy shrink khi đang sử dụng). Unit **38 passed**; near-miss E2E **3 passed**; source-scope E2E **2 passed**. Phát hiện `test_wp06_replay_rights_races.py` lỗi ở bước seed `tests/fixtures/runtime_replay.py` (`1h:atr_14 QUALITY_NOT_READY`), tách thành ticket GAP **`CRY-455`**, và tách GAP entitlement `non-QA` thật thành **`CRY-456`**; giữ `CRY-334` ở `In Progress`.
+- **Kiểm chứng (`CRY-453`):**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent`: sạch 100%.
+  - Unit tests (`test_wp06_admin_web_least_privilege_migration.py` **13 passed**; `test_cry453_retention_gap.py`, `test_cry452_live_market_retention.py`, `test_live_market_events.py`, `test_sec33_audit_hash_chain.py`, `test_sig0_taker_flow.py` **35 passed in 5.32s**).
+  - Compose E2E PostgreSQL `tests/e2e/test_cry452_live_market_retention_e2e.py` (mở rộng phủ cả `market_mark_price` và `market_open_interest`): **1 passed in 75.78s**.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-25 — Hoàn tất CRY-452 (`WP-07B/retention`) & hợp nhất sole head `c9d0e1f2a3b4`
 
 - **Mục tiêu/phạm vi:**

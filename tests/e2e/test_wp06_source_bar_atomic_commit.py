@@ -52,7 +52,7 @@ def test_committed_decision_rejects_late_source_bar_append() -> None:
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "c9d0e1f2a3b4 (head)" in heads.stdout
+            assert "d0e1f2a3b4c5 (head)" in heads.stdout
 
             worker_secret = (
                 resources.compose_file.parent

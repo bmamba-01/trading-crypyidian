@@ -269,6 +269,117 @@ def test_replay_rights_scope_matrix_lock_races_and_retention_fail_closed() -> No
             },
         )
         assert retention["denied_token"] == "WP06_TRAINING_REPLAY_SCOPE_NOT_COVERED", retention
+
+        # 4) Multi-scenario revoke giữa execution/persistence: evaluation pass -> proof hold
+        #    gặp writer revoke -> cả candidate_test_proof và training đều bị từ chối.
+        multi_ws = str(uuid.uuid4())
+        bundle = seed(multi_ws)
+        eval_ok = run_json(
+            "learning-evaluator",
+            RACE_PROBE,
+            multi_ws,
+            {
+                "WP06_RACE_PHASE": "consumer-hold",
+                "WP06_RACE_OPERATION": "evaluation",
+                "WP06_RACE_HOLD_SECONDS": "0",
+                "WP06_RACE_BUNDLE_HASH": bundle,
+            },
+        )
+        assert eval_ok["authorized_receipts"] >= 1, eval_ok
+        proof_holder = spawn(
+            "candidate-proof-builder",
+            multi_ws,
+            {
+                "WP06_RACE_PHASE": "consumer-hold",
+                "WP06_RACE_OPERATION": "candidate_test_proof",
+                "WP06_RACE_BUNDLE_HASH": bundle,
+                "WP06_RACE_HOLD_SECONDS": "15",
+            },
+        )
+        wait_sentinel(proof_holder, "WP06_REPLAY_CONSUMER_LOCK_HELD")
+        multi_revoked = run_json(
+            "migrator", RACE_PROBE, multi_ws, {"WP06_RACE_PHASE": "writer-revoke"}
+        )
+        proof_held = finish(proof_holder)
+        assert proof_held["authorized_receipts"] >= 1
+        assert multi_revoked["revoked"] is True
+        assert multi_revoked["lock_wait_seconds"] >= 2.0, multi_revoked
+        for service, op_name in (
+            ("candidate-proof-builder", "candidate_test_proof"),
+            ("candidate-proof-builder", "training"),
+        ):
+            op_denied = run_json(
+                service,
+                RACE_PROBE,
+                multi_ws,
+                {
+                    "WP06_RACE_PHASE": "consumer-denied",
+                    "WP06_RACE_OPERATION": op_name,
+                    "WP06_RACE_BUNDLE_HASH": bundle,
+                },
+            )
+            assert op_denied["denied_token"] == "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED", (
+                op_name,
+                op_denied,
+            )
+        assert run_json(
+            "migrator",
+            RACE_PROBE,
+            multi_ws,
+            {"WP06_RACE_PHASE": "training-receipt-count"},
+        ) == {"training_receipt_count": 0}
+
+        # 5) Policy shrink khi quyền hợp lệ đang được sử dụng: writer chờ lock rồi thu hẹp
+        #    symbols -> các consumer sau đó bị từ chối SCOPE_NOT_COVERED, không ghi receipt.
+        shrink_ws = str(uuid.uuid4())
+        bundle = seed(shrink_ws)
+        shrink_holder = spawn(
+            "learning-evaluator",
+            shrink_ws,
+            {
+                "WP06_RACE_PHASE": "consumer-hold",
+                "WP06_RACE_OPERATION": "evaluation",
+                "WP06_RACE_BUNDLE_HASH": bundle,
+                "WP06_RACE_HOLD_SECONDS": "15",
+            },
+        )
+        wait_sentinel(shrink_holder, "WP06_REPLAY_CONSUMER_LOCK_HELD")
+        shrunk = run_json(
+            "migrator",
+            RACE_PROBE,
+            shrink_ws,
+            {
+                "WP06_RACE_PHASE": "relicense-scope-variant",
+                "WP06_RACE_SCOPE_VARIANT": "symbols",
+            },
+        )
+        assert finish(shrink_holder)["authorized_receipts"] >= 1
+        assert shrunk["scope_variant"] == "symbols"
+        assert shrunk["lock_wait_seconds"] >= 2.0, shrunk
+        for service, op_name in (
+            ("learning-evaluator", "evaluation"),
+            ("candidate-proof-builder", "training"),
+        ):
+            shrink_denied = run_json(
+                service,
+                RACE_PROBE,
+                shrink_ws,
+                {
+                    "WP06_RACE_PHASE": "consumer-denied",
+                    "WP06_RACE_OPERATION": op_name,
+                    "WP06_RACE_BUNDLE_HASH": bundle,
+                },
+            )
+            assert shrink_denied["denied_token"] == "WP06_TRAINING_REPLAY_SCOPE_NOT_COVERED", (
+                op_name,
+                shrink_denied,
+            )
+        assert run_json(
+            "migrator",
+            RACE_PROBE,
+            shrink_ws,
+            {"WP06_RACE_PHASE": "training-receipt-count"},
+        ) == {"training_receipt_count": 0}
     finally:
         compose("down", "--volumes", "--remove-orphans")
         if image_created:

@@ -297,6 +297,7 @@ class MarketOpenInterest(UuidPrimaryKey, CreatedAt, Base):
             "observed_at",
             "available_at",
         ),
+        Index("ix_market_open_interest_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -311,6 +312,7 @@ class MarketOpenInterest(UuidPrimaryKey, CreatedAt, Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class IngestionCursor(UuidPrimaryKey, CreatedAt, Base):
@@ -414,6 +416,7 @@ class MarketMarkPrice(UuidPrimaryKey, CreatedAt, Base):
             "event_at",
             "available_at",
         ),
+        Index("ix_market_mark_price_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -430,6 +433,7 @@ class MarketMarkPrice(UuidPrimaryKey, CreatedAt, Base):
     next_funding_time: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MarketLiquidation(UuidPrimaryKey, CreatedAt, Base):

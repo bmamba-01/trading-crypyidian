@@ -568,7 +568,9 @@ class MarketDataRepository:
         version: MarketRecordVersion,
         observed_at: datetime,
         quantity: Decimal,
+        retention: timedelta = DEFAULT_LIVE_MARKET_RETENTION,
     ) -> MarketAppendResult:
+        _require_aware(observed_at, "observed_at")
         return await self._append_point_record(
             model=MarketOpenInterest,
             workspace_id=workspace_id,
@@ -578,6 +580,7 @@ class MarketDataRepository:
             point_time=observed_at,
             value_field="quantity",
             value=quantity,
+            extra_fields={"expires_at": observed_at + retention},
         )
 
     async def append_mark_price(
@@ -588,6 +591,7 @@ class MarketDataRepository:
         source: str,
         idempotency_key: str,
         event: MarkPriceEvent,
+        retention: timedelta = DEFAULT_LIVE_MARKET_RETENTION,
     ) -> bool:
         """Append mẫu mark price; trùng idempotency key thì bỏ qua và trả False."""
         return await self._insert_event(
@@ -604,6 +608,7 @@ class MarketDataRepository:
             index_price=event.index_price,
             funding_rate=event.funding_rate,
             next_funding_time=event.next_funding_time,
+            expires_at=event.event_at + retention,
         )
 
     async def append_liquidation(
@@ -674,13 +679,38 @@ class MarketDataRepository:
             expires_at=event_at + retention,
         )
 
+    async def _prune_versioned_table(
+        self, model: Any, *, workspace_id: UUID, now: datetime
+    ) -> int:
+        """Xóa các bản ghi đã quá hạn trên bảng có FK tự tham chiếu ``supersedes_id``."""
+        total = 0
+        while True:
+            leaf_result = await self._session.execute(
+                delete(model).where(
+                    model.workspace_id == workspace_id,
+                    model.expires_at <= now,
+                    ~model.id.in_(
+                        select(model.supersedes_id).where(
+                            model.workspace_id == workspace_id,
+                            model.supersedes_id.is_not(None),
+                        )
+                    ),
+                )
+            )
+            batch = int(getattr(leaf_result, "rowcount", 0) or 0)
+            total += batch
+            if batch == 0:
+                break
+        return total
+
     async def prune_expired_live_market(
         self, *, workspace_id: UUID, now: datetime
     ) -> dict[str, int]:
-        """Xóa các bản ghi đã quá ``expires_at`` trong 3 bảng WP-07B dưới RLS workspace."""
+        """Xóa các bản ghi đã quá ``expires_at`` trong các bảng market live dưới RLS."""
         _require_aware(now, "now")
         deleted: dict[str, int] = {}
         for name, model in (
+            ("market_mark_price", MarketMarkPrice),
             ("market_liquidation", MarketLiquidation),
             ("market_trade_flow", MarketTradeFlow),
         ):
@@ -692,26 +722,13 @@ class MarketDataRepository:
             )
             deleted[name] = int(getattr(result, "rowcount", 0) or 0)
 
-        # market_funding có FK tự tham chiếu (workspace_id, supersedes_id): chỉ xóa lá đã hết hạn.
-        funding_total = 0
-        while True:
-            leaf_result = await self._session.execute(
-                delete(MarketFunding).where(
-                    MarketFunding.workspace_id == workspace_id,
-                    MarketFunding.expires_at <= now,
-                    ~MarketFunding.id.in_(
-                        select(MarketFunding.supersedes_id).where(
-                            MarketFunding.workspace_id == workspace_id,
-                            MarketFunding.supersedes_id.is_not(None),
-                        )
-                    ),
-                )
+        for name, versioned_model in (
+            ("market_funding", MarketFunding),
+            ("market_open_interest", MarketOpenInterest),
+        ):
+            deleted[name] = await self._prune_versioned_table(
+                versioned_model, workspace_id=workspace_id, now=now
             )
-            batch = int(getattr(leaf_result, "rowcount", 0) or 0)
-            funding_total += batch
-            if batch == 0:
-                break
-        deleted["market_funding"] = funding_total
         return deleted
 
     async def upsert_live_quote(

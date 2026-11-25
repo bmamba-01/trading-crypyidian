@@ -215,8 +215,10 @@ async def _relicense_scope_variant(sessions) -> dict[str, object]:
         if variant == "purpose"
         else {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
     )
+    lock_wait = 0.0
     for state in (SourcePolicyState.RIGHTS_PENDING, SourcePolicyState.VERIFIED):
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as unit:
+            started = time.monotonic()
             repository = SourceRegistryRepository(unit.session)
             entry = await repository.get_entry(workspace_id=WORKSPACE_ID, source_id=SOURCE_ID)
             assert entry is not None
@@ -249,6 +251,8 @@ async def _relicense_scope_variant(sessions) -> dict[str, object]:
                     revision=candidate.current,
                 )
             await repository.append_revision(workspace_id=WORKSPACE_ID, revision=candidate.current)
+            if state is SourcePolicyState.RIGHTS_PENDING:
+                lock_wait = time.monotonic() - started
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as unit:
             await SourceRegistryRepository(unit.session).finalize_policy(
                 workspace_id=WORKSPACE_ID,
@@ -256,7 +260,7 @@ async def _relicense_scope_variant(sessions) -> dict[str, object]:
                 policy_id=candidate.current.policy.policy_id,
             )
     await consume_rights_events(sessions, workspace_id=WORKSPACE_ID)
-    return {"scope_variant": variant}
+    return {"scope_variant": variant, "lock_wait_seconds": round(lock_wait, 3)}
 
 
 async def _training_receipt_count(sessions) -> dict[str, object]:

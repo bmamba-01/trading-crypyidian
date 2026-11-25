@@ -986,3 +986,265 @@ def test_c3_migrations_pin_full_function_definition_hashes_for_both_directions()
         module.downgrade()
         assert "pg_catalog.sha256" in "\n".join(statements)
         assert all(value in "\n".join(statements) for value in digest_values)
+
+
+def test_v3_not_run_blocks_paper_gate_eligibility_even_when_metrics_pass() -> None:
+    """Proof v3 có NOT_RUN phải giữ completeness=False và chặn PAPER_GATE dù metric đạt."""
+    from datetime import timedelta
+    from uuid import uuid5
+
+    from trading_bot.application.learning_cpu_trainer import (
+        LearningCpuArtifact,
+        LearningCpuClassModel,
+        LearningCpuValidationReport,
+    )
+    from trading_bot.application.learning_scorer_artifact import LearningScorerArtifact
+    from trading_bot.application.learning_scorer_evaluation import (
+        ScorerTestEvaluationPolicy,
+        ScorerTestEvaluationScope,
+        ScorerTestRow,
+        build_scorer_test_evaluation_report,
+    )
+    from trading_bot.domain.learning.resources import (
+        LearningResourceRequest,
+        assess_learning_resource_request,
+    )
+    from trading_bot.domain.learning.scoring_deployment import (
+        ScorerDeploymentMode,
+        ScorerDeploymentTarget,
+    )
+
+    request = LearningResourceRequest(
+        training_samples=3,
+        validation_samples=9,
+        feature_count=2,
+        max_steps=30,
+        max_runtime_seconds=30,
+        memory_limit_bytes=512 * 1024 * 1024,
+    )
+    base = LearningCpuArtifact(
+        schema_version="crypidian.learning.cpu-logistic.v1",
+        trainer_version="cpu-logistic-v1",
+        dependency_fingerprint="f" * 64,
+        feature_schema_hash="3" * 64,
+        attempt_content_hash="1" * 64,
+        split_policy_version="split-v3",
+        workspace_id=str(uuid4()),
+        attempt_id=str(uuid4()),
+        normalized_dataset_id=str(uuid4()),
+        manifest_hash="a" * 64,
+        fold_plan_hash="b" * 64,
+        fold_id="c" * 64,
+        approval_hash="d" * 64,
+        batch_hash="e" * 64,
+        seed=7,
+        resource_request=request,
+        resource_plan=assess_learning_resource_request(request),
+        feature_names=("momentum", "volatility"),
+        feature_means=(0.0, 0.0),
+        feature_scales=(1.0, 1.0),
+        models=(
+            LearningCpuClassModel(-1, 1.0, (-1.0, 0.0), 1),
+            LearningCpuClassModel(0, 0.0, (0.0, 0.0), 1),
+            LearningCpuClassModel(1, -1.0, (1.0, 0.0), 1),
+        ),
+        training_class_counts=((-1, 1), (0, 1), (1, 1)),
+        optimization_steps=3,
+        actual_operation_units=1,
+        validation_report=LearningCpuValidationReport(
+            sample_count=9,
+            accuracy=1.0,
+            majority_baseline_accuracy=1 / 3,
+            macro_recall=1.0,
+            log_loss=0.1,
+            majority_class=-1,
+            confusion_matrix=((3, 0, 0), (0, 3, 0), (0, 0, 3)),
+            class_support=((-1, 3), (0, 3), (1, 3)),
+        ),
+    )
+    scorer = LearningScorerArtifact(
+        schema_version="crypidian.learning.scorer-temperature.v2",
+        state="ready_for_evaluation",
+        reason_code=None,
+        workspace_id=base.workspace_id,
+        attempt_id=base.attempt_id,
+        normalized_dataset_id=base.normalized_dataset_id,
+        manifest_hash=base.manifest_hash,
+        fold_plan_hash=base.fold_plan_hash,
+        fold_id=base.fold_id,
+        approval_hash=base.approval_hash,
+        base_artifact_hash=base.artifact_hash,
+        strategy_release_id="h03-v1",
+        strategy_release_content_hash="6" * 64,
+        vector_schema_version="crypidian-learning-feature-vector-v1",
+        vector_schema_hash="3" * 64,
+        training_membership_digest="7" * 64,
+        validation_membership_digest="8" * 64,
+        training_sample_count=3,
+        validation_sample_count=9,
+        calibrator_method="temperature_scaling",
+        calibrator_version="temperature-scaling-bisection-v1",
+        calibration_policy_version="temperature-v1",
+        calibration_policy_hash="9" * 64,
+        temperature=1.0,
+        validation_class_support=((-1, 3), (0, 3), (1, 3)),
+        validation_nll_before=0.5,
+        validation_nll_after=0.3,
+        calibration_iterations=16,
+        trainer_version="cpu-logistic-v1",
+        trainer_code_version="wp06-scorer-artifact-v2",
+        dependency_fingerprint="f" * 64,
+    )
+    base_time = datetime(2026, 11, 1, tzinfo=UTC)
+    rows = tuple(
+        ScorerTestRow(
+            sample_id=f"test-v3-sample-{index}",
+            outcome_id=uuid5(UUID("00000000-0000-0000-0000-000000000001"), f"trade-v3-{index}"),
+            outcome_hash=hashlib.sha256(f"outcome:trade-v3-{index}".encode()).hexdigest(),
+            role="test",
+            sample_hash=hashlib.sha256(f"test-v3-sample-{index}".encode()).hexdigest(),
+            vector_hash=hashlib.sha256(f"vector:test-v3-sample-{index}".encode()).hexdigest(),
+            candidate_id_hash=hashlib.sha256(
+                f"candidate:test-v3-sample-{index}".encode()
+            ).hexdigest(),
+            features=(("momentum", float(label)), ("volatility", 0.5)),
+            label_value=label,
+            trade=EvaluationTrade(
+                trade_id=f"trade-v3-{index}",
+                opened_at=base_time + timedelta(minutes=index) - timedelta(seconds=30),
+                closed_at=base_time + timedelta(minutes=index),
+                gross_pnl=Decimal(label),
+                fees=Decimal("0.01"),
+                funding=Decimal("0"),
+                slippage=Decimal("0.01"),
+                exposure=Decimal("1"),
+            ),
+        )
+        for index, label in enumerate((-1, 0, 1))
+    )
+    members = [
+        {
+            "sample_id": row.sample_id,
+            "sample_hash": row.sample_hash,
+            "vector_hash": row.vector_hash,
+        }
+        for row in sorted(rows, key=lambda item: item.sample_id)
+    ]
+    membership_digest = hashlib.sha256(
+        json.dumps(members, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    evaluation_run_id = uuid4()
+    bundle_hash = "9" * 64
+    source_scope_hash = "2" * 64
+    candidate_entries = tuple(
+        ScorerTestOpportunityEntry(
+            stable_id_hash=hashlib.sha256(f"event:{row.sample_id}".encode()).hexdigest(),
+            status="candidate",
+            candidate_id_hash=row.candidate_id_hash,
+            outcome_id_hash=hashlib.sha256(str(row.outcome_id).encode()).hexdigest(),
+            outcome_hash=row.outcome_hash,
+            sample_id_hash=hashlib.sha256(row.sample_id.encode()).hexdigest(),
+            sample_hash=row.sample_hash,
+            vector_hash=row.vector_hash,
+        )
+        for row in rows
+    )
+    not_run_entry = ScorerTestOpportunityEntry(
+        stable_id_hash=hashlib.sha256(b"event:not-run").hexdigest(),
+        status="not_run",
+        candidate_id_hash=None,
+        vector_hash=hashlib.sha256(b"vector:not-run").hexdigest(),
+        reason_code="SETTINGS_NOT_EFFECTIVE",
+    )
+    proof = ScorerTestOpportunityProof(
+        record_id=uuid4(),
+        workspace_id=UUID(base.workspace_id),
+        evaluation_run_id=evaluation_run_id,
+        attempt_id=UUID(base.attempt_id),
+        normalized_dataset_id=UUID(base.normalized_dataset_id),
+        manifest_hash=base.manifest_hash,
+        fold_plan_hash=base.fold_plan_hash,
+        fold_id=base.fold_id,
+        approval_hash=base.approval_hash,
+        bundle_hash=bundle_hash,
+        vector_schema_version="crypidian-learning-feature-vector-v1",
+        vector_schema_hash="3" * 64,
+        test_membership_digest=membership_digest,
+        source_scope_hash=source_scope_hash,
+        expected_opportunity_count=4,
+        source_gap_count=0,
+        membership_mismatch_count=0,
+        unlabeled_candidate_count=0,
+        entries=tuple(
+            sorted((*candidate_entries, not_run_entry), key=lambda entry: entry.stable_id_hash)
+        ),
+        proof_schema_version="v3",
+    )
+    assert proof.not_run_count == 1
+    assert proof.completeness_verified is False
+
+    scope = ScorerTestEvaluationScope(
+        workspace_id=UUID(base.workspace_id),
+        evaluation_run_id=evaluation_run_id,
+        attempt_id=UUID(base.attempt_id),
+        normalized_dataset_id=UUID(base.normalized_dataset_id),
+        manifest_hash=base.manifest_hash,
+        fold_plan_hash=base.fold_plan_hash,
+        fold_id=base.fold_id,
+        approval_hash=base.approval_hash,
+        vector_schema_version="crypidian-learning-feature-vector-v1",
+        vector_schema_hash="3" * 64,
+        test_membership_digest=membership_digest,
+        bundle_hash=bundle_hash,
+        source_scope_hash=source_scope_hash,
+        opportunity_proof=proof,
+    )
+    policy = ScorerTestEvaluationPolicy(
+        policy_version="wp06-scorer-oos-v1",
+        minimum_sample_count=3,
+        minimum_class_support=1,
+        maximum_calibration_error=1.0,
+        maximum_log_loss_regression=100.0,
+        maximum_brier_regression=100.0,
+        minimum_coverage=0.0,
+        minimum_candidate_retention=0.0,
+        maximum_false_veto_rate=1.0,
+        approve_probability_threshold=0.0,
+        minimum_confidence=0.0,
+        reliability_bin_count=3,
+        maximum_standardized_feature_deviation=6.0,
+        runtime_inference_timeout_ms=100,
+    )
+    report = build_scorer_test_evaluation_report(
+        scope=scope,
+        scorer_artifact=scorer,
+        base_artifact=base,
+        policy=policy,
+        rows=rows,
+    )
+
+    assert report.status == "ACCEPTED_SHADOW_ONLY"
+    assert report.candidate_completeness_verified is False
+    assert report.scored_candidate_coverage_verified is True
+
+    target = ScorerDeploymentTarget(
+        registry_id=uuid4(),
+        registry_revision=1,
+        active_pointer_version=0,
+        scorer_artifact_id=uuid4(),
+        scorer_artifact_hash=scorer.artifact_hash,
+        evaluation_report_id=uuid4(),
+        evaluation_report_hash=report.report_hash,
+        evaluation_status=report.status,
+        proof_id=proof.record_id,
+        proof_hash=proof.content_hash,
+        candidate_completeness_verified=report.candidate_completeness_verified,
+        report_scope_hash=report.source_scope_hash,
+        proof_scope_hash=proof.source_scope_hash,
+        policy_id=policy.policy_version,
+        policy_hash=policy.policy_hash,
+        current_rights_receipt_hash="a" * 64,
+    )
+    target.require_mode(ScorerDeploymentMode.SHADOW)
+    with pytest.raises(ValueError, match="PAPER_GATE"):
+        target.require_mode(ScorerDeploymentMode.PAPER_GATE)

@@ -117,6 +117,7 @@ class FundingRateCollector:
         market_data: FundingMarketData,
         session_scope: Callable[[], Any],
         lookback: timedelta = DEFAULT_LOOKBACK,
+        prune_interval: timedelta = timedelta(hours=1),
     ) -> None:
         if type(workspace_id) is not UUID:
             raise ValueError("workspace_id phải là UUID.")
@@ -125,26 +126,47 @@ class FundingRateCollector:
             raise ValueError("Collector funding cần ít nhất một symbol.")
         if not timedelta(hours=1) <= lookback <= timedelta(days=30):
             raise ValueError("lookback funding phải trong 1 giờ..30 ngày.")
+        if prune_interval <= timedelta(0):
+            raise ValueError("prune_interval phải dương.")
         self._workspace_id = workspace_id
         self._symbols = unique
         self._market_data = market_data
         self._session_scope = session_scope
         self._lookback = lookback
+        self._prune_interval = prune_interval
+        self._last_pruned_at: datetime | None = None
 
     @property
     def symbols(self) -> tuple[str, ...]:
         return self._symbols
 
+    async def prune_expired(self, *, now: datetime) -> dict[str, int]:
+        """Dọn các bản ghi hết hạn dưới RLS workspace khi đến chu kỳ."""
+        instant = now.astimezone(UTC)
+        async with self._session_scope() as session:
+            prune_fn = getattr(session.market, "prune_expired_live_market", None)
+            if not callable(prune_fn):
+                return {}
+            deleted = await prune_fn(workspace_id=self._workspace_id, now=instant)
+            self._last_pruned_at = instant
+            return dict(deleted)
+
     async def collect_once(self, now: datetime) -> FundingTick:
+        instant = now.astimezone(UTC)
         results: list[FundingSymbolResult] = []
         for symbol in self._symbols:
             try:
-                results.append(await self._collect_symbol(symbol, now.astimezone(UTC)))
+                results.append(await self._collect_symbol(symbol, instant))
             except PermissionError as error:
                 results.append(FundingSymbolResult(symbol, "rights_denied", detail=str(error)))
             except Exception as error:  # noqa: BLE001 - cô lập lỗi theo symbol
                 logger.warning("funding collector lỗi %s: %s", symbol, type(error).__name__)
                 results.append(FundingSymbolResult(symbol, "error", detail=type(error).__name__))
+        if self._last_pruned_at is None or instant - self._last_pruned_at >= self._prune_interval:
+            try:
+                await self.prune_expired(now=instant)
+            except Exception as error:  # noqa: BLE001 - dọn retention không chặn thu funding
+                logger.warning("funding collector prune lỗi: %s", type(error).__name__)
         return FundingTick(tuple(results))
 
     async def _collect_symbol(self, symbol: str, now: datetime) -> FundingSymbolResult:

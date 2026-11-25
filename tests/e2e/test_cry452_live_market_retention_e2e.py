@@ -142,19 +142,44 @@ def test_live_market_retention_backfill_trigger_and_rls_prune() -> None:
                      now() - interval '1 day', now() - interval '1 day',
                      now() - interval '1 day', now() - interval '1 day', 60,
                      1, 2, 90000, 180000, 3, 4, 6, true, now());
+
+                INSERT INTO market_mark_price (
+                    id, workspace_id, instrument_id, source, idempotency_key, checksum,
+                    event_at, received_at, available_at, mark_price, index_price, created_at
+                ) VALUES
+                    ('{uuid.uuid4()}', '{ws1}', '{inst1}', 'binance_usdm_ws', 'mp-old', 'h8',
+                     now() - interval '95 days', now() - interval '95 days',
+                     now() - interval '95 days', 90000, 89990, now()),
+                    ('{uuid.uuid4()}', '{ws1}', '{inst1}', 'binance_usdm_ws', 'mp-fresh', 'h9',
+                     now() - interval '1 day', now() - interval '1 day',
+                     now() - interval '1 day', 90000, 89990, now());
+
+                INSERT INTO market_open_interest (
+                    id, workspace_id, instrument_id, source, idempotency_key, revision,
+                    checksum, observed_at, event_at, received_at, available_at,
+                    quantity, created_at
+                ) VALUES
+                    ('{uuid.uuid4()}', '{ws1}', '{inst1}', 'binance_usdm_rest', 'oi-old', 1,
+                     'h10', now() - interval '95 days', now() - interval '95 days',
+                     now() - interval '95 days', now() - interval '95 days', 1000, now()),
+                    ('{uuid.uuid4()}', '{ws1}', '{inst1}', 'binance_usdm_rest', 'oi-fresh', 1,
+                     'h11', now() - interval '1 day', now() - interval '1 day',
+                     now() - interval '1 day', now() - interval '1 day', 1000, now());
                 """
             )
 
-            # Chạy CRY-452 lên head (c9d0e1f2a3b4).
+            # Chạy CRY-452 + CRY-453 lên head (d0e1f2a3b4c5).
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-            assert "c9d0e1f2a3b4 (head)" in heads
+            assert "d0e1f2a3b4c5 (head)" in heads
 
             # Kiểm tra backfill: không còn NULL expires_at.
             nulls = psql(
                 "SELECT (SELECT count(*) FROM market_funding WHERE expires_at IS NULL) + "
                 "(SELECT count(*) FROM market_liquidation WHERE expires_at IS NULL) + "
-                "(SELECT count(*) FROM market_trade_flow WHERE expires_at IS NULL)"
+                "(SELECT count(*) FROM market_trade_flow WHERE expires_at IS NULL) + "
+                "(SELECT count(*) FROM market_mark_price WHERE expires_at IS NULL) + "
+                "(SELECT count(*) FROM market_open_interest WHERE expires_at IS NULL)"
             ).stdout.strip()
             assert nulls == "0"
 
@@ -166,6 +191,11 @@ def test_live_market_retention_backfill_trigger_and_rls_prune() -> None:
                 expect_error=True,
             )
             assert del_fresh.returncode != 0
+            del_fresh_mp = psql(
+                "DELETE FROM market_mark_price WHERE idempotency_key = 'mp-fresh'",
+                expect_error=True,
+            )
+            assert del_fresh_mp.returncode != 0
 
             # Role crypidian_ingestion_worker dưới RLS chỉ xóa được bản ghi hết hạn của ws1.
             psql(
@@ -176,6 +206,8 @@ def test_live_market_retention_backfill_trigger_and_rls_prune() -> None:
                 DELETE FROM market_funding WHERE expires_at <= now();
                 DELETE FROM market_liquidation WHERE expires_at <= now();
                 DELETE FROM market_trade_flow WHERE expires_at <= now();
+                DELETE FROM market_mark_price WHERE expires_at <= now();
+                DELETE FROM market_open_interest WHERE expires_at <= now();
                 COMMIT;
                 """
             )
@@ -185,9 +217,11 @@ def test_live_market_retention_backfill_trigger_and_rls_prune() -> None:
                 f"(SELECT count(*) FROM market_funding WHERE workspace_id = '{ws1}'), "
                 f"(SELECT count(*) FROM market_funding WHERE workspace_id = '{ws2}'), "
                 f"(SELECT count(*) FROM market_liquidation WHERE workspace_id = '{ws1}'), "
-                f"(SELECT count(*) FROM market_trade_flow WHERE workspace_id = '{ws1}')"
+                f"(SELECT count(*) FROM market_trade_flow WHERE workspace_id = '{ws1}'), "
+                f"(SELECT count(*) FROM market_mark_price WHERE workspace_id = '{ws1}'), "
+                f"(SELECT count(*) FROM market_open_interest WHERE workspace_id = '{ws1}')"
             ).stdout.strip()
-            assert counts == "1|1|1|1", counts
+            assert counts == "1|1|1|1|1|1", counts
         finally:
             compose("down", "--volumes", "--remove-orphans")
             if image_created:
