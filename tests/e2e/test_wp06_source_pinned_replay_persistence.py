@@ -175,7 +175,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
         result = json.loads(probe.stdout.strip().splitlines()[-1])
         if scorer_test:
             assert result["qa_provider"] == "CRYPIDIAN_FIRST_PARTY_QA"
-            assert result["bars"] == 470
+            assert result["bars"] == 890
             assert result["linked_outcomes"] == 27
             assert result["opportunities"] == 270
             assert result["test_candidate_count"] == 9
@@ -264,7 +264,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
         )
         result |= json.loads(proof.stdout.strip().splitlines()[-1])
         assert result == {
-            "bars": 206,
+            "bars": 626,
             "base_opportunity_complete": True,
             "bundle_round_trip": True,
             "closed_trades": 2,

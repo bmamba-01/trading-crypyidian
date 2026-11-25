@@ -226,6 +226,23 @@ def test_settings_load_mode_from_local_environment_file(
     assert AppSettings().trading_mode == "DEMO"
 
 
+def test_settings_ignore_non_prefixed_compose_keys_in_dotenv_but_forbid_unknown_prefixed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TRADING_BOT_TRADING_MODE", raising=False)
+    (tmp_path / ".env").write_text(
+        "CRYPIDIAN_APP_IMAGE=crypidian-app:codex-realtime\nTRADING_BOT_TRADING_MODE=DEMO\n",
+        encoding="utf-8",
+    )
+
+    assert AppSettings().trading_mode == "DEMO"
+
+    with pytest.raises(ValidationError):
+        AppSettings(unknown_field="unexpected")  # type: ignore[call-arg]
+
+
 def test_backtest_worker_uses_dedicated_replay_writer_credentials() -> None:
     workspace_id = UUID("44444444-4444-4444-8444-444444444444")
     settings = AppSettings(

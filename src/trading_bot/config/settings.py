@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 if TYPE_CHECKING:
     from trading_bot.application.learning_scorer_evaluation import (
@@ -43,6 +43,44 @@ def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+class _PrefixedDotEnvSettingsSource(PydanticBaseSettingsSource):
+    """Chỉ nạp các biến có prefix ``TRADING_BOT_`` từ tệp ``.env``.
+
+    Tệp ``.env`` ở gốc repo dùng chung cho Docker Compose (ví dụ ``CRYPIDIAN_APP_IMAGE``),
+    nên cần bỏ qua các khóa ngoài prefix thay vì nới lỏng ``extra="forbid"``.
+    """
+
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        source: PydanticBaseSettingsSource,
+        *,
+        prefix: str = "TRADING_BOT_",
+    ) -> None:
+        super().__init__(settings_cls)
+        self._source = source
+        self._prefix = prefix.lower()
+
+    def get_field_value(self, field: object, field_name: str) -> tuple[object, str, bool]:
+        return self._source.get_field_value(field, field_name)  # type: ignore[arg-type]
+
+    def __call__(self) -> dict[str, object]:
+        data = dict(self._source())
+        raw_env_vars = getattr(self._source, "env_vars", None)
+        if not isinstance(raw_env_vars, dict):
+            return data
+        prefixed_keys = {
+            str(key).lower().removeprefix(self._prefix)
+            for key in raw_env_vars
+            if str(key).lower().startswith(self._prefix)
+        }
+        return {
+            key: value
+            for key, value in data.items()
+            if key in self.settings_cls.model_fields or key.lower() in prefixed_keys
+        }
+
+
 class AppSettings(BaseSettings):
     """Cấu hình an toàn cho lần khởi động đầu tiên của ứng dụng."""
 
@@ -52,6 +90,23 @@ class AppSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Lọc ``dotenv_settings`` theo prefix để không vướng biến Compose trong ``.env``."""
+        return (
+            init_settings,
+            env_settings,
+            _PrefixedDotEnvSettingsSource(settings_cls, dotenv_settings),
+            file_secret_settings,
+        )
 
     app_env: Literal["local", "test", "production"] = "local"
     trading_mode: TradingMode = "PAPER"

@@ -49,8 +49,8 @@ from trading_bot.domain.risk.planner import (
 
 RELEASE_ID = "h18-v1"
 DAY = datetime(2026, 11, 2, tzinfo=UTC)
-# Bộ tính đặc trưng chung đòi đủ warmup mọi đặc trưng (EMA200) → cần ≥ 200 nến M5 trước quyết định.
-START = DAY - timedelta(hours=12)
+# Bộ tính đặc trưng chung đòi đủ warmup mọi đặc trưng (EMA200 × 3 = 600 nến M5 theo CRY-445).
+START = DAY - timedelta(hours=48)
 EVALUATION_START = DAY + timedelta(hours=9, minutes=30)
 RANGE_END = DAY + timedelta(hours=11)
 # Quyết định owner #4: VIP0 taker 0,05% hai chiều.

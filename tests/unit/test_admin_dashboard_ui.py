@@ -281,11 +281,17 @@ def test_dashboard_renders_live_status_bar_and_pulse_elements() -> None:
     assert 'id="kpi-workspace-revision"' in html
     assert 'id="workspace-release-revision"' in html
 
-    # Không sử dụng CDN ngoài
-    assert "cdn." not in html
-    assert "cdnjs." not in html
-    assert "unpkg." not in html
-    assert "jsdelivr." not in html
+    # Không sử dụng CDN ngoài (loại bỏ khối JSON giải thích tiếng Việt vì `\u1ecdn.` chứa `cdn.`).
+    html_without_json_scripts = re.sub(
+        r'<script\b[^>]*type="application/json"[^>]*>.*?</script>',
+        "",
+        html,
+        flags=re.DOTALL,
+    )
+    assert "cdn." not in html_without_json_scripts
+    assert "cdnjs." not in html_without_json_scripts
+    assert "unpkg." not in html_without_json_scripts
+    assert "jsdelivr." not in html_without_json_scripts
 
     # Script polling nằm ở tệp tĩnh cùng origin để CSP `default-src 'self'` không chặn.
     assert '<script src="/static/dashboard-realtime.js" defer></script>' in html
