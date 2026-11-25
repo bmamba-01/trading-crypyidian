@@ -562,3 +562,15 @@
 .mc-monitor--breached { border-color: var(--danger, #dc2626); background: var(--danger-bg, #fee2e2); }
 .mc-monitor--unknown dd { opacity: 0.7; }
 .mc-setup__links { margin: 0; font-size: 0.8rem; }
+
+/* ---------- CK-7 bổ sung: kéo chuột giữa & link phân tích / Microscope ---------- */
+.mc-canvas.is-middle-panning { cursor: grabbing; }
+.mc-bar-analysis__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+}
+.mc-bar-analysis__links a { font-weight: 600; }
+.sc-head__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }

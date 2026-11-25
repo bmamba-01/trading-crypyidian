@@ -66,6 +66,20 @@
   // ---- Vị thế PAPER: cập nhật theo overview (2 giây) ----
   const positionsBody = dock.querySelector("[data-dock-positions]");
   const positionsCount = dock.querySelector('[data-dock-count="positions"]');
+  const fmtPositionTargets = (p) => {
+    if (!Array.isArray(p.targets) || p.targets.length === 0) return fmtNumber(p.target);
+    return p.targets
+      .map((t) => {
+        const idx = t.index || 1;
+        if (t.hit) return `TP${idx} ✓ (${fmtNumber(t.price)})`;
+        const pct =
+          typeof t.close_fraction === "number"
+            ? ` (${fmtNumber(Math.round(t.close_fraction * 1000) / 10, 1)}%)`
+            : "";
+        return `TP${idx} ${fmtNumber(t.price)}${pct}`;
+      })
+      .join(" · ");
+  };
   const renderPositions = (positions) => {
     if (positionsCount) positionsCount.textContent = String(positions.length);
     if (!positionsBody) return;
@@ -82,7 +96,7 @@
           cell(fmtNumber(p.entry_price)),
           cell(fmtNumber(p.quantity, 6)),
           cell(fmtNumber(p.stop)),
-          cell(fmtNumber(p.target)),
+          cell(fmtPositionTargets(p)),
           cell(`${fmtNumber(p.mark_price)} (${p.mark_source || "—"})`),
           cell(`${p.upnl === null ? "—" : `${p.upnl >= 0 ? "+" : ""}${fmtNumber(p.upnl)} ${p.quote_asset || ""}`}`, tone),
           cell(p.r_multiple === null ? "—" : `${fmtNumber(p.r_multiple)}R`, tone),

@@ -349,6 +349,39 @@ class _Reporting:
                     "initial_stop": last_close - Decimal("4"),
                     "current_stop": None,
                     "target": last_close + Decimal("3"),
+                    "exit_fills": [
+                        {
+                            "price": last_close + Decimal("1"),
+                            "quantity": Decimal("0.5"),
+                            "fee": Decimal("0.02"),
+                            "occurred_at": OVERVIEW_NOW - timedelta(minutes=15),
+                            "fill_key": "exit:paper-1:bar1:TP1",
+                            "exit_reason": "TAKE_PROFIT_1",
+                        }
+                    ],
+                    "targets": [
+                        {
+                            "index": 1,
+                            "price": str(last_close + Decimal("1")),
+                            "fraction": "0.5",
+                            "r_multiple": "1",
+                            "stop_to_entry_after": True,
+                        },
+                        {
+                            "index": 2,
+                            "price": str(last_close + Decimal("3")),
+                            "fraction": "0.3",
+                            "r_multiple": "2",
+                            "stop_to_entry_after": False,
+                        },
+                        {
+                            "index": 3,
+                            "price": str(last_close + Decimal("5")),
+                            "fraction": "0.2",
+                            "r_multiple": "3",
+                            "stop_to_entry_after": False,
+                        },
+                    ],
                 }
             ]
             if has_bars
@@ -633,7 +666,8 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         )
         (position,) = overview_json["positions"]
         assert position["mark_source"] == "mark"
-        assert position["upnl"] == pytest.approx(1.5 * 2)  # mark = giá đóng cuối, vào thấp 1,5
+        # Khối lượng mở còn lại = 2 - 0,5 = 1,5 sau khi TP1 khớp một phần; UPnL = 1,5 × 1,5.
+        assert position["upnl"] == pytest.approx(1.5 * 1.5)
         assert position["r_multiple"] == pytest.approx(1.5 / 2.5)  # rủi ro/đơn vị = 2,5
         expect(page.locator('[data-layer="paper"]')).to_be_checked()
         chart = page.locator("#market-chart")
@@ -902,6 +936,90 @@ def test_chart_stream_heartbeat_and_decision_log_pagination(server_url: str) -> 
         more.click()
         expect(dock.locator("[data-dock-decisions]")).to_contain_text("Ra tín hiệu MUA")
         expect(more).to_be_hidden()
+        browser.close()
+
+
+def test_ck7_tp_ladder_microscope_links_and_middle_drag(server_url: str) -> None:
+    """CRY-225: vẽ thang TP1–3 kèm trạng thái đã chạm, link phân tích/Microscope, kéo chuột giữa."""
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        watch_browser_violations(page)
+        _login(page, server_url)
+        page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+
+        expect(page.locator("#market-chart canvas").first).to_be_visible()
+
+        # 1. Thang TP1–3 trên vị thế PAPER: TP1 đã chạm, TP2/TP3 chưa chạm (chart + dock).
+        lines = page.evaluate("() => window.CrypidianChart.positionLines()")
+        titles = [item["title"] for item in lines]
+        assert "TP1 ✓ (đã chạm)" in titles, titles
+        assert "TP2 (30%)" in titles, titles
+        assert "TP3 (20%)" in titles, titles
+        dock_positions = page.locator("[data-dock-positions]")
+        expect(dock_positions).to_contain_text("TP1 ✓")
+        expect(dock_positions).to_contain_text("TP2")
+        expect(dock_positions).to_contain_text("TP3")
+
+        # Chuyển chế độ tối/sáng không lỗi JS/CSP và vẫn giữ đủ đường TP1–3.
+        for theme in ("dark", "light"):
+            page.evaluate(
+                "(mode) => document.documentElement.setAttribute('data-theme', mode)", theme
+            )
+            page.wait_for_timeout(150)
+            theme_titles = [
+                item["title"]
+                for item in page.evaluate("() => window.CrypidianChart.positionLines()")
+            ]
+            assert "TP1 ✓ (đã chạm)" in theme_titles
+            assert "TP2 (30%)" in theme_titles
+            assert "TP3 (20%)" in theme_titles
+
+        # 2. Link phân tích / Microscope cho bot (không chỉ Strategy Card):
+        #    Signal Card, Entry Board, và panel "Phân tích tại nến" khi chuột phải.
+        signal_link = page.locator("[data-signal-analysis-link]")
+        expect(signal_link).to_be_visible()
+        expect(signal_link).to_have_attribute(
+            "href", re.compile(rf"/admin/reports\?bot_id={BOT_ID}")
+        )
+
+        chart = page.locator("#market-chart")
+        box = chart.bounding_box()
+        assert box is not None
+        chart.click(button="right", position={"x": box["width"] * 0.6, "y": box["height"] / 2})
+        analysis = page.locator("#mc-bar-analysis")
+        expect(analysis).to_be_visible()
+        bar_link = analysis.locator('[data-bar-analysis-link="reports"]')
+        expect(bar_link).to_be_visible()
+        expect(bar_link).to_have_attribute(
+            "href",
+            re.compile(rf"/admin/reports\?bot_id={BOT_ID}.*symbol=BTCUSDT.*timeframe=5m"),
+        )
+        expect(analysis.locator('[data-bar-analysis-link="bot"]')).to_have_attribute(
+            "href", f"/admin/bots/{BOT_ID}"
+        )
+        page.locator("[data-bar-analysis-close]").click()
+
+        # 3. Kéo chart bằng chuột giữa (button === 1): cập nhật vùng thời gian, không lỗi JS/CSP.
+        chart.scroll_into_view_if_needed()
+        box = chart.bounding_box()
+        assert box is not None
+        before = page.evaluate("() => window.CrypidianChart.visibleLogicalRange()")
+        assert before is not None
+        start_x = box["x"] + box["width"] * 0.4
+        start_y = box["y"] + box["height"] * 0.5
+        page.mouse.move(start_x, start_y)
+        page.mouse.down(button="middle")
+        page.mouse.move(start_x + 150, start_y, steps=8)
+        page.mouse.up(button="middle")
+        after = page.evaluate("() => window.CrypidianChart.visibleLogicalRange()")
+        assert after is not None
+        assert after["from"] < before["from"] - 5, (before, after)
+        assert after["to"] < before["to"] - 5, (before, after)
+        expect(chart).not_to_have_class(re.compile(r"is-middle-panning"))
+
+        context.close()
         browser.close()
 
 

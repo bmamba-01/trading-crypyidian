@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, cast
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote, urlencode
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -3743,6 +3743,13 @@ async def market_chart_page(
                 # CK-12: trạng thái vận hành từng bot (cùng nguồn với trang chi tiết bot).
                 for item in setups:
                     item["runtime"] = await _runtime_status(request, identity, UUID(item["bot_id"]))
+                    item["analysis_link"] = _bot_analysis_links(
+                        bot_id=item["bot_id"],
+                        symbol=selected_symbol,
+                        timeframe=timeframe,
+                        strategy_id=item.get("strategy_id"),
+                        strategy_release_id=item.get("strategy_release_id"),
+                    )
                 # CK-10: cột phân tích — nhận định, mức giá, lịch, thống kê lệnh đã đóng.
                 insights = {
                     "narrative": market_narrative(payload or {}, overview),
@@ -3785,6 +3792,22 @@ async def market_chart_page(
             "timeframes": list(MARKET_CHART_INTERVAL_SECONDS),
             "chart_payload": payload,
             "signal_view": signal_view,
+            "signal_analysis_link": (
+                _bot_analysis_links(
+                    bot_id=selected.id,
+                    symbol=selected_symbol,
+                    timeframe=timeframe,
+                    strategy_id=((signal_view or {}).get("card") or {}).get("strategy_id"),
+                    strategy_release_id=(
+                        ((signal_view or {}).get("card") or {}).get("strategy_release_id")
+                        or ((signal_view or {}).get("latest_decision") or {}).get(
+                            "strategy_release_id"
+                        )
+                    ),
+                )
+                if selected is not None
+                else None
+            ),
             "overview": overview,
             "setups": setups,
             "insights": insights,
@@ -3914,6 +3937,82 @@ async def market_overview_api(
     return {"status": "ok"} | overview
 
 
+def _resolve_strategy_card_id(
+    strategy_id: str | None = None,
+    strategy_release_id: str | None = None,
+) -> str | None:
+    """Tìm mã Strategy Card tương ứng nếu bot hoặc quyết định đang dùng Strategy Card."""
+    from trading_bot.application.strategy_catalog import PRODUCT_CARD_IDS
+
+    candidates = [
+        str(value).strip()
+        for value in (strategy_id, strategy_release_id)
+        if value is not None and str(value).strip()
+    ]
+    for candidate in candidates:
+        if candidate in PRODUCT_CARD_IDS:
+            return candidate
+        for card_id in PRODUCT_CARD_IDS:
+            if candidate.startswith(f"{card_id}-") or candidate.startswith(f"{card_id}:"):
+                return card_id
+    return None
+
+
+def _bot_analysis_links(
+    *,
+    bot_id: UUID | str,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    strategy_id: str | None = None,
+    strategy_release_id: str | None = None,
+    bar_time: int | None = None,
+) -> dict[str, Any]:
+    """Dựng link phân tích / Microscope cho bot (hỗ trợ cả Strategy Card lẫn rule/release khác)."""
+    bot_id_str = str(bot_id)
+    card_id = _resolve_strategy_card_id(strategy_id, strategy_release_id)
+    release = (strategy_release_id or strategy_id or "").strip() or None
+
+    report_params: dict[str, str] = {"bot_id": bot_id_str}
+    if symbol:
+        report_params["symbol"] = symbol
+    if timeframe:
+        report_params["timeframe"] = timeframe
+    if release:
+        report_params["strategy"] = release
+    reports_url = f"/admin/reports?{urlencode(report_params)}"
+    bot_url = f"/admin/bots/{bot_id_str}"
+
+    if card_id is not None:
+        ms_params: dict[str, str] = {"bot_id": bot_id_str}
+        if symbol:
+            ms_params["symbol"] = symbol
+        if timeframe:
+            ms_params["timeframe"] = timeframe
+        if release:
+            ms_params["release_id"] = release
+        if bar_time is not None:
+            ms_params["bar_time"] = str(bar_time)
+        primary_url = (
+            f"/admin/strategy-cards/{quote(card_id, safe='')}/microscope?{urlencode(ms_params)}"
+        )
+        primary_label = "Mở Microscope (L0–L6)"
+        primary_kind = "microscope"
+    else:
+        primary_url = reports_url
+        primary_label = "Phân tích & Báo cáo bot"
+        primary_kind = "reports"
+
+    return {
+        "kind": primary_kind,
+        "url": primary_url,
+        "label": primary_label,
+        "strategy_card_id": card_id,
+        "microscope_url": primary_url if primary_kind == "microscope" else None,
+        "reports_url": reports_url,
+        "bot_url": bot_url,
+    }
+
+
 @router.get("/api/chart/decision", dependencies=[_CHART_API_POLICY])
 async def market_bar_decision_api(
     request: Request,
@@ -3922,11 +4021,13 @@ async def market_bar_decision_api(
     bot_id: UUID,
     time: Annotated[int, Query(ge=0)],
     timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     """Phân tích tại nến (CK-7): quyết định của bot được đánh giá khi nến ``time`` đóng."""
     response.headers["Cache-Control"] = "no-store"
     if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
         raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    chart_symbol = _chart_symbol(symbol) if symbol is not None else None
     interval = MARKET_CHART_INTERVAL_SECONDS[timeframe]
     if time % interval:
         raise HTTPException(status_code=422, detail="Thời điểm không trùng mốc mở nến.")
@@ -3940,11 +4041,20 @@ async def market_bar_decision_api(
         )
     except BotReportError as error:
         raise _report_http_error(error) from error
+    analysis_link = _bot_analysis_links(
+        bot_id=bot_id,
+        symbol=chart_symbol,
+        timeframe=timeframe,
+        strategy_id=(decision or {}).get("strategy_id"),
+        strategy_release_id=(decision or {}).get("strategy_release_id"),
+        bar_time=time,
+    )
     return {
         "status": "ok",
         "bar_open": bar_open.isoformat(),
         "timeframe": timeframe,
         "decision": decision,
+        "analysis_link": analysis_link,
     }
 
 
@@ -4590,6 +4700,11 @@ async def strategy_card_microscope_page(
     request: Request,
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: str | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    release_id: str | None = None,
+    bar_time: int | None = None,
 ) -> Response:
     """Hiển thị không gian làm việc Soi kính hiển vi (Microscope Replay Workspace)."""
     response.headers["Cache-Control"] = "no-store"
@@ -4613,6 +4728,23 @@ async def strategy_card_microscope_page(
             context=initial_preset.context,
         )
 
+    chart_context: dict[str, Any] | None = None
+    if bot_id and bot_id.strip():
+        chart_params: dict[str, str] = {"bot_id": bot_id.strip()}
+        if symbol and symbol.strip():
+            chart_params["symbol"] = symbol.strip().upper()
+        if timeframe and timeframe.strip() in MARKET_CHART_INTERVAL_SECONDS:
+            chart_params["timeframe"] = timeframe.strip()
+        chart_context = {
+            "bot_id": bot_id.strip(),
+            "symbol": chart_params.get("symbol"),
+            "timeframe": chart_params.get("timeframe"),
+            "release_id": release_id.strip() if release_id and release_id.strip() else None,
+            "bar_time": bar_time,
+            "chart_url": f"/admin/chart?{urlencode(chart_params)}",
+            "bot_url": f"/admin/bots/{quote(bot_id.strip(), safe='')}",
+        }
+
     templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
@@ -4625,6 +4757,7 @@ async def strategy_card_microscope_page(
             "presets_data": [p.to_dict() for p in presets],
             "initial_preset": initial_preset,
             "initial_trace": initial_trace,
+            "chart_context": chart_context,
         },
         headers={"Cache-Control": "no-store"},
     )

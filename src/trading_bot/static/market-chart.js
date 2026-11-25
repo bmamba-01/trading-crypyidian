@@ -114,6 +114,8 @@
       tpoPoc: dark ? "#93C5FD" : "#1D4ED8",
       npoc: "#F0B90B",
       valueLine: dark ? "rgba(226,232,240,0.7)" : "rgba(51,65,85,0.7)",
+      // CK-7: mục tiêu TP đã chạm dùng màu xanh dịu + nét đứt để phân biệt với TP đang chờ.
+      tpHit: dark ? "rgba(14,203,129,0.52)" : "rgba(11,138,90,0.52)",
     };
   };
 
@@ -840,7 +842,10 @@
     add(card.entry_zone.low, c.flat, "Vào", 2);
     if (card.entry_zone.high !== card.entry_zone.low) add(card.entry_zone.high, c.flat, "Vào", 2);
     for (const target of card.targets) {
-      add(target.price, target.source === "recipe" ? c.up : `${c.up}99`, target.source === "recipe" ? "TP" : `${target.r_multiple}R`, target.source === "recipe" ? 0 : 3);
+      const isLadder = target.source === "plan_ladder" || target.source === "candidate_ladder";
+      const isPrimary = target.source === "recipe" || isLadder;
+      const title = isLadder ? target.label || "TP" : target.source === "recipe" ? "TP" : `${target.r_multiple}R`;
+      add(target.price, isPrimary ? c.up : `${c.up}99`, title, isPrimary ? 0 : 3);
     }
   };
 
@@ -879,11 +884,17 @@
       });
     }
   };
-  // CK-7: vị thế PAPER đang mở — đường entry/SL/TP, nhãn UPnL theo mark price.
+  // CK-7: vị thế PAPER đang mở — đường entry/SL/TP (gồm thang TP1–3 kèm trạng thái đã chạm), nhãn UPnL theo mark price.
   let positionLines = [];
+  let positionLineMeta = [];
+  const fmtTargetFraction = (fraction) => {
+    if (typeof fraction !== "number" || !Number.isFinite(fraction)) return "";
+    return `${fmtNumber(Math.round(fraction * 1000) / 10, 1)}%`;
+  };
   const drawPositions = () => {
     for (const line of positionLines) candles.removePriceLine(line);
     positionLines = [];
+    positionLineMeta = [];
     const positions = (liveOverview && liveOverview.positions) || [];
     if (!layerOn("paper")) return;
     const c = palette();
@@ -894,15 +905,29 @@
           : `UPnL ${position.upnl >= 0 ? "+" : ""}${fmtNumber(position.upnl, 2)} ${position.quote_asset || ""}${
               position.r_multiple === null ? "" : ` (${fmtNumber(position.r_multiple, 2)}R)`
             }`;
-      const add = (price, color, title, style) => {
+      const add = (price, color, title, style, lineWidth = 2, hit = null) => {
         if (price === null || price === undefined) return;
         positionLines.push(
-          candles.createPriceLine({ price, color, title, lineWidth: 2, lineStyle: style, axisLabelVisible: true })
+          candles.createPriceLine({ price, color, title, lineWidth, lineStyle: style, axisLabelVisible: true })
         );
+        positionLineMeta.push({ price, title, hit });
       };
       add(position.entry_price, c.flat, `PAPER ${position.side} · ${pnl}`, 0);
       add(position.stop, c.down, "SL PAPER", 0);
-      add(position.target, c.up, "TP PAPER", 0);
+      if (Array.isArray(position.targets) && position.targets.length > 0) {
+        for (const target of position.targets) {
+          const idx = target.index || 1;
+          const pct = fmtTargetFraction(target.close_fraction);
+          if (target.hit) {
+            add(target.price, c.tpHit, `TP${idx} ✓ (đã chạm)`, 2, 1, true);
+          } else {
+            const label = pct ? `TP${idx} (${pct})` : `TP${idx}`;
+            add(target.price, c.up, label, 0, 2, false);
+          }
+        }
+      } else {
+        add(position.target, c.up, "TP PAPER", 0);
+      }
     }
   };
   document.addEventListener("mc:overview", (event) => {
@@ -1130,6 +1155,55 @@
     actions[key]();
   });
 
+  // CK-7: kéo chart bằng chuột giữa (chặn autoscroll mặc định ở pha capture để canvas của
+  // Lightweight Charts không nuốt sự kiện; giữ nguyên chuột trái và zoom cuộn).
+  let middleDrag = null;
+  const stopMiddleDrag = () => {
+    if (!middleDrag) return;
+    middleDrag = null;
+    container.classList.remove("is-middle-panning");
+  };
+  container.addEventListener(
+    "mousedown",
+    (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const startRange = timeScale.getVisibleLogicalRange();
+      const width = container.clientWidth;
+      if (!startRange || width <= 0) return;
+      middleDrag = { startX: event.clientX, startRange, width };
+      container.classList.add("is-middle-panning");
+    },
+    true
+  );
+  container.addEventListener(
+    "auxclick",
+    (event) => {
+      if (event.button === 1) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    true
+  );
+  window.addEventListener(
+    "mousemove",
+    (event) => {
+      if (!middleDrag) return;
+      const dx = event.clientX - middleDrag.startX;
+      const span = middleDrag.startRange.to - middleDrag.startRange.from;
+      const deltaBars = -(dx / middleDrag.width) * span;
+      timeScale.setVisibleLogicalRange({
+        from: middleDrag.startRange.from + deltaBars,
+        to: middleDrag.startRange.to + deltaBars,
+      });
+    },
+    true
+  );
+  window.addEventListener("mouseup", stopMiddleDrag, true);
+  window.addEventListener("blur", stopMiddleDrag);
+
   const SIZE_KEY = "crypidian.marketChart.size";
   const sizeSelect = document.querySelector("[data-chart-size]");
   const applySize = (size) => {
@@ -1158,7 +1232,7 @@
   const analysis = document.getElementById("mc-bar-analysis");
   const analysisBody = analysis?.querySelector("[data-bar-analysis-body]");
   const STATUS_VI = { CANDIDATE: "Ra tín hiệu", ABSTAIN: "Không vào lệnh", VETO: "Bị chặn" };
-  const renderAnalysis = (time, decision, message) => {
+  const renderAnalysis = (time, decision, message, analysisLink = null) => {
     if (!analysis || !analysisBody) return;
     analysis.hidden = false;
     setText("[data-bar-analysis-time]", fmtTime(time));
@@ -1203,6 +1277,25 @@
       else nodes.push(para("Quyết định này được tạo trước khi có checklist (SIG-3)."));
       for (const gate of decision.gate_details || []) nodes.push(para(`Cổng kiểm soát: ${gate}`));
     }
+    if (analysisLink && analysisLink.url) {
+      const links = document.createElement("p");
+      links.className = "mc-bar-analysis__links";
+      const makeLink = (href, text, kind) => {
+        const a = document.createElement("a");
+        a.href = href;
+        a.textContent = text;
+        if (kind) a.dataset.barAnalysisLink = kind;
+        return a;
+      };
+      links.append(makeLink(analysisLink.url, analysisLink.label || "Phân tích bot", analysisLink.kind || "analysis"));
+      if (analysisLink.kind === "microscope" && analysisLink.reports_url) {
+        links.append(document.createTextNode(" · "), makeLink(analysisLink.reports_url, "Phân tích & Báo cáo bot", "reports"));
+      }
+      if (analysisLink.bot_url) {
+        links.append(document.createTextNode(" · "), makeLink(analysisLink.bot_url, "Trang bot", "bot"));
+      }
+      nodes.push(links);
+    }
     analysisBody.replaceChildren(...nodes);
   };
   analysis?.querySelector("[data-bar-analysis-close]")?.addEventListener("click", () => {
@@ -1215,6 +1308,7 @@
     if (typeof time !== "number") return;
     const params = new URLSearchParams({
       bot_id: container.dataset.botId,
+      symbol: container.dataset.symbol || "",
       timeframe: container.dataset.timeframe,
       time: String(time),
     });
@@ -1229,7 +1323,7 @@
         return;
       }
       const body = await response.json();
-      renderAnalysis(time, body.decision, null);
+      renderAnalysis(time, body.decision, null, body.analysis_link || null);
     } catch {
       renderAnalysis(time, null, "Lỗi mạng khi tải quyết định tại nến.");
     }
@@ -1308,6 +1402,8 @@
     },
     bars: () => payload.bars,
     layerOn,
+    visibleLogicalRange: () => timeScale.getVisibleLogicalRange(),
+    positionLines: () => positionLineMeta.map((item) => ({ ...item })),
   };
   document.dispatchEvent(new CustomEvent("mc:chart-ready"));
 

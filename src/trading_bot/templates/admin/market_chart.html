@@ -124,6 +124,7 @@
           <li><kbd>+</kbd> / <kbd>−</kbd>: phóng to / thu nhỏ</li>
           <li><kbd>Home</kbd>: về nến đầu · <kbd>End</kbd>: về nến mới nhất</li>
           <li><kbd>0</kbd> hoặc nhấp đúp: đặt lại vùng nhìn</li>
+          <li>Kéo chuột giữa: cuộn ngang biểu đồ</li>
           <li>Chuột phải (máy tính) hoặc nhấn giữ (điện thoại) trên nến: phân tích tại nến</li>
           <li>Phím chỉ hoạt động khi biểu đồ đang được chọn (Tab tới biểu đồ).</li>
         </ul>
@@ -374,7 +375,7 @@
           {% endif %}
         </dl>
         {% if pr.note %}<p class="sc-meta">{{ pr.note }}</p>{% endif %}
-        <p class="mc-setup__links"><a href="/admin/bots/{{ setup.bot_id }}">Trang bot (tạm dừng/tiếp tục có lý do)</a> · <a href="/admin/chart?bot_id={{ setup.bot_id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">Xem bot này trên chart (dock "Nhật ký quyết định")</a></p>
+        <p class="mc-setup__links"><a href="/admin/bots/{{ setup.bot_id }}">Trang bot (tạm dừng/tiếp tục có lý do)</a> · <a href="/admin/chart?bot_id={{ setup.bot_id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">Xem bot này trên chart (dock "Nhật ký quyết định")</a>{% if setup.analysis_link %} · <a href="{{ setup.analysis_link.url }}" data-setup-analysis-link="{{ setup.analysis_link.kind }}">{{ setup.analysis_link.label }}</a>{% endif %}</p>
         {% if setup.counterfactual and setup.counterfactual.summary_vi %}<p class="mc-setup__missing">{{ setup.counterfactual.summary_vi }}{% if setup.counterfactual.closest and setup.counterfactual.closest.key != setup.counterfactual.key %} · gần đạt nhất: {{ setup.counterfactual.closest.label_vi }} ({{ setup.counterfactual.closest.gap_text_vi }}){% endif %}</p>{% elif setup.missing %}<p class="mc-setup__missing">{{ setup.missing }}</p>{% endif %}
         <ul class="sc-checklist">
           {% for item in setup.conditions %}
@@ -414,7 +415,12 @@
   <section class="glass-card sc-card" aria-labelledby="sc-title" data-signal-card>
     <header class="sc-head">
       <h2 id="sc-title">Thẻ tín hiệu gần nhất</h2>
-      <span class="badge badge-neutral">PAPER · không phải khuyến nghị đầu tư</span>
+      <div class="sc-head__actions">
+        {% if signal_analysis_link %}
+        <a class="btn btn-secondary btn-sm" href="{{ signal_analysis_link.url }}" data-signal-analysis-link="{{ signal_analysis_link.kind }}">{{ signal_analysis_link.label }}</a>
+        {% endif %}
+        <span class="badge badge-neutral">PAPER · không phải khuyến nghị đầu tư</span>
+      </div>
     </header>
     {% if card %}
     <div class="sc-summary">

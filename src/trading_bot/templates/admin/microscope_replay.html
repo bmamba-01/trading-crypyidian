@@ -37,6 +37,10 @@
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18 9 12l6-6"/></svg>
       <span>Quay lại danh sách Chiến lược</span>
     </a>
+    {% if chart_context %}
+    <a href="{{ chart_context.chart_url }}" class="btn btn-secondary btn-sm" data-microscope-back-chart>Quay lại biểu đồ{% if chart_context.symbol %} ({{ chart_context.symbol }}{% if chart_context.timeframe %} {{ chart_context.timeframe | upper }}{% endif %}){% endif %}</a>
+    <a href="{{ chart_context.bot_url }}" class="btn btn-secondary btn-sm" data-microscope-back-bot>Trang bot</a>
+    {% endif %}
   </div>
   <h2 id="microscope-heading" class="visually-hidden">Không gian làm việc Soi kính hiển vi Chiến lược</h2>
   <p class="intro-description">

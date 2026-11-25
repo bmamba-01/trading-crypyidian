@@ -893,3 +893,106 @@ def test_entry_board_shows_bot_monitor_with_protection() -> None:
         'action="/admin/bots/'
         not in html.split('id="mc-entry-board"', 1)[1].split('class="mc-mtf__note"', 1)[0]
     )
+
+
+def test_ck7_bar_decision_and_chart_page_expose_analysis_links_for_bot_and_card() -> None:
+    reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
+    client = _client(reporting)
+    html = client.get("/admin/chart?timeframe=5m").text
+    assert "Kéo chuột giữa: cuộn ngang biểu đồ" in html
+    assert 'data-setup-analysis-link="reports"' in html
+    assert 'data-signal-analysis-link="reports"' in html
+    assert f"/admin/reports?bot_id={BOT_ID}" in html
+    assert ' style="' not in html
+
+    at = int(datetime(2026, 11, 16, 9, 0, tzinfo=UTC).timestamp())
+    non_card = client.get(
+        f"/admin/api/chart/decision?bot_id={BOT_ID}&symbol=BTCUSDT&timeframe=5m&time={at}"
+    )
+    assert non_card.status_code == 200
+    link = non_card.json()["analysis_link"]
+    assert link["kind"] == "reports"
+    assert link["microscope_url"] is None
+    assert f"bot_id={BOT_ID}" in link["url"]
+    assert "symbol=BTCUSDT" in link["url"]
+    assert "timeframe=5m" in link["url"]
+    assert "strategy=h01-v1" in link["url"]
+    assert link["bot_url"] == f"/admin/bots/{BOT_ID}"
+
+    # Bot chạy Strategy Card → link trực tiếp tới Microscope kèm ngữ cảnh chart.
+    from trading_bot.admin.web_router import _bot_analysis_links
+
+    card_link = _bot_analysis_links(
+        bot_id=BOT_ID,
+        symbol="BTCUSDT",
+        timeframe="5m",
+        strategy_release_id="SC-BINANCE-USDM-VOL-BREAKOUT-001",
+        bar_time=at,
+    )
+    assert card_link["kind"] == "microscope"
+    assert card_link["strategy_card_id"] == "SC-BINANCE-USDM-VOL-BREAKOUT-001"
+    assert card_link["url"].startswith(
+        "/admin/strategy-cards/SC-BINANCE-USDM-VOL-BREAKOUT-001/microscope?"
+    )
+    assert f"bot_id={BOT_ID}" in card_link["url"]
+    assert "symbol=BTCUSDT" in card_link["url"]
+    assert "timeframe=5m" in card_link["url"]
+    assert f"bar_time={at}" in card_link["url"]
+    assert card_link["reports_url"].startswith(f"/admin/reports?bot_id={BOT_ID}")
+
+
+def test_overview_api_returns_tp_ladder_targets_with_hit_status() -> None:
+    bars = _bars(120, start=START, step=timedelta(minutes=5))
+    overview = build_market_overview(
+        symbol="BTCUSDT",
+        timeframe="5m",
+        now=OVERVIEW_NOW,
+        bars_by_timeframe={"5m": bars},
+        quote=None,
+        mark={
+            "mark_price": Decimal("105"),
+            "index_price": Decimal("105"),
+            "funding_rate": Decimal("0.0001"),
+            "next_funding_time": OVERVIEW_NOW + timedelta(hours=4),
+            "event_at": OVERVIEW_NOW - timedelta(seconds=2),
+        },
+        positions=[
+            {
+                "trade_id": "paper-ladder-1",
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "quote_asset": "USDT",
+                "entry_fills": [
+                    {
+                        "price": Decimal("100"),
+                        "quantity": Decimal("2"),
+                        "fee": Decimal("0.08"),
+                        "occurred_at": OVERVIEW_NOW - timedelta(minutes=30),
+                    }
+                ],
+                "exit_fills": [
+                    {
+                        "price": Decimal("104"),
+                        "quantity": Decimal("1"),
+                        "fee": Decimal("0.04"),
+                        "occurred_at": OVERVIEW_NOW - timedelta(minutes=10),
+                        "fill_key": "exit:p1:bar1:TP1",
+                        "exit_reason": "TAKE_PROFIT_1",
+                    }
+                ],
+                "initial_stop": Decimal("96"),
+                "current_stop": Decimal("100"),
+                "target": Decimal("112"),
+                "targets": [
+                    {"index": 1, "price": "104", "fraction": "0.5", "stop_to_entry_after": True},
+                    {"index": 2, "price": "108", "fraction": "0.3", "stop_to_entry_after": False},
+                    {"index": 3, "price": "112", "fraction": "0.2", "stop_to_entry_after": False},
+                ],
+            }
+        ],
+    )
+    (pos,) = overview["positions"]
+    assert [t["label"] for t in pos["targets"]] == ["TP1", "TP2", "TP3"]
+    assert [t["hit"] for t in pos["targets"]] == [True, False, False]
+    assert pos["targets"][0]["stop_to_entry_after"] is True
+    assert pos["targets"][1]["close_fraction"] == 0.3
