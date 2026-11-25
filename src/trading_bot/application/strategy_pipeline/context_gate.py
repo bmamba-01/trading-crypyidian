@@ -15,6 +15,11 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from trading_bot.domain.market.derivatives_context import (
+    DerivativesContextObservation,
+    FundingCrowdingState,
+    observation_from_snapshot_features,
+)
 from trading_bot.domain.strategy_card.operations import resolve_operation
 
 if TYPE_CHECKING:
@@ -37,6 +42,7 @@ class ContextGateResult:
     status: ContextGateStatus
     reasons: tuple[str, ...] = ()
     metrics: dict[str, Any] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
 
 class ContextGateEvaluator:
@@ -182,6 +188,132 @@ class ContextGateEvaluator:
             )
         return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
 
+    def evaluate_funding_oi_context_gate(
+        self,
+        *,
+        observation: DerivativesContextObservation | None,
+        expected_direction: str = "NEUTRAL",
+        mode: str = "warn",
+        fail_closed_on_missing: bool = False,
+        block_on_oi_anomaly: bool = False,
+        max_abs_funding_rate: Decimal | None = None,
+    ) -> ContextGateResult:
+        """Đánh giá cổng bối cảnh L4 cho Funding cực trị và biến động Open Interest (IND-3).
+
+        CHỈ lọc hoặc cảnh báo ở tầng L4, tuyệt đối không sinh tín hiệu vào lệnh L5.
+        - ``mode="warn"``: luôn trả ``PASS`` nhưng ghi rõ cảnh báo vào ``warnings``.
+        - ``mode="filter"`` (hoặc ``"block"``): ngắt mạch ``BLOCK`` khi funding cực trị
+          chống chiều giao dịch, vượt ``max_abs_funding_rate``, hoặc OI bất thường (nếu bật).
+        """
+        normalized_mode = mode.strip().lower()
+        is_filter_mode = normalized_mode in {"filter", "block"}
+        direction = expected_direction.strip().upper() or "NEUTRAL"
+
+        metrics: dict[str, Any] = {
+            "derivatives_context": (
+                observation.to_metrics()
+                if observation is not None
+                else {
+                    "is_stale": True,
+                    "crowding_state": FundingCrowdingState.UNKNOWN.value,
+                    "oi_regime": "UNKNOWN",
+                    "oi_anomaly": False,
+                }
+            ),
+            "derivatives_gate_mode": normalized_mode,
+            "derivatives_expected_direction": direction,
+        }
+
+        if (
+            observation is None
+            or observation.is_stale
+            or observation.crowding_state is FundingCrowdingState.UNKNOWN
+        ):
+            msg = (
+                "DERIVATIVES_CONTEXT_UNAVAILABLE: Dữ liệu funding/OI thiếu mẫu hoặc quá cũ "
+                "(stale), không thể xác nhận trạng thái quá tải đám đông."
+            )
+            if is_filter_mode and fail_closed_on_missing:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=(msg,),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=(msg,),
+            )
+
+        findings: list[str] = []
+        advisory_warnings: list[str] = []
+
+        if direction in {"LONG", "BULLISH"} and (
+            observation.crowding_state is FundingCrowdingState.CROWDED_LONG
+        ):
+            findings.append(
+                f"FUNDING_CROWDED_LONG_CONTRA: Funding rate {observation.funding_rate} đang ở mức "
+                "cực dương (đám đông nghiêng LONG quá tải), bất lợi cho vị thế LONG mới."
+            )
+        elif direction in {"SHORT", "BEARISH"} and (
+            observation.crowding_state is FundingCrowdingState.CROWDED_SHORT
+        ):
+            findings.append(
+                f"FUNDING_CROWDED_SHORT_CONTRA: Funding rate {observation.funding_rate} đang ở mức "
+                "cực âm (đám đông nghiêng SHORT quá tải), bất lợi cho vị thế SHORT mới."
+            )
+        elif direction in {"NEUTRAL", "BIDIRECTIONAL"} and observation.crowding_state in {
+            FundingCrowdingState.CROWDED_LONG,
+            FundingCrowdingState.CROWDED_SHORT,
+        }:
+            findings.append(
+                f"FUNDING_CROWDING_EXTREME: Funding rate {observation.funding_rate} ở vùng cực trị "
+                f"({observation.crowding_state.value})."
+            )
+
+        if (
+            max_abs_funding_rate is not None
+            and observation.funding_rate is not None
+            and abs(observation.funding_rate) > max_abs_funding_rate
+        ):
+            findings.append(
+                f"FUNDING_RATE_ABOVE_CAP: |funding_rate| {abs(observation.funding_rate)} > "
+                f"ngưỡng trần {max_abs_funding_rate}."
+            )
+
+        if observation.oi_anomaly:
+            oi_msg = (
+                f"OI_ANOMALY_SPIKE: Biến động Open Interest {observation.oi_change_pct} "
+                f"({observation.oi_regime.value}) vượt ngưỡng bất thường."
+            )
+            if block_on_oi_anomaly:
+                findings.append(oi_msg)
+            else:
+                advisory_warnings.append(oi_msg)
+
+        if findings:
+            if is_filter_mode:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=tuple(findings),
+                    metrics=metrics,
+                    warnings=tuple(advisory_warnings),
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=tuple(findings + advisory_warnings),
+            )
+
+        return ContextGateResult(
+            status=ContextGateStatus.PASS,
+            reasons=(),
+            metrics=metrics,
+            warnings=tuple(advisory_warnings),
+        )
+
     def _resolve_atr(
         self,
         node_outputs: Mapping[str, Any],
@@ -220,6 +352,7 @@ class ContextGateEvaluator:
             )
 
         all_reasons: list[str] = []
+        all_warnings: list[str] = []
         all_metrics: dict[str, Any] = {}
         sources = indicator_sources or {}
 
@@ -338,6 +471,32 @@ class ContextGateEvaluator:
                             if res.status == ContextGateStatus.BLOCK:
                                 all_reasons.extend(res.reasons)
 
+            elif canonical == "funding_oi_context_gate":
+                mode = str(params.get("mode", "warn")).strip().lower()
+                expected_direction = str(
+                    params.get("direction", params.get("expected_direction", "NEUTRAL"))
+                ).strip()
+                fail_closed_on_missing = bool(params.get("fail_closed_on_missing", False))
+                block_on_oi_anomaly = bool(params.get("block_on_oi_anomaly", False))
+                max_abs_funding_rate = (
+                    Decimal(str(params["max_abs_funding_rate"]))
+                    if "max_abs_funding_rate" in params
+                    else None
+                )
+                observation = observation_from_snapshot_features(snapshot)
+                res = self.evaluate_funding_oi_context_gate(
+                    observation=observation,
+                    expected_direction=expected_direction,
+                    mode=mode,
+                    fail_closed_on_missing=fail_closed_on_missing,
+                    block_on_oi_anomaly=block_on_oi_anomaly,
+                    max_abs_funding_rate=max_abs_funding_rate,
+                )
+                all_metrics.update(res.metrics)
+                all_warnings.extend(res.warnings)
+                if res.status == ContextGateStatus.BLOCK:
+                    all_reasons.extend(res.reasons)
+
             # Hỗ trợ kiểm tra min_atr/max_atr và min_atr_pct/max_atr_pct đồng nhất trên mọi cổng L4
             if not checked_vol and (
                 "min_atr" in params
@@ -371,10 +530,12 @@ class ContextGateEvaluator:
                 status=ContextGateStatus.BLOCK,
                 reasons=tuple(all_reasons),
                 metrics=all_metrics,
+                warnings=tuple(all_warnings),
             )
 
         return ContextGateResult(
             status=ContextGateStatus.PASS,
             reasons=(),
             metrics=all_metrics,
+            warnings=tuple(all_warnings),
         )

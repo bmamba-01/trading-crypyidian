@@ -433,6 +433,7 @@ class StrategyPipelineEngine:
             metadata={
                 "atr": str(current_atr),
                 "gate_metrics": gate_result.metrics,
+                **({"gate_warnings": gate_result.warnings} if gate_result.warnings else {}),
                 "trigger_score": str(trigger_result.trigger_score),
                 "indicator_sources": indicator_sources,
                 "indicator_feature_ids": tuple(indicator_feature_ids),

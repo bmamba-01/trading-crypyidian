@@ -237,6 +237,9 @@ def _structured_card_metadata(
     }
     if gates:
         items["l4_gates"] = ",".join(gates)
+    raw_warnings = pipeline_candidate.metadata.get("gate_warnings")
+    if raw_warnings:
+        items["l4_warnings"] = " | ".join(str(item) for item in raw_warnings)
     if triggers:
         items["l5_triggers"] = ",".join(triggers)
     return tuple(sorted(items.items()))

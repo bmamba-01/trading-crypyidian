@@ -1318,6 +1318,54 @@ def _card_l4_items(
                     adx_passed,
                 )
             )
+        elif "funding" in op or "derivatives_context" in op:
+            mode = str(params.get("mode", "warn")).strip().lower()
+            direction = (
+                str(params.get("direction", params.get("expected_direction", "NEUTRAL")))
+                .strip()
+                .upper()
+            )
+            gate_res = result.gate_result
+            deriv_metrics = (
+                gate_res.metrics.get("derivatives_context", {})
+                if gate_res is not None and isinstance(gate_res.metrics, dict)
+                else {}
+            )
+            crowding = str(deriv_metrics.get("crowding_state", "UNKNOWN"))
+            oi_regime = str(deriv_metrics.get("oi_regime", "UNKNOWN"))
+            is_stale = bool(deriv_metrics.get("is_stale", True))
+            if macro_blocked:
+                deriv_passed: bool | None = None
+                deriv_actual = "ngắt mạch macro blackout"
+            elif gate_res is None or is_stale or crowding == "UNKNOWN":
+                deriv_blocked = gate_res is not None and any(
+                    "DERIVATIVES_CONTEXT_UNAVAILABLE" in r for r in gate_res.reasons
+                )
+                deriv_passed = False if deriv_blocked else None
+                deriv_actual = "thiếu dữ liệu / stale"
+            else:
+                deriv_blocked = any(
+                    tag in reason
+                    for reason in gate_res.reasons
+                    for tag in (
+                        "FUNDING_CROWDED_",
+                        "FUNDING_CROWDING_EXTREME",
+                        "FUNDING_RATE_ABOVE_CAP",
+                        "OI_ANOMALY_SPIKE",
+                    )
+                )
+                deriv_passed = not deriv_blocked
+                deriv_actual = f"funding={crowding}, OI={oi_regime}"
+            items.append(
+                ChecklistItem(
+                    "l4_funding_oi_context",
+                    f"Cổng L4: Bối cảnh Funding & OI ({mode}/{direction})",
+                    deriv_actual,
+                    "không chống chiều",
+                    f"không quá tải chống {direction}",
+                    deriv_passed,
+                )
+            )
 
         if not atr_added and (
             "volatility" in op or "atr" in op or "min_atr" in params or "max_atr" in params

@@ -300,6 +300,24 @@ _RAW_SPECS: tuple[OperationSpec, ...] = (
     ),
     OperationSpec("trend_gate", CompositionLayer.L4_CONTEXT_GATE, "trend_gate", "Cổng xu hướng."),
     OperationSpec("ema_gate", CompositionLayer.L4_CONTEXT_GATE, "trend_gate", "Cổng EMA."),
+    OperationSpec(
+        "funding_oi_context_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "funding_oi_context_gate",
+        "Cổng bối cảnh Funding cực trị và biến động Open Interest (chỉ lọc/cảnh báo L4).",
+    ),
+    OperationSpec(
+        "derivatives_context_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "funding_oi_context_gate",
+        "Cổng bối cảnh phái sinh Funding/OI tầng L4.",
+    ),
+    OperationSpec(
+        "funding_crowding_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "funding_oi_context_gate",
+        "Cổng lọc/cảnh báo đám đông quá tải theo funding tầng L4.",
+    ),
     # --- L5: Strategy Trigger ---
     OperationSpec(
         "wick_reversal_trigger",
