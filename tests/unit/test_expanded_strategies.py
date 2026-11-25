@@ -608,10 +608,10 @@ def test_h22_taker_flow_breakout_validates_aggressor_flow_and_fail_closes() -> N
 # 8. End-to-End DecisionSnapshotBuilder + LearningVector + TradePlanner
 # ---------------------------------------------------------------------------
 def test_expanded_rule_integrates_end_to_end_with_snapshot_builder_and_trade_planner() -> None:
-    # Sinh chuỗi đủ 205 nến warmup cho cả 15m và 1h tới tận decision_time (EMA200 warmup)
-    origin_1h = START - timedelta(hours=210)
+    # Sinh chuỗi đủ >= 600 nến warmup cho cả 15m và 1h tới tận decision_time (EMA200 × 3)
+    origin_1h = START - timedelta(hours=610)
     bars_1h_list: list[OHLCVBar] = []
-    for i in range(270):
+    for i in range(770):
         opened = origin_1h + i * timedelta(hours=1)
         closed = opened + timedelta(hours=1) - timedelta(microseconds=1)
         c = Decimal(str(round(90.0 + i * 0.15, 4)))
@@ -656,10 +656,10 @@ def test_expanded_rule_integrates_end_to_end_with_snapshot_builder_and_trade_pla
             taker_buy_base=52.0,
             pinned_identity=True,
         )
-        for i in range(204)
+        for i in range(604)
     ]
     for offset in range(15):
-        idx = 189 + offset
+        idx = 589 + offset
         bars_15m[idx] = _bar(
             idx,
             "15m",
@@ -672,7 +672,7 @@ def test_expanded_rule_integrates_end_to_end_with_snapshot_builder_and_trade_pla
         )
     bars_15m.append(
         _bar(
-            204,
+            604,
             "15m",
             106.5,
             open_price=103.5,
@@ -935,7 +935,7 @@ def test_expanded_strategies_and_cards_execute_through_real_backtest_replay_exec
         RestBackfillRequest,
     )
 
-    origin = START - timedelta(hours=215)
+    origin = START - timedelta(hours=560)
     eval_start = START + timedelta(hours=49)
     range_end = START + timedelta(hours=54)
 
@@ -1117,7 +1117,7 @@ def test_expanded_4h_1h_and_5m_releases_execute_through_real_backtest_replay_exe
     )
 
     origin_4h = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
-    eval_4h = origin_4h + timedelta(hours=260 * 4)
+    eval_4h = origin_4h + timedelta(hours=610 * 4)
     end_4h = eval_4h + timedelta(hours=12)
 
     def _gen_bars(
@@ -1225,7 +1225,7 @@ def test_expanded_4h_1h_and_5m_releases_execute_through_real_backtest_replay_exe
         assert len(comp.runs[0].sensitivity_run.result.report_hash) == 64
         assert comp.runs[0].sensitivity_run.result.usable_observation_count >= 1
 
-    origin_5m = START - timedelta(hours=20)
+    origin_5m = START - timedelta(hours=55)
     eval_5m = START + timedelta(hours=2)
     end_5m = START + timedelta(hours=3)
     rights_5m = BackfillRightsEvidence(

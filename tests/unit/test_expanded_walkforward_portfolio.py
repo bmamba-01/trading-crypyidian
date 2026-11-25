@@ -14,7 +14,7 @@ import math
 import random
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from uuid import UUID, uuid5
 
@@ -230,7 +230,7 @@ def _generate_multi_regime_entry_bars(
     symbol: str = "BTCUSDT",
     seed: int = 42,
     evaluation_start: datetime = BASE_START,
-    warmup_bars: int = 256,
+    warmup_bars: int = 605,
 ) -> MultiRegimeSeries:
     """Sinh chuỗi nến tổng hợp chứa đủ 5 chế độ thị trường đa dạng.
 
@@ -734,8 +734,8 @@ def _build_multi_regime_bundle_for_release(
     assert entry_tf is not None
     req_tfs = set(FEATURES_BY_RELEASE[release_id]) | {entry_tf}
 
-    # Bảo đảm mọi khung đều >= 200 nến trước evaluation_start để EMA200 warmup hoàn chỉnh
-    warmup_by_tf = {"5m": 204, "15m": 204, "1h": 204, "4h": 256}
+    # Bảo đảm mọi khung đều >= 600 nến trước evaluation_start để EMA200 (3x) warmup hoàn chỉnh
+    warmup_by_tf = {"5m": 605, "15m": 605, "1h": 605, "4h": 605}
     entry_series = _generate_multi_regime_entry_bars(
         timeframe=entry_tf,
         symbol=symbol,
@@ -764,7 +764,7 @@ def _build_multi_regime_bundle_for_release(
             htf_bars=tuple(full_buckets),
             timeframe="1h",
             symbol=symbol,
-            needed_total_before_eval=204,
+            needed_total_before_eval=605,
             evaluation_start=evaluation_start,
         )
 
@@ -783,7 +783,7 @@ def _build_multi_regime_bundle_for_release(
             htf_bars=tuple(full_4h),
             timeframe="4h",
             symbol=symbol,
-            needed_total_before_eval=204,
+            needed_total_before_eval=605,
             evaluation_start=evaluation_start,
         )
 
@@ -1385,10 +1385,13 @@ def test_exact_paper_fee_and_slippage_formula_against_known_trade() -> None:
     raw_exit_exec = exit_ref * (Decimal("1") - slippage_rate)
     exit_exec = (raw_exit_exec / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
 
-    expected_fees = entry_exec * matched_qty * fee_rate + exit_exec * matched_qty * fee_rate
-    expected_slippage = (
-        abs(entry_exec - entry_bar.open) * matched_qty + abs(exit_exec - exit_ref) * matched_qty
-    )
+    quantum = Decimal("1e-18")
+    expected_fees = (entry_exec * matched_qty * fee_rate).quantize(
+        quantum, rounding=ROUND_HALF_UP
+    ) + (exit_exec * matched_qty * fee_rate).quantize(quantum, rounding=ROUND_HALF_UP)
+    expected_slippage = (abs(entry_exec - entry_bar.open) * matched_qty).quantize(
+        quantum, rounding=ROUND_HALF_UP
+    ) + (abs(exit_exec - exit_ref) * matched_qty).quantize(quantum, rounding=ROUND_HALF_UP)
     assert trade.fees == expected_fees
     assert trade.slippage == expected_slippage
 

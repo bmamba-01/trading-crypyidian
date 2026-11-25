@@ -115,9 +115,9 @@ def _ohlcv_bar(
 
 
 def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]:
-    """Tạo bundle 4h cho `h02-v1`: warmup 255 nến rồi 4 nến evaluation."""
+    """Tạo bundle 4h cho `h02-v1`: warmup 610 nến rồi 4 nến evaluation."""
     interval = timedelta(hours=4)
-    warmup_count = 255
+    warmup_count = 610
     eval_start = START_4H + warmup_count * interval
     eval_bars = 5 if mode in ("short_to_long", "reverse_short") else 4
     total_bars = warmup_count + eval_bars
@@ -127,11 +127,11 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
     bars: list[OHLCVBar] = []
     for idx in range(warmup_count):
         opened = START_4H + idx * interval
-        if mode == "no_signal" and idx == 215:
+        if mode == "no_signal" and idx == warmup_count - 40:
             base = 105.0
-        elif mode == "no_signal" and idx == 131:
+        elif mode == "no_signal" and idx == warmup_count - 124:
             base = 95.0
-        elif mode == "no_signal" and idx == 5:
+        elif mode == "no_signal" and idx == warmup_count - 250:
             base = 100.0
         else:
             base = 100.0 + (0.6 if idx % 2 == 0 else -0.6)
@@ -343,19 +343,19 @@ def _build_h22_bundle(
 ) -> tuple[BacktestDatasetReplayBundle, datetime]:
     """Tạo bundle 15m + 1h (+ tùy chọn 1m) cho `h22-v1`."""
     origin = START_15M
-    warmup_hours = 210  # >= 200 nến 1h để FeatureCalculator warmup đủ ema_200 và đánh dấu READY
+    warmup_hours = 610  # >= 600 nến 1h để FeatureCalculator warmup đủ ema_200 (3x)
     eval_start = origin + timedelta(hours=warmup_hours)
     range_end = eval_start + timedelta(hours=2)
     rights = _rights(origin, range_end)
 
-    # 1h bars: 0..209 tăng dần từ 70.0 lên 101.35 (EMA80 ~95.5 < 101.35);
-    # nến 1h thứ 210 (18:00..19:00, đóng lúc 18:59:59.999) giảm về 90.0 (< EMA80) nếu reverse_short!
+    # 1h bars: 0..399 giữ nền 70.0, 400..609 tăng dần lên 101.35 (EMA80 ~95.5 < 101.35);
+    # nến 1h thứ 610 (đóng lúc 18:59:59.999) giảm về 90.0 (< EMA80) nếu reverse_short!
     bars_1h: list[OHLCVBar] = []
     count_1h = int((range_end - origin) / timedelta(hours=1))
     for i in range(count_1h):
         opened = origin + i * timedelta(hours=1)
         if i < warmup_hours:
-            c = 70.0 + i * 0.15
+            c = 70.0 + max(0, i - 400) * 0.15
         elif i == warmup_hours and mode in {"reverse_short", "short_to_long"}:
             c = 90.0
         elif i == warmup_hours + 1 and mode == "short_to_long":

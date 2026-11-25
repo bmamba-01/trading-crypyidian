@@ -92,13 +92,13 @@ def _generate_h01_bars(mode: str, as_of: datetime) -> dict[str, tuple[OHLCVBar, 
     """
     bars_4h: list[OHLCVBar] = []
     four_h_interval = timedelta(hours=4)
-    start_4h = as_of - 220 * four_h_interval
-    for i in range(220):
+    start_4h = as_of - 620 * four_h_interval
+    for i in range(620):
         t = start_4h + i * four_h_interval
         base = 50000.0
-        if mode == "bearish_cross" and i >= 215:
+        if mode == "bearish_cross" and i >= 615:
             base = 40000.0
-        elif mode == "bullish_cross" and i >= 215:
+        elif mode == "bullish_cross" and i >= 615:
             base = 60000.0
         bars_4h.append(
             _make_bar(
@@ -114,20 +114,20 @@ def _generate_h01_bars(mode: str, as_of: datetime) -> dict[str, tuple[OHLCVBar, 
 
     bars_1h: list[OHLCVBar] = []
     one_h_interval = timedelta(hours=1)
-    start_1h = as_of - 220 * one_h_interval
-    for i in range(220):
+    start_1h = as_of - 620 * one_h_interval
+    for i in range(620):
         t = start_1h + i * one_h_interval
         if mode == "bearish_cross":
-            if i < 218:
-                p = 50000.0 + i * 20.0
-            elif i == 218:
+            if i < 618:
+                p = 50000.0 + max(0, i - 400) * 20.0
+            elif i == 618:
                 p = 55000.0
             else:
                 p = 38000.0
         elif mode == "bullish_cross":
-            if i < 218:
-                p = 50000.0 - i * 20.0
-            elif i == 218:
+            if i < 618:
+                p = 50000.0 - max(0, i - 400) * 20.0
+            elif i == 618:
                 p = 44000.0
             else:
                 p = 62000.0

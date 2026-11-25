@@ -396,8 +396,8 @@ async def _persist_training_base_replay(
 
 def _vol_breakout_bars() -> dict[str, tuple[OHLCVBar, ...]]:
     """Chuỗi nến 1h đủ warmup kèm nến Hammer kích hoạt `sc-binance-usdm-vol-breakout-001-v1.0.0`."""
-    range_end = BASE_TIME + timedelta(hours=220)
-    bars = list(_build_bars("1h", count=220, range_end=range_end))
+    range_end = BASE_TIME + timedelta(hours=620)
+    bars = list(_build_bars("1h", count=620, range_end=range_end))
     # Tại nến áp chót (trong evaluation window 4 nến cuối), tạo nến Hammer râu dưới dài
     # và nến kế tiếp chạm mục tiêu chốt lời để sinh cả candidate lẫn closed trade outcome.
     signal_idx = len(bars) - 2
@@ -495,7 +495,7 @@ async def test_wp06_proof_accepts_expanded_cards_and_expanded_rules(
 ) -> None:
     """Proof WP06 xác nhận được cả Strategy Card mở rộng lẫn rule trong `expanded_rules.py`."""
     range_end = BASE_TIME + timedelta(days=50)
-    bars_by_tf = {tf: _build_bars(tf, count=256, range_end=range_end) for tf in timeframes}
+    bars_by_tf = {tf: _build_bars(tf, count=620, range_end=range_end) for tf in timeframes}
     session, receipt, _, _ = await _persist_training_base_replay(
         monkeypatch,
         release_id=release_id,
