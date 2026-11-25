@@ -13,6 +13,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — Hoàn tất CRY-345: Đảm bảo idempotency cho poller phái sinh & nghiệm thu E2E PostgreSQL (`WP-07B/derivatives-poller`)
+
+- **Mục tiêu/phạm vi:**
+  1. Đối chiếu hiện trạng `CRY-345`:
+     - Bảng `derivatives_snapshot` + RLS + role `crypidian_ingestion_worker` (`00912d59476e`, `d4f6a8b0c2e1`), `DerivativesCollector` + `BinanceDerivativesHttpFetcher` (budget 1000/5m, rights gate `SourceUsePurpose.PAPER_DEMO`), và `FundingRateCollector` (`FX-3`) đã có sẵn trong codebase.
+     - Bổ sung khoảng trống cuối cùng trong `src/trading_bot/workers/derivatives_worker.py`: `_DerivativesStore.insert(...)` chuyển từ `session.add(...)` sang `pg_insert(DerivativesSnapshotRecord).on_conflict_do_nothing(constraint="uq_derivatives_snapshot_point")` để khi chạy lại cùng `(workspace_id, symbol, collected_at)` không trùng bản ghi và không vỡ transaction.
+     - Sửa `tests/e2e/test_fx3_funding_persistence.py` bỏ hardcode mã hash head cũ `a3c7e9f1b5d2 (head)` để tương thích các migration mới (`c8e1a2b4d9f0`).
+     - Thêm `tests/unit/test_cry345_derivatives_idempotency.py`.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent` trên `derivatives_worker.py`, `test_cry345_derivatives_idempotency.py`: sạch 100%.
+  - `(cd /tmp && "/Users/macbook/Work/Trading Crypdian/.venv/bin/pytest" ".../test_cry345_derivatives_idempotency.py" ".../test_ai4_derivatives.py" ".../test_fx3_funding_persistence.py" -v)`: **19/19 passed in 27.97s** (gồm Compose PostgreSQL thật, `alembic upgrade head` -> `c8e1a2b4d9f0`, RLS & idempotency).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-24 — Hoàn tất CRY-414: Lưu báo cáo kiểm định scalping SIG-5 vào DB và hiển thị trên Admin (SIG-5/report-db)
 
 - **Mục tiêu/phạm vi:**

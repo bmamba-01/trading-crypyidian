@@ -6,9 +6,10 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import DerivativesSnapshotRecord
@@ -36,7 +37,12 @@ class _DerivativesStore:
         )
 
     async def insert(self, record: dict[str, Any]) -> None:
-        self._session.add(DerivativesSnapshotRecord(**record))
+        stmt = (
+            pg_insert(DerivativesSnapshotRecord)
+            .values(id=record.get("id") or uuid4(), **record)
+            .on_conflict_do_nothing(constraint="uq_derivatives_snapshot_point")
+        )
+        await self._session.execute(stmt)
         await self._session.flush()
 
 
