@@ -76,11 +76,12 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
     # thành một head; CRY-384/CRY-380 nối analyst_run.context và run_report sau 7707d82de246.
     # WP06 nối proof caller EVALUATION, proof TEST v3, action latency và WP06.14/15/16;
-    # nhánh dev nối CRY-274 (a3c7e9f1b5d2) -> CK-9 (0095c0fdba8f) -> CRY-373 (b7d2e4f8c1a3) -> CRY-414 (c8e1a2b4d9f0);
-    # merge head tại ab26dde001df.
-    assert heads == ["ab26dde001df"]
+    # nhánh dev nối CRY-274 (a3c7e9f1b5d2) -> CK-9 (0095c0fdba8f) -> CRY-373 (b7d2e4f8c1a3)
+    # -> CRY-414 (c8e1a2b4d9f0); merge head tại ab26dde001df; CRY-452 -> c9d0e1f2a3b4.
+    assert heads == ["c9d0e1f2a3b4"]
     assert graph["a3c7e9f1b5d2"] == "c6e8a0b2d4f9"
     assert graph["ab26dde001df"] == ("c8e1a2b4d9f0", "f0a2c4e6b8e0")
+    assert graph["c9d0e1f2a3b4"] == ("ab26dde001df", "e7f8a9b0c1d2")
     assert graph["0094c0fdba7f"] == "c8d28da699c6"
     assert graph["12e554aace5d"] == "0094c0fdba7f"
     assert graph["f6c8e0a2b4d8"] == "0094c0fdba7f"

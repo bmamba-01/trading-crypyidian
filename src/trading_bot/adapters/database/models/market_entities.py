@@ -236,6 +236,7 @@ class MarketFunding(UuidPrimaryKey, CreatedAt, Base):
             "funding_time",
             "available_at",
         ),
+        Index("ix_market_funding_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -254,6 +255,7 @@ class MarketFunding(UuidPrimaryKey, CreatedAt, Base):
     # ``GET /fapi/v1/fundingRate``; NULL với bản ghi cũ hoặc khi sàn không trả.
     mark_price: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
     rate_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MarketOpenInterest(UuidPrimaryKey, CreatedAt, Base):
@@ -461,6 +463,7 @@ class MarketLiquidation(UuidPrimaryKey, CreatedAt, Base):
             "event_at",
             "available_at",
         ),
+        Index("ix_market_liquidation_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -479,6 +482,7 @@ class MarketLiquidation(UuidPrimaryKey, CreatedAt, Base):
     average_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     filled_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MarketTradeFlow(UuidPrimaryKey, CreatedAt, Base):
@@ -514,6 +518,7 @@ class MarketTradeFlow(UuidPrimaryKey, CreatedAt, Base):
             "bucket_start",
             "available_at",
         ),
+        Index("ix_market_trade_flow_expires", "workspace_id", "expires_at"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -533,6 +538,7 @@ class MarketTradeFlow(UuidPrimaryKey, CreatedAt, Base):
     trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
     first_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     last_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_complete: Mapped[bool] = mapped_column(nullable=False)
 
 

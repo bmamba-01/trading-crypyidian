@@ -58,7 +58,7 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "f4a6c8e0b2d5")
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-            assert "ab26dde001df (head)" in heads.stdout
+            assert "c9d0e1f2a3b4 (head)" in heads.stdout
             assert heads.stdout.count("(head)") == 1
             mounts = []
             for role in (
@@ -111,7 +111,7 @@ def test_postgres_incident_hold_ledger_schema_and_runtime_projection() -> None:
                 ),
             )
             current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-            assert "ab26dde001df (head)" in current.stdout
+            assert "c9d0e1f2a3b4 (head)" in current.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
         finally:

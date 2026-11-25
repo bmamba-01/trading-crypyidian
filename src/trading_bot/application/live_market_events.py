@@ -93,11 +93,32 @@ EventTransactionFactory = Callable[[], AbstractAsyncContextManager[LiveMarketEve
 class LiveMarketEventService:
     """Ghi một lô sự kiện trong một transaction; không gọi mạng."""
 
-    def __init__(self, *, workspace_id: UUID, transactions: EventTransactionFactory) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_id: UUID,
+        transactions: EventTransactionFactory,
+        prune_interval: timedelta = timedelta(hours=1),
+    ) -> None:
         if type(workspace_id) is not UUID:
             raise ValueError("workspace_id phải là UUID.")
+        if prune_interval <= timedelta(0):
+            raise ValueError("prune_interval phải dương.")
         self._workspace_id = workspace_id
         self._transactions = transactions
+        self._prune_interval = prune_interval
+        self._last_pruned_at: datetime | None = None
+
+    async def prune_expired(self, *, now: datetime) -> dict[str, int]:
+        """Dọn các bản ghi WP-07B đã quá hạn ``expires_at`` trong workspace hiện tại."""
+        instant = _as_utc(now)
+        async with self._transactions() as transaction:
+            prune_fn = getattr(transaction.market, "prune_expired_live_market", None)
+            if not callable(prune_fn):
+                return {}
+            deleted = await prune_fn(workspace_id=self._workspace_id, now=instant)
+            self._last_pruned_at = instant
+            return dict(deleted)
 
     async def ensure_ready(self, symbols: Sequence[str], *, now: datetime) -> None:
         """Kiểm tra quyền dữ liệu và instrument đã đăng ký trước khi mở stream."""
@@ -114,6 +135,14 @@ class LiveMarketEventService:
         instant = _as_utc(now)
         written = 0
         async with self._transactions() as transaction:
+            if (
+                self._last_pruned_at is None
+                or instant - self._last_pruned_at >= self._prune_interval
+            ):
+                prune_fn = getattr(transaction.market, "prune_expired_live_market", None)
+                if callable(prune_fn):
+                    await prune_fn(workspace_id=self._workspace_id, now=instant)
+                self._last_pruned_at = instant
             instruments: dict[str, UUID] = {}
             for record in records:
                 symbol = record.symbol

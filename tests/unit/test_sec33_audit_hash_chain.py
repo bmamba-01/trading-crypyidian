@@ -166,7 +166,7 @@ def test_sec33_migration_chains_from_c8d28da699c6_and_contains_hash_chain_ddl() 
     alembic_cfg = Config(str(REPO_ROOT / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
     script = ScriptDirectory.from_config(alembic_cfg)
-    assert script.get_heads() == ["ab26dde001df"]
+    assert script.get_heads() == ["c9d0e1f2a3b4"]
     assert script.get_revision("f0a2c4e6b8d3").down_revision == "f0a2c4e6b8d2"
 
 

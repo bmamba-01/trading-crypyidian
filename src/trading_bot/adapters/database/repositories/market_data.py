@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +49,8 @@ from trading_bot.domain.market.stream_events import (
     MarkPriceEvent,
 )
 from trading_bot.domain.market.trade_flow import TradeFlowBucket
+
+DEFAULT_LIVE_MARKET_RETENTION = timedelta(days=90)
 
 
 class MarketRepositoryConflict(RuntimeError):
@@ -537,9 +539,11 @@ class MarketDataRepository:
         funding_rate: Decimal,
         mark_price: Decimal | None = None,
         rate_type: str | None = None,
+        retention: timedelta = DEFAULT_LIVE_MARKET_RETENTION,
     ) -> MarketAppendResult:
         if mark_price is not None and (not mark_price.is_finite() or mark_price <= 0):
             raise ValueError("mark_price funding phải hữu hạn và dương.")
+        _require_aware(funding_time, "funding_time")
         return await self._append_point_record(
             model=MarketFunding,
             workspace_id=workspace_id,
@@ -549,7 +553,11 @@ class MarketDataRepository:
             point_time=funding_time,
             value_field="funding_rate",
             value=funding_rate,
-            extra_fields={"mark_price": mark_price, "rate_type": rate_type},
+            extra_fields={
+                "mark_price": mark_price,
+                "rate_type": rate_type,
+                "expires_at": funding_time + retention,
+            },
         )
 
     async def append_open_interest(
@@ -606,6 +614,7 @@ class MarketDataRepository:
         source: str,
         idempotency_key: str,
         event: LiquidationEvent,
+        retention: timedelta = DEFAULT_LIVE_MARKET_RETENTION,
     ) -> bool:
         """Append lệnh thanh lý; `event_at` là thời điểm khớp do sàn công bố."""
         return await self._insert_event(
@@ -626,6 +635,7 @@ class MarketDataRepository:
             average_price=event.average_price,
             quantity=event.quantity,
             filled_quantity=event.filled_quantity,
+            expires_at=event.trade_time + retention,
         )
 
     async def append_trade_flow(
@@ -637,8 +647,10 @@ class MarketDataRepository:
         idempotency_key: str,
         checksum: str,
         bucket: TradeFlowBucket,
+        retention: timedelta = DEFAULT_LIVE_MARKET_RETENTION,
     ) -> bool:
         """Append bucket dòng lệnh; chỉ khả dụng từ lúc bucket đóng (`closed_at`)."""
+        event_at = min(bucket.bucket_end, bucket.closed_at)
         return await self._insert_event(
             MarketTradeFlow,
             workspace_id=workspace_id,
@@ -646,7 +658,7 @@ class MarketDataRepository:
             source=source,
             idempotency_key=idempotency_key,
             checksum=checksum,
-            event_at=min(bucket.bucket_end, bucket.closed_at),
+            event_at=event_at,
             received_at=bucket.closed_at,
             available_at=bucket.closed_at,
             bucket_start=bucket.bucket_start,
@@ -659,7 +671,48 @@ class MarketDataRepository:
             first_aggregate_id=bucket.first_aggregate_id,
             last_aggregate_id=bucket.last_aggregate_id,
             is_complete=bucket.is_complete,
+            expires_at=event_at + retention,
         )
+
+    async def prune_expired_live_market(
+        self, *, workspace_id: UUID, now: datetime
+    ) -> dict[str, int]:
+        """Xóa các bản ghi đã quá ``expires_at`` trong 3 bảng WP-07B dưới RLS workspace."""
+        _require_aware(now, "now")
+        deleted: dict[str, int] = {}
+        for name, model in (
+            ("market_liquidation", MarketLiquidation),
+            ("market_trade_flow", MarketTradeFlow),
+        ):
+            result = await self._session.execute(
+                delete(model).where(
+                    model.workspace_id == workspace_id,
+                    model.expires_at <= now,
+                )
+            )
+            deleted[name] = int(getattr(result, "rowcount", 0) or 0)
+
+        # market_funding có FK tự tham chiếu (workspace_id, supersedes_id): chỉ xóa lá đã hết hạn.
+        funding_total = 0
+        while True:
+            leaf_result = await self._session.execute(
+                delete(MarketFunding).where(
+                    MarketFunding.workspace_id == workspace_id,
+                    MarketFunding.expires_at <= now,
+                    ~MarketFunding.id.in_(
+                        select(MarketFunding.supersedes_id).where(
+                            MarketFunding.workspace_id == workspace_id,
+                            MarketFunding.supersedes_id.is_not(None),
+                        )
+                    ),
+                )
+            )
+            batch = int(getattr(leaf_result, "rowcount", 0) or 0)
+            funding_total += batch
+            if batch == 0:
+                break
+        deleted["market_funding"] = funding_total
+        return deleted
 
     async def upsert_live_quote(
         self,

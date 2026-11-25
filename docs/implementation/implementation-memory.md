@@ -13,6 +13,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — Hoàn tất CRY-452 (`WP-07B/retention`) & hợp nhất sole head `c9d0e1f2a3b4`
+
+- **Mục tiêu/phạm vi:**
+  1. Bổ sung chính sách retention 90 ngày cho bộ ba bảng `market_funding`, `market_liquidation`, `market_trade_flow` (`CRY-452`):
+     - Migration `migrations/versions/c9d0e1f2a3b4_cry452_live_market_retention.py` (merge `ab26dde001df` và `e7f8a9b0c1d2` thành sole head `c9d0e1f2a3b4`): thêm cột `expires_at` (`NOT NULL`), backfill `funding_time + interval '90 days'` (`market_funding`) và `event_at + interval '90 days'` (`market_liquidation`, `market_trade_flow`), tạo index `(workspace_id, expires_at)`.
+     - Trigger `enforce_live_market_retention_immutability()` cho riêng 3 bảng trên: giữ nguyên chặn mọi `UPDATE`, chỉ cho phép `DELETE` khi `OLD.expires_at <= clock_timestamp()` (fail-closed không cho xóa dữ liệu còn hạn).
+     - Cấp `GRANT DELETE` trên 3 bảng cho `crypidian_ingestion_worker` dưới RLS `workspace_isolation`.
+     - ORM (`src/trading_bot/adapters/database/models/market_entities.py`) & Writer/Pruner (`src/trading_bot/adapters/database/repositories/market_data.py`, `src/trading_bot/application/live_market_events.py`): gán `expires_at = mốc + 90 ngày` khi append, bổ sung `prune_expired_live_market` (xóa an toàn FK tự tham chiếu `supersedes_id` trên `market_funding`) và gọi dọn định kỳ theo `prune_interval = 1h` trong `LiveMarketEventService`.
+  2. Review cross-module & ghi nhận GAP: `FundingRateCollector` chạy độc lập chưa tự gọi `prune_expired_live_market` cho `market_funding` nếu không bật `LiveMarketEventService`, và `market_mark_price` / `market_open_interest` chưa có retention; đã tách thành ticket GAP riêng trên It's a Plan.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent`: sạch 100%.
+  - Unit tests (`test_cry452_live_market_retention.py`, `test_live_market_events.py`, `test_wp06_admin_web_least_privilege_migration.py`, `test_sec33_audit_hash_chain.py`, `test_sig0_taker_flow.py`): đạt 100%.
+  - Compose E2E PostgreSQL `tests/e2e/test_cry452_live_market_retention_e2e.py`: **1 passed in 64.64s** (backfill, trigger chặn UPDATE & DELETE bản ghi còn hạn, `crypidian_ingestion_worker` xóa theo RLS không ảnh hưởng workspace khác).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-25 — Hoàn tất CRY-345: Đảm bảo idempotency cho poller phái sinh & nghiệm thu E2E PostgreSQL (`WP-07B/derivatives-poller`)
 
 - **Mục tiêu/phạm vi:**
