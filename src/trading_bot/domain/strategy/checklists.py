@@ -1613,10 +1613,56 @@ def _card_l5_items(
     return items
 
 
+def _card_l6_items(card: StrategyCard, result: PipelineExecutionResult) -> list[ChecklistItem]:
+    """Checklist tầng L6 (vùng thực thi Entry / SL / TP và R:R) cho Strategy Card."""
+    l6_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L6_ZONES]
+    if not l6_nodes:
+        return []
+    threshold = "SL/TP đúng phía & R:R > 0"
+    if result.status == "SUCCESS" and result.candidate is not None:
+        cand = result.candidate
+        actual = (
+            f"vào {_fmt(cand.entry_price, 2)} · SL {_fmt(cand.stop_loss, 2)} · "
+            f"TP {_fmt(cand.take_profit, 2)} · R:R {_fmt(cand.risk_reward_ratio, 2)}"
+        )
+        return [
+            ChecklistItem(
+                "l6_execution_zones",
+                "Vùng giá L6 (Entry / SL / TP & R:R)",
+                actual,
+                "hợp lệ",
+                threshold,
+                True,
+            )
+        ]
+    if result.status in {"DATA_HYGIENE_FAILED", "CONTEXT_GATE_BLOCKED", "NO_TRIGGER"}:
+        return [
+            ChecklistItem(
+                "l6_execution_zones",
+                "Vùng giá L6 (Entry / SL / TP & R:R)",
+                "chưa đánh giá (chưa qua L0–L5)",
+                "hợp lệ",
+                threshold,
+                None,
+            )
+        ]
+    reason = result.reasons[0] if result.reasons else "vùng giá không hợp lệ"
+    return [
+        ChecklistItem(
+            "l6_execution_zones",
+            "Vùng giá L6 (Entry / SL / TP & R:R)",
+            reason,
+            "hợp lệ",
+            threshold,
+            False,
+        )
+    ]
+
+
 def _strategy_card_checklist(
     card: StrategyCard, snapshot: DecisionSnapshot
 ) -> tuple[ChecklistItem, ...]:
-    """Checklist L0–L5 trực tiếp từ ``StrategyPipelineEngine.execute()`` cho Strategy Card."""
+    """Checklist L0–L6 trực tiếp từ ``StrategyPipelineEngine.execute()`` cho Strategy Card."""
     from trading_bot.application.strategy_pipeline.pipeline_engine import (
         ATR_SOURCE_SINGLE_BAR,
         WARMUP_SOURCE_INSUFFICIENT,
@@ -1663,7 +1709,8 @@ def _strategy_card_checklist(
             for item in l4_items
         ]
         l5_items = _card_l5_items(card, snapshot, result, warmup_sources=warmup_sources)
-        return (l0_item, warmup_item, *l4_items, *l5_items)
+        l6_items = _card_l6_items(card, result)
+        return (l0_item, warmup_item, *l4_items, *l5_items, *l6_items)
 
     l0_item = ChecklistItem(
         "l0_data_hygiene",
@@ -1706,7 +1753,8 @@ def _strategy_card_checklist(
         atr_single_bar_source=ATR_SOURCE_SINGLE_BAR,
     )
     l5_items = _card_l5_items(card, snapshot, result, warmup_sources=warmup_sources)
-    return (l0_item, warmup_item, *l4_items, *l5_items)
+    l6_items = _card_l6_items(card, result)
+    return (l0_item, warmup_item, *l4_items, *l5_items, *l6_items)
 
 
 _BUILDERS: dict[str, Callable[[DecisionSnapshot, StrategySelection], tuple[ChecklistItem, ...]]] = {

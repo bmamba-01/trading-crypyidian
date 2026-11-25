@@ -15,6 +15,10 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
+from trading_bot.domain.strategy.contracts import (
+    CandidateTarget,
+    InvalidationRule,
+)
 from trading_bot.domain.strategy.contracts import StrategyCandidate as ContractCandidate
 from trading_bot.domain.strategy.recipes import ExitRecipe
 from trading_bot.domain.strategy_card.models import CompositionLayer
@@ -99,6 +103,37 @@ class StrategyPipelinePlannerBridge:
 
         direction_contract = "long" if pipeline_candidate.direction.upper() == "LONG" else "short"
 
+        # 5. Bảo toàn vùng vào, R:R, điểm, điều kiện mất hiệu lực và metadata có cấu trúc (G5).
+        entry_zone_low, entry_zone_high = _resolve_entry_zone(pipeline_candidate)
+        card_score = _resolve_card_score(pipeline_candidate)
+        targets = (
+            CandidateTarget(
+                index=1,
+                price=pipeline_candidate.take_profit,
+                fraction=Decimal("1"),
+                r_multiple=pipeline_candidate.risk_reward_ratio,
+                label="Mục tiêu L6",
+            ),
+        )
+        invalidation = (
+            InvalidationRule(
+                kind="STOP_LOSS",
+                detail_vi=f"Giá chạm SL {_fmt_vi(pipeline_candidate.stop_loss)} (dừng lỗ L6).",
+                price=pipeline_candidate.stop_loss,
+            ),
+            InvalidationRule(
+                kind="EXPIRY",
+                detail_vi="Tín hiệu hết hạn nếu chưa vào lệnh trước mốc hết hạn.",
+                expires_at=expires_at,
+            ),
+            InvalidationRule(
+                kind="MAX_HOLD_BARS",
+                detail_vi=f"Thoát theo thời gian sau tối đa {max_hold_bars} nến.",
+                bars=max_hold_bars,
+            ),
+        )
+        card_metadata = _structured_card_metadata(pipeline_candidate, card, atr, card_score)
+
         return ContractCandidate(
             strategy_id=card.card_id,
             strategy_release_id=card.version,
@@ -119,7 +154,92 @@ class StrategyPipelinePlannerBridge:
             geometry_version="quantsmart_l0_l6",
             reason_code="QUANTSMART_L6_ZONE_CONFIRMED",
             detail_vi=_detail_vi(pipeline_candidate, card, atr),
+            entry_zone_low=entry_zone_low,
+            entry_zone_high=entry_zone_high,
+            stop_price=pipeline_candidate.stop_loss,
+            targets=targets,
+            setup_id=f"{card.card_id}:v{card.version}",
+            invalidation=invalidation,
+            confidence_tier="uncalibrated",
+            risk_reward_ratio=pipeline_candidate.risk_reward_ratio,
+            card_score=card_score,
+            card_metadata=card_metadata,
         )
+
+
+def _fmt_vi(value: Decimal) -> str:
+    """Định dạng số Decimal gọn kiểu Việt Nam cho chuỗi mô tả."""
+    text = format(value.quantize(Decimal("0.0001")).normalize(), "f")
+    return text.replace(".", ",")
+
+
+def _resolve_entry_zone(pipeline_candidate: PipelineCandidate) -> tuple[Decimal, Decimal]:
+    """Lấy vùng vào từ metadata L6 nếu có; mặc định thu về đúng ``entry_price``."""
+    raw_low = pipeline_candidate.metadata.get("entry_zone_low")
+    raw_high = pipeline_candidate.metadata.get("entry_zone_high")
+    if raw_low is not None and raw_high is not None:
+        try:
+            low = Decimal(str(raw_low))
+            high = Decimal(str(raw_high))
+        except InvalidOperation:
+            return pipeline_candidate.entry_price, pipeline_candidate.entry_price
+        if low.is_finite() and high.is_finite() and low > 0 and high > 0:
+            low_val, high_val = sorted((low, high))
+            if pipeline_candidate.direction.upper() == "LONG":
+                if (
+                    pipeline_candidate.stop_loss < low_val
+                    and high_val < pipeline_candidate.take_profit
+                ):
+                    return low_val, high_val
+            elif (
+                pipeline_candidate.take_profit < low_val and high_val < pipeline_candidate.stop_loss
+            ):
+                return low_val, high_val
+    return pipeline_candidate.entry_price, pipeline_candidate.entry_price
+
+
+def _resolve_card_score(pipeline_candidate: PipelineCandidate) -> Decimal:
+    """Đọc điểm kích hoạt L5 (fallback về ``confidence`` thô của pipeline)."""
+    raw_score = pipeline_candidate.metadata.get("trigger_score", pipeline_candidate.confidence)
+    try:
+        score = Decimal(str(raw_score))
+        if score.is_finite():
+            return score
+    except InvalidOperation:
+        pass
+    return pipeline_candidate.confidence
+
+
+def _structured_card_metadata(
+    pipeline_candidate: PipelineCandidate,
+    card: StrategyCard,
+    atr: Decimal,
+    card_score: Decimal,
+) -> tuple[tuple[str, str], ...]:
+    """Đóng gói metadata có cấu trúc, bất biến của Strategy Card cho thẻ tín hiệu và truy vết."""
+    operations = {node.node_id: node.operation for node in card.nodes}
+    gates = [
+        node.operation
+        for node in card.nodes
+        if node.layer.value.startswith("L4") and node.operation
+    ]
+    triggers = [operations.get(node_id, node_id) for node_id in pipeline_candidate.evidence_nodes]
+    items: dict[str, str] = {
+        "card_id": card.card_id,
+        "card_name": card.name,
+        "card_version": card.version,
+        "atr": str(atr),
+        "confidence": str(pipeline_candidate.confidence),
+        "trigger_score": str(card_score),
+        "risk_reward_ratio": str(pipeline_candidate.risk_reward_ratio),
+        "stop_loss": str(pipeline_candidate.stop_loss),
+        "take_profit": str(pipeline_candidate.take_profit),
+    }
+    if gates:
+        items["l4_gates"] = ",".join(gates)
+    if triggers:
+        items["l5_triggers"] = ",".join(triggers)
+    return tuple(sorted(items.items()))
 
 
 def _detail_vi(pipeline_candidate: PipelineCandidate, card: StrategyCard, atr: Decimal) -> str:

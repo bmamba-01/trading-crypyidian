@@ -495,13 +495,19 @@ def _ladder_rows(view: SignalCardView) -> list[_LadderRow]:
             )
         )
     for target in view.targets[:MAX_CARD_TARGETS]:
+        chip = format_r_vi(target.r_multiple)
+        if target.net_r_multiple is not None:
+            chip = f"{chip} · ròng {format_r_vi(target.net_r_multiple)}"
+        label = target.label
+        if target.stop_to_entry_after:
+            label = f"{label} · hòa vốn"
         rows.append(
             _LadderRow(
                 "target",
-                target.label,
+                label,
                 format_price_vi(target.price),
                 target.price,
-                format_r_vi(target.r_multiple),
+                chip,
                 (target.price - entry_mid) / entry_mid if entry_mid else None,
             )
         )
@@ -513,7 +519,12 @@ def _ladder_rows(view: SignalCardView) -> list[_LadderRow]:
 def _draw_ladder(canvas: _Canvas, view: SignalCardView) -> None:
     rows = _ladder_rows(view)
     row_height = 84
-    note = "R thô, chưa trừ phí" if view.stop is not None else "Chưa dựng được SL/TP"
+    has_net = any(t.net_r_multiple is not None for t in view.targets)
+    note = (
+        "R thô / R:R ròng sau phí"
+        if (view.stop is not None and has_net)
+        else ("R thô, chưa trừ phí" if view.stop is not None else "Chưa dựng được SL/TP")
+    )
     rail_x = _PAD + _INNER + 22
     label_x = rail_x + 44
     right = CARD_WIDTH - _PAD - _INNER

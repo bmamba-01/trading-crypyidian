@@ -179,13 +179,15 @@ def short_id(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CardTarget:
-    """Một mốc giá mục tiêu; ``source`` là ``recipe`` hoặc ``r_ladder`` (mốc R tham chiếu)."""
+    """Một mốc giá mục tiêu (``plan_ladder``, ``candidate_ladder``, ``recipe``, ``r_ladder``)."""
 
     label: str
     price: Decimal
     r_multiple: Decimal | None
     source: str = "r_ladder"
     net_r_multiple: Decimal | None = None
+    close_fraction: Decimal | None = None
+    stop_to_entry_after: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +290,8 @@ def signal_card_view_from(
                     r_multiple=_to_decimal(item.get("r_multiple")),
                     source=str(item.get("source") or "r_ladder"),
                     net_r_multiple=_to_decimal(item.get("net_r_multiple")),
+                    close_fraction=_to_decimal(item.get("close_fraction")),
+                    stop_to_entry_after=bool(item.get("stop_to_entry_after", False)),
                 )
             )
     checklist: list[CardChecklistItem] = []

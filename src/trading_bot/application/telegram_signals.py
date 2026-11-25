@@ -197,9 +197,10 @@ def _card_lines(card: Mapping[str, object]) -> list[str]:
             if isinstance(target, Mapping):
                 net_r = target.get("net_r_multiple")
                 net_part = f" · ròng {_r_multiple(net_r)}R" if net_r is not None else ""
+                be_part = " · dời SL hòa vốn" if target.get("stop_to_entry_after") else ""
                 lines.append(
                     f"  • {target.get('label')}: {_price(target.get('price'))} "
-                    f"({_r_multiple(target.get('r_multiple'))}R{net_part})"
+                    f"({_r_multiple(target.get('r_multiple'))}R{net_part}{be_part})"
                 )
     checklist = card.get("checklist")
     if isinstance(checklist, list | tuple) and checklist:

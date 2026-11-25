@@ -538,6 +538,10 @@
           <h4>{{ ico("exit") }}<span>Vì Sao Thoát Vị Thế? (Chi Phí & Rủi Ro)</span></h4>
           <dl class="kv-list">
             <div class="kv"><dt>{{ ico("exit") }}{{ help_term("exit_reason", "Lý do đóng vị thế") }}</dt><dd>{{ exit_badge(selected_trade.exit_reason) }}</dd></div>
+            {% set exit_fills = selected_trade.fills | selectattr("role", "equalto", "EXIT") | list if selected_trade.fills else [] %}
+            {% if exit_fills %}
+            <div class="kv kv--stack"><dt>{{ ico("exit") }}Chi tiết từng fill thoát ({{ exit_fills | length }})</dt><dd><ul class="kv-fill-list" data-exit-fills-list>{% for ef in exit_fills %}<li>{{ exit_badge(ef.exit_reason or ef.position_event_type) }} · giá {{ ef.price | number_vi }} × KL {{ ef.quantity | number_vi }}{% if ef.position_event_type %} (<code>{{ ef.position_event_type }}</code>){% endif %}</li>{% endfor %}</ul></dd></div>
+            {% endif %}
             <div class="kv kv--stack"><dt>{{ ico("slippage") }}{{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}</dt><dd class="num{% if pm.classification == 'DEVIANT_SLIPPAGE' %} report-kpi__value--down{% endif %}">{{ money(selected_trade.slippage_total, quote) }}{% if xa.slippage_bps is not none %} (<span title="{{ xa.slippage_bps | number_vi }} bps">{{ xa.slippage_bps | number2_vi }}</span> bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if xa.expected_slippage is not none %} · kế hoạch dự trù {{ money(xa.expected_slippage, quote) }}{% endif %}</dd></div>
             <div class="kv"><dt>{{ ico("fee") }}{{ help_term("trade_fees_funding", "Phí giao dịch & Phí Funding") }}</dt><dd class="num">Phí {{ money(selected_trade.fee_total, quote) }} · Funding {{ money(selected_trade.funding_total, quote) }}</dd></div>
             <div class="kv"><dt>{{ ico("cost") }}{{ help_term("total_cost", "Tổng chi phí thực thi") }}</dt><dd class="num">{{ money(selected_trade.total_cost, quote) }}</dd></div>

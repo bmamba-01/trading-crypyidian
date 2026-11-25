@@ -1104,7 +1104,7 @@ def _candidate_payload(candidate: StrategyCandidate) -> dict[str, Any]:
     recipe = {
         name: getattr(candidate.recipe, name) for name in candidate.recipe.__dataclass_fields__
     }
-    return {
+    payload: dict[str, Any] = {
         "atr_value": candidate.atr_value,
         "candidate_id": candidate.candidate_id,
         "detail_vi": candidate.detail_vi,
@@ -1126,6 +1126,30 @@ def _candidate_payload(candidate: StrategyCandidate) -> dict[str, Any]:
         "strategy_release_id": candidate.strategy_release_id,
         "symbol": candidate.symbol,
     }
+    # Chỉ ghi các trường tín hiệu v2 khi có dữ liệu để giữ nguyên hash quyết định v1.
+    if candidate.entry_zone_low is not None:
+        payload["entry_zone_low"] = str(candidate.entry_zone_low)
+    if candidate.entry_zone_high is not None:
+        payload["entry_zone_high"] = str(candidate.entry_zone_high)
+    if candidate.stop_price is not None:
+        payload["stop_price"] = str(candidate.stop_price)
+    if candidate.targets:
+        payload["targets"] = [item.as_dict() for item in candidate.targets]
+    if candidate.setup_id is not None:
+        payload["setup_id"] = candidate.setup_id
+    if candidate.invalidation:
+        payload["invalidation"] = [item.as_dict() for item in candidate.invalidation]
+    if candidate.confidence_tier is not None:
+        payload["confidence_tier"] = candidate.confidence_tier
+    if candidate.calibrated_probability is not None:
+        payload["calibrated_probability"] = candidate.calibrated_probability
+    if candidate.risk_reward_ratio is not None:
+        payload["risk_reward_ratio"] = str(candidate.risk_reward_ratio)
+    if candidate.card_score is not None:
+        payload["card_score"] = str(candidate.card_score)
+    if candidate.card_metadata:
+        payload["card_metadata"] = dict(sorted(candidate.card_metadata))
+    return payload
 
 
 def _require_aware(value: datetime, name: str) -> None:

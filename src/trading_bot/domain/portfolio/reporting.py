@@ -584,6 +584,11 @@ def _trade_row(
                     if fill.fill_key in position_event_by_fill
                     else None
                 ),
+                "exit_reason": (
+                    _optional_text(position_event_by_fill[fill.fill_key].payload.get("exit_reason"))
+                    if fill.fill_key in position_event_by_fill
+                    else None
+                ),
                 "quantity": canonical_decimal(fill.quantity),
                 "price": canonical_decimal(fill.price),
                 "occurred_at": canonical_time(fill.occurred_at),

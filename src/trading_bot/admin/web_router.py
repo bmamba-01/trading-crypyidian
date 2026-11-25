@@ -1423,7 +1423,11 @@ def _exit_reason_label_vi(reason: object) -> str:
     """Dịch mã đóng vị thế đã lưu, giữ nguyên mã chưa được biết."""
     labels = {
         "STOP_LOSS": "Dừng lỗ",
+        "TRAILING_STOP": "Dừng lỗ trượt (Trailing)",
         "TAKE_PROFIT": "Chốt lời",
+        "TAKE_PROFIT_1": "Chốt lời bậc 1 (TP1)",
+        "TAKE_PROFIT_2": "Chốt lời bậc 2 (TP2)",
+        "TAKE_PROFIT_3": "Chốt lời bậc 3 (TP3)",
         "TIME_STOP": "Đóng theo thời gian",
         "OPPOSING_SIGNAL": "Tín hiệu ngược chiều",
         "CHANNEL_EXIT": "Thoát theo kênh giá",
@@ -4953,7 +4957,28 @@ REPORT_CSV_FIELDS: tuple[str, ...] = (
     "net_pnl",
     "entry_reason",
     "exit_reason",
+    "exit_fill_reasons",
 )
+
+
+def _format_exit_fill_reasons(fills: object) -> str:
+    """Tóm tắt lý do thoát từng exit fill theo thứ tự ledger (ví dụ TP1 rồi TP2/SL)."""
+    if not isinstance(fills, list):
+        return ""
+    parts: list[str] = []
+    for fill in fills:
+        if not isinstance(fill, dict) or fill.get("role") != "EXIT":
+            continue
+        reason = fill.get("exit_reason") or fill.get("position_event_type") or "EXIT"
+        price = fill.get("price")
+        quantity = fill.get("quantity")
+        if price is not None and quantity is not None:
+            parts.append(f"{reason}@{price}({quantity})")
+        elif price is not None:
+            parts.append(f"{reason}@{price}")
+        else:
+            parts.append(str(reason))
+    return "; ".join(parts)
 
 
 def _report_csv_row(trade: dict[str, Any]) -> dict[str, Any]:
@@ -4961,7 +4986,12 @@ def _report_csv_row(trade: dict[str, Any]) -> dict[str, Any]:
     entry_quantity, entry_price = _fill_summary(trade.get("fills"), "ENTRY")
     _exit_quantity, exit_price = _fill_summary(trade.get("fills"), "EXIT")
     row = {key: trade.get(key) for key in REPORT_CSV_FIELDS}
-    row.update(quantity=entry_quantity, entry_price=entry_price, exit_price=exit_price)
+    row.update(
+        quantity=entry_quantity,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        exit_fill_reasons=_format_exit_fill_reasons(trade.get("fills")),
+    )
     return {key: "" if value is None else value for key, value in row.items()}
 
 

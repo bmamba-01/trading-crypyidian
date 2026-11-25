@@ -402,8 +402,93 @@ class StrategySelection:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateTarget:
+    """Một bậc chốt lời có cấu trúc trong hợp đồng tín hiệu v2 (SIG-3)."""
+
+    index: int
+    price: Decimal
+    fraction: Decimal
+    r_multiple: Decimal | None = None
+    label: str | None = None
+    stop_to_entry_after: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.index) is not int or self.index < 1:
+            raise ValueError("index của CandidateTarget phải là số nguyên dương.")
+        if not isinstance(self.price, Decimal) or not self.price.is_finite() or self.price <= 0:
+            raise ValueError("price của CandidateTarget phải là Decimal hữu hạn dương.")
+        if (
+            not isinstance(self.fraction, Decimal)
+            or not self.fraction.is_finite()
+            or not Decimal("0") < self.fraction <= Decimal("1")
+        ):
+            raise ValueError("fraction của CandidateTarget phải nằm trong (0, 1].")
+        if self.r_multiple is not None and (
+            not isinstance(self.r_multiple, Decimal)
+            or not self.r_multiple.is_finite()
+            or self.r_multiple <= 0
+        ):
+            raise ValueError("r_multiple của CandidateTarget phải là Decimal hữu hạn dương.")
+        if self.label is not None and not self.label.strip():
+            raise ValueError("label của CandidateTarget không được để trống.")
+        if type(self.stop_to_entry_after) is not bool:
+            raise ValueError("stop_to_entry_after phải là bool.")
+
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "index": self.index,
+            "price": str(self.price),
+            "fraction": str(self.fraction),
+            "stop_to_entry_after": self.stop_to_entry_after,
+        }
+        if self.r_multiple is not None:
+            payload["r_multiple"] = str(self.r_multiple)
+        if self.label is not None:
+            payload["label"] = self.label
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidationRule:
+    """Điều kiện mất hiệu lực có cấu trúc cho hợp đồng tín hiệu v2 (SIG-3)."""
+
+    kind: str
+    detail_vi: str
+    price: Decimal | None = None
+    expires_at: datetime | None = None
+    bars: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.kind.strip():
+            raise ValueError("kind của InvalidationRule không được để trống.")
+        if not self.detail_vi.strip():
+            raise ValueError("detail_vi của InvalidationRule không được để trống.")
+        if self.price is not None and (
+            not isinstance(self.price, Decimal) or not self.price.is_finite() or self.price <= 0
+        ):
+            raise ValueError("price của InvalidationRule phải là Decimal hữu hạn dương.")
+        if self.expires_at is not None:
+            _aware(self.expires_at, "invalidation.expires_at")
+        if self.bars is not None and (type(self.bars) is not int or self.bars < 1):
+            raise ValueError("bars của InvalidationRule phải là số nguyên dương.")
+
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "kind": self.kind,
+            "detail_vi": self.detail_vi,
+        }
+        if self.price is not None:
+            payload["price"] = str(self.price)
+        if self.expires_at is not None:
+            payload["expires_at"] = self.expires_at.isoformat()
+        if self.bars is not None:
+            payload["bars"] = self.bars
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyCandidate:
-    """Tín hiệu giả định có cửa sổ hiệu lực, bằng chứng và kế hoạch thoát."""
+    """Tín hiệu giả định có cửa sổ hiệu lực, bằng chứng và kế hoạch thoát (hỗ trợ v1 và v2)."""
 
     strategy_id: str
     strategy_release_id: str
@@ -424,8 +509,27 @@ class StrategyCandidate:
     geometry_version: str | None
     reason_code: str
     detail_vi: str
+    # Các trường tùy chọn của hợp đồng tín hiệu v2 (SIG-3); mặc định rỗng để giữ nguyên hash v1.
+    entry_zone_low: Decimal | None = None
+    entry_zone_high: Decimal | None = None
+    stop_price: Decimal | None = None
+    targets: tuple[CandidateTarget, ...] = ()
+    setup_id: str | None = None
+    invalidation: tuple[InvalidationRule, ...] = ()
+    confidence_tier: str | None = None
+    calibrated_probability: float | None = None
+    risk_reward_ratio: Decimal | None = None
+    card_score: Decimal | None = None
+    card_metadata: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "targets", _immutable_tuple(self.targets, "targets"))
+        object.__setattr__(
+            self, "invalidation", _immutable_tuple(self.invalidation, "invalidation")
+        )
+        object.__setattr__(
+            self, "card_metadata", _immutable_tuple(self.card_metadata, "card_metadata")
+        )
         for name in (
             "strategy_id",
             "strategy_release_id",
@@ -473,6 +577,88 @@ class StrategyCandidate:
             )
         ):
             raise ValueError("Evidence ID và natural key không được để trống.")
+        # Kiểm tra hợp lệ các trường v2 nếu được cung cấp.
+        if (self.entry_zone_low is None) != (self.entry_zone_high is None):
+            raise ValueError("entry_zone_low và entry_zone_high phải đi cùng nhau.")
+        if self.entry_zone_low is not None and self.entry_zone_high is not None:
+            for name, val in (
+                ("entry_zone_low", self.entry_zone_low),
+                ("entry_zone_high", self.entry_zone_high),
+            ):
+                if not isinstance(val, Decimal) or not val.is_finite() or val <= 0:
+                    raise ValueError(f"{name} phải là Decimal hữu hạn dương.")
+            if self.entry_zone_low > self.entry_zone_high:
+                raise ValueError("entry_zone_low không được lớn hơn entry_zone_high.")
+        zone_low = self.entry_zone_low if self.entry_zone_low is not None else self.reference_price
+        zone_high = (
+            self.entry_zone_high if self.entry_zone_high is not None else self.reference_price
+        )
+        if self.stop_price is not None:
+            if (
+                not isinstance(self.stop_price, Decimal)
+                or not self.stop_price.is_finite()
+                or self.stop_price <= 0
+            ):
+                raise ValueError("stop_price phải là Decimal hữu hạn dương.")
+            if self.direction == "long" and not self.stop_price < zone_low:
+                raise ValueError("LONG: stop_price phải thấp hơn vùng vào.")
+            if self.direction == "short" and not self.stop_price > zone_high:
+                raise ValueError("SHORT: stop_price phải cao hơn vùng vào.")
+        if self.targets:
+            if any(type(item) is not CandidateTarget for item in self.targets):
+                raise ValueError("targets phải gồm các CandidateTarget.")
+            indices = [item.index for item in self.targets]
+            if indices != sorted(set(indices)):
+                raise ValueError("index của targets phải tăng dần và không trùng.")
+            if sum((item.fraction for item in self.targets), Decimal("0")) > Decimal("1"):
+                raise ValueError("Tổng tỷ lệ chốt của targets không được vượt quá 1.")
+            if self.direction == "long":
+                previous = zone_high
+                for target in self.targets:
+                    if not target.price > previous:
+                        raise ValueError("LONG: mục tiêu phải cao hơn vùng vào và tăng dần.")
+                    previous = target.price
+            else:
+                previous = zone_low
+                for target in self.targets:
+                    if not target.price < previous:
+                        raise ValueError("SHORT: mục tiêu phải thấp hơn vùng vào và giảm dần.")
+                    previous = target.price
+        if self.setup_id is not None and not self.setup_id.strip():
+            raise ValueError("setup_id không được để trống.")
+        if any(type(item) is not InvalidationRule for item in self.invalidation):
+            raise ValueError("invalidation phải gồm các InvalidationRule.")
+        if self.confidence_tier is not None and not self.confidence_tier.strip():
+            raise ValueError("confidence_tier không được để trống.")
+        if self.calibrated_probability is not None and (
+            not math.isfinite(self.calibrated_probability)
+            or not 0.0 <= self.calibrated_probability <= 1.0
+        ):
+            raise ValueError("calibrated_probability phải nằm trong [0, 1].")
+        if self.risk_reward_ratio is not None and (
+            not isinstance(self.risk_reward_ratio, Decimal)
+            or not self.risk_reward_ratio.is_finite()
+            or self.risk_reward_ratio <= 0
+        ):
+            raise ValueError("risk_reward_ratio phải là Decimal hữu hạn dương.")
+        if self.card_score is not None and (
+            not isinstance(self.card_score, Decimal) or not self.card_score.is_finite()
+        ):
+            raise ValueError("card_score phải là Decimal hữu hạn.")
+        if self.card_metadata:
+            meta_keys: list[str] = []
+            for pair in self.card_metadata:
+                if (
+                    type(pair) is not tuple
+                    or len(pair) != 2
+                    or not isinstance(pair[0], str)
+                    or not isinstance(pair[1], str)
+                    or not pair[0].strip()
+                ):
+                    raise ValueError("card_metadata phải là các cặp (key, value) dạng chuỗi.")
+                meta_keys.append(pair[0])
+            if len(meta_keys) != len(set(meta_keys)):
+                raise ValueError("card_metadata không được trùng key.")
 
     @property
     def candidate_id(self) -> str:
@@ -481,7 +667,7 @@ class StrategyCandidate:
             name: _canonical_candidate_value(getattr(self.recipe, name))
             for name in self.recipe.__dataclass_fields__
         }
-        payload = {
+        payload: dict[str, object] = {
             "strategy_id": self.strategy_id,
             "strategy_release_id": self.strategy_release_id,
             "release_content_hash": self.release_content_hash,
@@ -501,6 +687,29 @@ class StrategyCandidate:
             "geometry_version": self.geometry_version,
             "reason_code": self.reason_code,
         }
+        # Chỉ đưa các trường v2 vào hash khi có giá trị để bảo toàn 100% hash candidate v1.
+        if self.entry_zone_low is not None:
+            payload["entry_zone_low"] = str(self.entry_zone_low)
+        if self.entry_zone_high is not None:
+            payload["entry_zone_high"] = str(self.entry_zone_high)
+        if self.stop_price is not None:
+            payload["stop_price"] = str(self.stop_price)
+        if self.targets:
+            payload["targets"] = [item.as_dict() for item in self.targets]
+        if self.setup_id is not None:
+            payload["setup_id"] = self.setup_id
+        if self.invalidation:
+            payload["invalidation"] = [item.as_dict() for item in self.invalidation]
+        if self.confidence_tier is not None:
+            payload["confidence_tier"] = self.confidence_tier
+        if self.calibrated_probability is not None:
+            payload["calibrated_probability"] = self.calibrated_probability
+        if self.risk_reward_ratio is not None:
+            payload["risk_reward_ratio"] = str(self.risk_reward_ratio)
+        if self.card_score is not None:
+            payload["card_score"] = str(self.card_score)
+        if self.card_metadata:
+            payload["card_metadata"] = dict(sorted(self.card_metadata))
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
