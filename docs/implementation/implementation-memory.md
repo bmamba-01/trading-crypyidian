@@ -13,6 +13,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-294 [WP-03D/Task7] Done: Snapshot venue, đối soát startup/reconnect, foreign activity & cổng readiness
+
+- **Thay đổi:**
+  - `src/trading_bot/domain/execution/venue_reconciliation.py`: định nghĩa `VenueAuthoritativeSnapshot` (basis vốn `venue_equity = wallet_balance + unrealized_pnl`, `deduped_fills()` chống duplicate fill, `to_account_activity_snapshot()` chuyển trực tiếp sang `AccountActivitySnapshot(source='VENUE')`), 7 trạng thái `VenueReconcileOutcome` tường minh (`MATCHED`, `ORDER_ABSENT`, `OPEN_EXPOSURE_RECORDED`, `FOREIGN_ACTIVITY`, `PROTECTION_MISSING`, `MISMATCH`, `STALE_INCOMPLETE`), `reconcile_venue_startup` và `reconcile_venue_reconnect` (fail-closed `STREAM_GAP_UNCLOSABLE` khi lịch sử REST không phủ tới `last_stream_event_at`).
+  - `src/trading_bot/application/venue_readiness_gate.py`: `VenueStartupReadinessGate` đóng mặc định; chỉ mở khi reconcile trả `MATCHED`, `risk_policy_approved=True` và `open_incidents_count == 0`.
+  - `tests/unit/test_venue_reconciliation.py`, `tests/unit/test_venue_readiness.py` & `tests/e2e/test_wp03d_venue_reconciliation_e2e.py`.
+- **Kiểm chứng:**
+  - `uv run pytest -q --tb=short tests/unit/test_venue_reconciliation.py tests/unit/test_venue_readiness.py tests/e2e/test_wp03d_venue_reconciliation_e2e.py`: exit code `0`, **5 passed in 17.80s**, 0 skipped (gồm PostgreSQL Compose E2E chứng minh foreign position tạo `AccountActivityIncidentRecord(status='OPEN', source='VENUE')` có `RuntimeFence`, giữ gate đóng, sau khi owner resolve `RESOLVED` + reconcile sạch mới mở cổng readiness).
+  - Ruff check/format, Mypy & `git diff --check`: 100% clean.
+
 ### 2026-11-25 — WP-07C: CRY-364, CRY-365 & CRY-366 Done (Backfill orchestration, Scheduler, Macro & Raw Evidence Replay)
 
 - **CRY-364 (`[WP-07C/backfill-orchestration]` — commit `cb6835ea`):**
@@ -113,6 +123,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn:** `docs/research/glossary-vi.md` mục CL — Wilder 1978, Murphy 1999, Kaufman 1998, Bollinger 2001, Andersen 2001; URL TA-Lib (`/functions/ema.md`, `adx.md`, `rsi.md`, `macd.md`) và Investopedia VWAP đã web_extract thành công.
 - **Kiểm chứng:** golden 11 test (vòng 2 bổ sung MACD + zscore inclusive); cùng `test_feature_snapshot.py` + `test_fx6_warmup_3x.py` **30 passed/0,14s**; ruff/diff-check sạch. Tracker **#4886**, **#4887**, **#4894**.
 - **Còn mở:** chữ ký semantic review của owner (không tự ký); phối hợp FX-6; giữ In Progress. Mục CL glossary đã phủ mọi công thức FeatureCalculator.
+- **Bản review gửi owner:** `docs/implementation/wp02b-cry241-semantic-review.md` — F1–F13, 8 khác biệt TA-Lib, R1–R6 nhãn regime, ô chữ ký; tracker **#4934**. Câu hỏi dễ gây tranh cãi nhất: ER phẳng=0 vs KAMA=1, vùng ADX 18–20 → UNKNOWN, RV ưu tiên hơn TREND.
 
 ### 2026-11-25 — Setup AI module chạy được: warmup 600/768 cho feature vector
 
