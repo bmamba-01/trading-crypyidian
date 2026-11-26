@@ -13,6 +13,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-26 — CRY-293 [WP-03C/Task6] Done: Partial fill & lệnh bảo vệ qua Binance USDⓈ-M Algo Service
+
+- **Nguồn tài liệu hiện hành kiểm tra ngày 2026-11-26:**
+  - Binance USDⓈ-M Futures Developer Docs (`POST /fapi/v1/algoOrder`, `DELETE /fapi/v1/algoOrder`, `GET /fapi/v1/algoOrder`, `GET /fapi/v1/openAlgoOrders` — https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log & Trade REST API): xác nhận 5 loại conditional order chỉ đi qua Algo Service (`STOP_MARKET`, `TAKE_PROFIT_MARKET`, `STOP`, `TAKE_PROFIT`, `TRAILING_STOP_MARKET`), `workingType` (`MARK_PRICE`/`CONTRACT_PRICE`), `closePosition=true` chỉ dùng với `STOP_MARKET`/`TAKE_PROFIT_MARKET` và cấm gửi kèm `quantity`/`reduceOnly=true`, `reduceOnly=true` cấm trong Hedge Mode, và `callbackRate` cho `TRAILING_STOP_MARKET` trong đoạn `[0.1, 20]` (Change Log 23/10/2026).
+- **Thay đổi:**
+  - `src/trading_bot/domain/execution/algo_protection.py`: định nghĩa `AlgoOrderParams` (kiểm tra chặt mọi ràng buộc USDⓈ-M Algo), `AlgoProtectionLink` (quan hệ bền vững entry intent ↔ algo order ↔ lệnh thường sinh sau trigger ↔ fills), `ProtectionCoverageAssessment` và `assess_protection_coverage` (đánh giá độ phủ bảo vệ chỉ từ trạng thái sàn xác nhận `NEW`, không tin intent nội bộ).
+  - `src/trading_bot/adapters/binance_usdm/algo_rest.py`: triển khai `AlgoOrderPort` và `BinanceUsdMAlgoRestAdapter` (`POST/DELETE/GET /fapi/v1/algoOrder`, `GET /fapi/v1/openAlgoOrders`) ghim chặt `BinanceDemoTarget`, ký HMAC-SHA256, không retry tự động trên `UNKNOWN`, không lộ secret.
+  - `src/trading_bot/application/algo_protection_coordinator.py`: triển khai `AlgoProtectionCoordinator` với conservative replace (đặt lệnh bảo vệ mới và chờ ACK `NEW` trước khi hủy lệnh cũ để tránh khoảng trống không bảo vệ), xử lý `ALGO_UPDATE.REJECTED` đóng gate & phát `ProtectionEscalation`, nối `actualOrderId` ↔ `linked_fill_ids`, đối soát `openAlgoOrders`, và `cleanup_orphan_protections` chỉ dọn khi vị thế về 0 và `no_open_trigger_confirmed=True`.
+  - `tests/unit/test_wp03c_algo_protection.py` & `tests/e2e/test_wp03c_algo_protection_e2e.py`: kiểm chứng toàn bộ ràng buộc tham số, REST adapter, partial fill → successive fill (conservative replace), trigger linkage, rejection escalation, orphan cleanup, và PostgreSQL Compose E2E chứng minh khóa `BotRuntimeStateRecord(readiness='RECOVERY_REQUIRED', reason_code='PROTECTION_REJECTED')` rồi khôi phục `READY` + 0 algo mồ côi.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format` & `uv run mypy` trên 3 source files + 2 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_wp03c_algo_protection.py tests/e2e/test_wp03c_algo_protection_e2e.py`: exit code `0`, **5 passed in 15.96s**, 0 skipped (gồm PostgreSQL Compose E2E).
+
 ### 2026-11-26 — CRY-308 [WP-05G/erasure] Done: Hợp đồng erasure, retention, blob object store, deletion receipt & lan truyền takedown
 
 - **Thay đổi:**
