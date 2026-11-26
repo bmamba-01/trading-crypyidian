@@ -13,6 +13,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-26 — CRY-295 [WP-03D/Task7-runbook] Done: Runbook tiếng Việt vận hành thực thi Binance USDⓈ-M
+
+- **Thay đổi:**
+  - `docs/operations/wp03d-venue-execution-runbook.md`: runbook vận hành tiếng Việt chuyên biệt cho WP-03D gồm bảng ánh xạ Reason Code ↔ trạng thái cổng Entry/Reservation và đủ 6 kịch bản bắt buộc: (1) Restart khi có lệnh/vị thế mở, (2) Xoay & thu hồi API key Demo (`execution-gateway` only, tắt withdraw/transfer), (3) API outage, HTTP `429` backoff, `418` IP ban và phân loại từng loại `503` (`Unknown error` giữ `UNKNOWN` + query trước retry; `Service Unavailable`/`Internal error` retry có backoff), (4) `listenKey` hết hạn, stream gap & giới hạn lịch sử REST (`STREAM_GAP_UNCLOSABLE`), (5) Lệnh bảo vệ / Algo order thiếu hoặc bị từ chối (nêu rõ cap breach/pause/kill không tự flatten), (6) Xung đột đối soát `MISMATCH`, `FOREIGN_ACTIVITY` (`EXTERNAL_ACTIVITY_UNRECONCILED`) và quy trình xử lý thủ công (không tự adopt/hủy/flatten).
+  - `tests/unit/test_wp03d_runbook_verification.py`: kiểm chứng tự động đủ 6 kịch bản, phân loại 429/418/503, đủ reason codes WP-03D, nguyên tắc an toàn và không lộ secret.
+- **Kiểm chứng:**
+  - `uv run pytest -q --tb=short tests/unit/test_wp03d_runbook_verification.py tests/unit/test_venue_reconciliation.py tests/unit/test_venue_readiness.py tests/e2e/test_wp03d_venue_reconciliation_e2e.py`: exit code `0`, **6 passed in 32.57s**, 0 skipped (gồm PostgreSQL Compose E2E WP-03D); Ruff check/format & `git diff --check` clean 100%.
+
 ### 2026-11-25 — CRY-294 [WP-03D/Task7] Done: Snapshot venue, đối soát startup/reconnect, foreign activity & cổng readiness
 
 - **Thay đổi:**
@@ -117,13 +125,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Trigger DB tự sinh `bot_instance` khi insert `trading_account`, và `mb05_guard_runtime_lease` giới hạn TTL của `bot_runtime_lease` (dùng 30s).
   - Task này **không tự mở Live**; việc kết nối production thật vẫn khóa sau các gate OPS07F/Task3–4 & G0–G5.
 
+### 2026-11-25 — Rà soát tác động sau CRY-241 + CRY-220 golden đi ngang
+
+- **Tác động đã cập nhật theo phương án chốt:** dòng WP-02B trong `project-status.md` → hoàn thiện (golden + semantic review #4942); probe RT1 `206/205 → 640` nến theo warmup 600/cửa sổ 768 (F13). E2E RT1 chạy 3 lần đều dừng ở `postgres is unhealthy` do Docker daemon quá tải (nhiều container `crypidian-review` unhealthy), chưa có bằng chứng xanh — không ép chạy bằng cách kill container của agent khác. `scalping_validation.py` có nhãn version riêng `crypidian-features-v1` (khác `crypidian-formulas-v1` của FeatureCalculator) — ghi nhận review riêng, không đổi vội.
+- **CRY-220 [CK-2/con-lai]:** Backlog → In Progress, comment **#4950**. `tests/unit/test_cry220_ck2_golden_sideways.py`: golden đi ngang (`trend=range`, không hướng/không "độ mạnh %"), chip % từ giá mở khung lớn, streaming=batch cho swing đã xác nhận. Kiểm chứng 3 test mới + regression `test_ck_market_overview.py` **10 passed/0,08s**; ruff sạch.
+- **Còn mở CRY-220:** vai trò khung khai báo theo setup, mục 7 (bộ lọc khung lớn chờ owner quyết lược đồ), Playwright chart; E2E RT1 cần chạy lại khi Docker rảnh.
+
 ### 2026-11-25 — CRY-241 golden fixture công thức feature
 
 - **Phạm vi:** `tests/unit/test_cry241_golden_feature_formulas.py` 11 test với giá trị tính tay: SMA/EMA seed + warmup, TR/ATR Wilder, +DI/−DI/DX/ADX nến phẳng, RSI flat/tăng, ER/Bollinger/z-score mẫu số 0, realized volatility không annualize, VWAP + reset session, input fail-closed, semantic review `MarketRegime` (TREND/RANGE/HIGH_VOLATILITY/UNKNOWN + reason code). Không đổi `formula_version` hay hash snapshot.
 - **Nguồn:** `docs/research/glossary-vi.md` mục CL — Wilder 1978, Murphy 1999, Kaufman 1998, Bollinger 2001, Andersen 2001; URL TA-Lib (`/functions/ema.md`, `adx.md`, `rsi.md`, `macd.md`) và Investopedia VWAP đã web_extract thành công.
 - **Kiểm chứng:** golden 11 test (vòng 2 bổ sung MACD + zscore inclusive); cùng `test_feature_snapshot.py` + `test_fx6_warmup_3x.py` **30 passed/0,14s**; ruff/diff-check sạch. Tracker **#4886**, **#4887**, **#4894**.
-- **Còn mở:** chữ ký semantic review của owner (không tự ký); phối hợp FX-6; giữ In Progress. Mục CL glossary đã phủ mọi công thức FeatureCalculator.
-- **Bản review gửi owner:** `docs/implementation/wp02b-cry241-semantic-review.md` — F1–F13, 8 khác biệt TA-Lib, R1–R6 nhãn regime, ô chữ ký; tracker **#4934**. Câu hỏi dễ gây tranh cãi nhất: ER phẳng=0 vs KAMA=1, vùng ADX 18–20 → UNKNOWN, RV ưu tiên hơn TREND.
+- **Chốt:** người dùng (`leecris241`, Owner) đồng ý toàn bộ (phiên 25/11/2026, comment #4934); biên bản `docs/implementation/wp02b-cry241-semantic-review.md` mục 7 đã điền chữ ký xác nhận bằng lời (không tự dựng chữ ký tay). Không đổi công thức/`formula_version`/hash snapshot. Ticket In Progress → **Done**, comment **#4942**. Mọi thay đổi công thức sau này phải tăng `formula_version` và làm golden mới.
+- **Bản review gửi owner:** `docs/implementation/wp02b-cry241-semantic-review.md` — F1–F13, 8 khác biệt TA-Lib, R1–R6 nhãn regime, ô chữ ký; tracker **#4934**. Câu hỏi dễ gây tranh cãi nhất: ER phẳng=0 vs KAMA=1, vùng ADX 18–20 → UNKNOWN, RV ưu tiên hơn TREND — đều đã được duyệt.
 
 ### 2026-11-25 — Setup AI module chạy được: warmup 600/768 cho feature vector
 
