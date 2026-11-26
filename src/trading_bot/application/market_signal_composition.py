@@ -324,6 +324,9 @@ def build_market_signal_scanner(
         sessions,
         runtime_gate=SignalRuntimeGate(),
         exclusion_recorder=SignalExclusionRecorder(),
+        # F13: h01-v1 cần warm-up 3×200=600 nến; mặc định 256 của provider làm
+        # snapshot chỉ thấy 256 nến → H01_FEATURE_UNAVAILABLE dù producer đã đọc 768.
+        max_bars_per_stream=_MAX_BARS_PER_STREAM,
     )
     store = PostgresSignalDecisionStore(
         sessions,

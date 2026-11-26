@@ -70,7 +70,7 @@
     </div>
     <div class="mc-live__item mc-live__item--mtf">
       <span class="mc-live__label">Đồng thuận đa khung</span>
-      <span class="mc-live__value mc-live__arrows" data-ov-arrows>{% for cell in overview.mtf.cells %}<span class="mc-arrow mc-arrow--{{ cell.trend }}" title="{{ cell.timeframe | upper }}: {{ cell.label }}"><abbr>{{ cell.timeframe | upper }}</abbr>{{ OV_ARROW[cell.trend] }}</span>{% endfor %}</span>
+      <span class="mc-live__value mc-live__arrows" data-ov-arrows>{% for cell in overview.mtf.cells %}<span class="mc-arrow mc-arrow--{{ cell.trend }}" title="{{ cell.timeframe | upper }}: {{ cell.label }}"><abbr>{{ cell.timeframe | upper }}</abbr>{{ OV_ARROW[cell.trend] }}<small class="mc-arrow__change">{% if cell.change_pct is not none %}{{ '%+.1f' | format(cell.change_pct) }}%{% endif %}</small></span>{% endfor %}</span>
       <span class="mc-live__sub" data-ov-consensus>{{ cons.label }}</span>
     </div>
     <div class="mc-live__item">
@@ -104,6 +104,25 @@
         <div><dt>Cập nhật</dt><dd data-mc-updated>—</dd></div>
       </dl>
     </header>
+    {#- CK-3 mục 7: panel danh sách vùng còn hiệu lực, có nguồn khung và giới hạn mobile. -#}
+    {% set ict_block = (chart_payload.ict if chart_payload else {}) or {} %}
+    {% set higher_tf = ict_block.get("timeframes", {}).get("higher") %}
+    {% set zone_limit = ict_block.get("mobile_limit", 4) %}
+    <section class="mc-zones" data-mc-zones data-mc-zone-limit="{{ zone_limit }}" aria-labelledby="mc-zones-title">
+      <h3 id="mc-zones-title">Vùng ({{ ict_block.get("counts", {}).get("active", 0) }})<small> · khung {{ timeframe | upper }}{% if higher_tf %} + {{ higher_tf | upper }}{% endif %}</small></h3>
+      <ul class="mc-zones__list">
+        {% for zone in ict_block.get("panel_zones", []) %}
+        <li class="mc-zones__row" data-mc-zone-row data-mc-zone-timeframe="{{ zone.timeframe }}" data-mc-zone-kind="{{ zone.kind }}">
+          <span class="mc-zones__label">{{ zone.label }}</span>
+          <span class="mc-zones__tf">{{ zone.timeframe | upper }}</span>
+          <span class="mc-zones__range num">{{ ov_price(zone.bottom) }} – {{ ov_price(zone.top) }}</span>
+          <span class="mc-zones__state">{{ zone.state }}</span>
+        </li>
+        {% else %}
+        <li class="mc-zones__empty">Chưa có vùng ICT còn hiệu lực trên hai khung này.</li>
+        {% endfor %}
+      </ul>
+    </section>
     <p id="mc-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng và khối lượng.</p>
     {#- CK-7: điều khiển vùng nhìn, cỡ chart và phím tắt (chart nhận phím khi được focus). -#}
     <div class="mc-controls" role="toolbar" aria-label="Điều khiển biểu đồ">

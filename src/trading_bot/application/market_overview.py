@@ -35,6 +35,21 @@ MTF_ROLES: tuple[tuple[str, str], ...] = (
     ("15m", "Động lượng"),
     ("5m", "Thời điểm"),
 )
+# CK-2 mục 3: vai trò được khai báo theo setup/strategy, không cứng trong UI.
+# Chỉ dùng strategy_id làm khóa, không đụng DB schema (mục 7 vẫn chờ owner).
+SETUP_MTF_ROLES: Mapping[str, tuple[tuple[str, str], ...]] = {
+    "h01": MTF_ROLES,
+    "h03": (("1h", "Xu hướng chính"), ("15m", "Động lượng"), ("5m", "Thời điểm")),
+    "h06": (("15m", "Xu hướng chính"), ("5m", "Thời điểm")),
+}
+
+
+def resolve_mtf_roles(strategy_id: str | None) -> tuple[tuple[str, str], ...]:
+    """Trả vai trò khung theo setup đã khai báo; fallback an toàn khi chưa có khai báo."""
+    key = (strategy_id or "").strip().lower().split("-")[0].split(":")[0]
+    return SETUP_MTF_ROLES.get(key, MTF_ROLES)
+
+
 # Giá trực tiếp cũ hơn ngưỡng thì không dùng làm "giá hiện tại".
 QUOTE_STALE_SECONDS = 30
 MARK_STALE_SECONDS = 180
@@ -171,8 +186,12 @@ def build_market_overview(
     positions: Sequence[Mapping[str, Any]] = (),
     open_gaps: Sequence[Mapping[str, Any]] = (),
     source_label: str = "—",
+    mtf_roles: tuple[tuple[str, str], ...] | None = None,
 ) -> dict[str, Any]:
     """JSON cho dải thông số (CK-1) và ma trận đa khung (CK-2) của một mã."""
+    roles = mtf_roles or MTF_ROLES
+    if not roles or len({frame for frame, _ in roles}) != len(roles):
+        raise ValueError("Vai trò khung phải khác nhau và không rỗng.")
     if now.tzinfo is None:
         raise ValueError("now phải có timezone")
     if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
@@ -241,13 +260,13 @@ def build_market_overview(
 
     cells: list[TimeframeTrend] = []
     payload_cells: list[dict[str, Any]] = []
-    for frame, role in MTF_ROLES:
+    for frame, role in roles:
         rows = list(bars_by_timeframe.get(frame, ()))[-OVERVIEW_BAR_LIMIT:]
         times, opens, highs, lows, closes = _series(rows)
         cell = timeframe_trend(frame, times, highs, lows, closes, opens=opens)
         cells.append(cell)
         payload_cells.append(_cell_payload(cell, role))
-    primary = next((cell.timeframe for cell in cells if cell.bar_count), MTF_ROLES[0][0])
+    primary = next((cell.timeframe for cell in cells if cell.bar_count), roles[0][0])
     consensus = mtf_consensus(cells, primary=primary)
 
     # CK-7: UPnL vị thế PAPER theo mark price còn mới, nếu không thì theo giá hiện tại kèm nguồn.
@@ -300,6 +319,7 @@ def build_market_overview(
         ],
         "mtf": {
             "cells": payload_cells,
+            "roles_source": "setup" if mtf_roles is not None else "default",
             "consensus": {
                 "primary": consensus.primary,
                 "direction": consensus.direction,

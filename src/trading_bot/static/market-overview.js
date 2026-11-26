@@ -102,6 +102,13 @@
           const abbr = document.createElement("abbr");
           abbr.textContent = cell.timeframe.toUpperCase();
           span.append(abbr, ARROW[cell.trend] || "·");
+          if (cell.change_pct !== null && cell.change_pct !== undefined) {
+            const change = document.createElement("small");
+            change.className = "mc-arrow__change";
+            const value = Number(cell.change_pct);
+            change.textContent = `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+            span.append(change);
+          }
           return span;
         })
       );

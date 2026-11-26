@@ -87,6 +87,19 @@ ZIGZAG_MIN_MOVE_ATR = 2.0
 KILLZONE_MAX_INTERVAL_SECONDS = 900
 KILLZONE_LOOKBACK = timedelta(days=3)
 ICT_ZONE_LIMITS = {"fvg": 12, "order_block": 8, "bpr": 4}
+# CK-3/ob-da-khung: OB chỉ lấy khung đang xem + đúng một khung lớn hơn.
+ICT_OB_HIGHER_TIMEFRAME: dict[str, str | None] = {
+    "1m": "5m",
+    "3m": "15m",
+    "5m": "15m",
+    "15m": "1h",
+    "30m": "4h",
+    "1h": "4h",
+    "4h": "1d",
+    "1d": None,
+}
+ICT_OB_HIGHER_LIMIT = 4
+ICT_MOBILE_ZONE_LIMIT = 4
 ICT_LIVE_STATES = frozenset({"active", "partial", "inverted"})
 ZONE_LABELS_VI = {
     ("fvg", "bullish"): "FVG tăng",
@@ -118,6 +131,11 @@ def market_source_label(source: str) -> str:
     if source == "BINANCE_USDM":
         return "Binance USDⓈ-M"
     return f"Dữ liệu mẫu ({source})" if source else "—"
+
+
+def higher_ob_timeframe(timeframe: str) -> str | None:
+    """Khung lớn hơn duy nhất dùng cho OB đa khung (CK-3); ``None`` khi đã là khung lớn nhất."""
+    return ICT_OB_HIGHER_TIMEFRAME.get(timeframe)
 
 
 def _series(times: Sequence[int], values: Sequence[float | None]) -> list[dict[str, float]]:
@@ -182,7 +200,14 @@ def _profile_payload(
     }
 
 
-def _zone_payload(zone: PriceZone, times: Sequence[int], last_close: int) -> dict[str, Any]:
+def _zone_payload(
+    zone: PriceZone,
+    times: Sequence[int],
+    last_close: int,
+    *,
+    timeframe: str,
+    source: str = "current",
+) -> dict[str, Any]:
     """Vùng ngừng kéo dài khi mất hiệu lực, hoặc khi FVG bị lấp đầy mà chưa đảo vai."""
     state = zone.state
     ended = zone.invalidated_index
@@ -196,6 +221,8 @@ def _zone_payload(zone: PriceZone, times: Sequence[int], last_close: int) -> dic
         "kind": zone.kind,
         "direction": zone.direction,
         "label": label,
+        "timeframe": timeframe,
+        "source": source,
         "top": zone.top,
         "bottom": zone.bottom,
         "start_time": times[zone.created_index],
@@ -210,6 +237,7 @@ def _zone_payload(zone: PriceZone, times: Sequence[int], last_close: int) -> dic
 
 def _ict_payload(
     *,
+    timeframe: str,
     times: Sequence[int],
     open_times: Sequence[datetime],
     opens: Sequence[float],
@@ -220,8 +248,11 @@ def _ict_payload(
     structure_swings: Sequence[Any],
     structure_breaks: Sequence[Any],
     interval: timedelta,
+    higher_bars: Sequence[Mapping[str, Any]] | None = None,
+    higher_timeframe: str | None = None,
+    higher_interval: timedelta | None = None,
 ) -> dict[str, Any]:
-    """Lớp ICT/SMC (CK-3) đã giới hạn số vùng; ưu tiên vùng còn hiệu lực, rồi vùng mới nhất."""
+    """Lớp ICT/SMC (CK-3) đã giới hạn số vùng; OB thêm đúng một khung lớn hơn đã đóng."""
     last_close_at = open_times[-1] + interval
     last_close = int(last_close_at.timestamp())
     killzones: list[dict[str, Any]] = []
@@ -250,8 +281,45 @@ def _ict_payload(
             key=lambda zone: (zone.state in ICT_LIVE_STATES, zone.confirmed_index),
             reverse=True,
         )[: ICT_ZONE_LIMITS[kind]]
-        zones.extend(_zone_payload(zone, times, last_close) for zone in ranked)
-    zones.sort(key=lambda item: item["confirmed_time"])
+        zones.extend(_zone_payload(zone, times, last_close, timeframe=timeframe) for zone in ranked)
+    # CK-3 mục 5: OB của khung lớn hơn chỉ tính từ nến đã đóng trước/khi khung nhỏ đóng nến cuối.
+    higher_ob_count = 0
+    if higher_bars and higher_timeframe and higher_interval is not None:
+        closed = [
+            bar
+            for bar in higher_bars
+            if datetime.fromtimestamp(int(bar["time"]), UTC) + higher_interval <= last_close_at
+        ]
+        if closed:
+            h_times = [int(bar["time"]) for bar in closed]
+            h_opens = [float(bar["open"]) for bar in closed]
+            h_highs = [float(bar["high"]) for bar in closed]
+            h_lows = [float(bar["low"]) for bar in closed]
+            h_closes = [float(bar["close"]) for bar in closed]
+            h_structure = market_structure(
+                h_highs,
+                h_lows,
+                h_closes,
+                left_bars=SWING_LEFT_BARS,
+                right_bars=SWING_RIGHT_BARS,
+            )
+            h_ranked = sorted(
+                order_blocks(h_opens, h_highs, h_lows, h_closes, h_structure.breaks),
+                key=lambda zone: (zone.state in ICT_LIVE_STATES, zone.confirmed_index),
+                reverse=True,
+            )[:ICT_OB_HIGHER_LIMIT]
+            zones.extend(
+                _zone_payload(
+                    zone,
+                    h_times,
+                    last_close,
+                    timeframe=higher_timeframe,
+                    source="higher",
+                )
+                for zone in h_ranked
+            )
+            higher_ob_count = len(h_ranked)
+    zones.sort(key=lambda item: (item["confirmed_time"], item["timeframe"]))
     levels = [
         {
             "side": level.side,
@@ -274,12 +342,24 @@ def _ict_payload(
         }
         for item in intermediate_swings(structure_swings)
     ][-8:]
+    live_zones = [item for item in zones if item["state"] in ICT_LIVE_STATES]
+    mobile_zones = sorted(
+        live_zones,
+        key=lambda item: (item["source"] != "higher", -item["confirmed_time"]),
+    )[:ICT_MOBILE_ZONE_LIMIT]
     return {
+        "timeframes": {"current": timeframe, "higher": higher_timeframe},
+        "mobile_limit": ICT_MOBILE_ZONE_LIMIT,
         "killzones": killzones,
         "zones": zones,
+        "panel_zones": mobile_zones,
+        "mobile_zones": mobile_zones,
         "equal_levels": levels,
         "intermediate_swings": swings,
-        "counts": {"active": sum(1 for item in zones if item["state"] in ICT_LIVE_STATES)},
+        "counts": {
+            "active": sum(1 for item in zones if item["state"] in ICT_LIVE_STATES),
+            "order_block_higher": higher_ob_count,
+        },
     }
 
 
@@ -377,11 +457,26 @@ def chart_fingerprint(symbol: str, timeframe: str, bars: Sequence[Mapping[str, A
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def chart_fingerprint_with_higher(
+    symbol: str,
+    timeframe: str,
+    bars: Sequence[Mapping[str, Any]],
+    higher_timeframe: str | None,
+    higher_bars: Sequence[Mapping[str, Any]] | None,
+) -> str:
+    """Fingerprint polling gồm cả nến khung lớn để OB đa khung không bị staleness."""
+    base = chart_fingerprint(symbol, timeframe, bars)
+    if higher_timeframe is None or not higher_bars:
+        return base
+    return f"{base}-{chart_fingerprint(symbol, higher_timeframe, higher_bars)}"
+
+
 def build_market_chart_payload(
     *,
     symbol: str,
     timeframe: str,
     bars: Sequence[Mapping[str, Any]],
+    higher_bars: Sequence[Mapping[str, Any]] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Dữ liệu JSON cho trang chart; ``bars`` đã sắp tăng dần theo ``time`` (epoch giây UTC)."""
@@ -389,13 +484,14 @@ def build_market_chart_payload(
         raise ValueError("Khung thời gian không được hỗ trợ")
     interval_seconds = MARKET_CHART_INTERVAL_SECONDS[timeframe]
     interval = timedelta(seconds=interval_seconds)
+    higher = higher_ob_timeframe(timeframe)
     generated = (generated_at or datetime.now(UTC)).isoformat()
     payload: dict[str, Any] = {
         "chart_version": CHART_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,
         "generated_at": generated,
-        "fingerprint": chart_fingerprint(symbol, timeframe, bars),
+        "fingerprint": chart_fingerprint_with_higher(symbol, timeframe, bars, higher, higher_bars),
         "formula_versions": {
             "structure": STRUCTURE_FORMULA_VERSION,
             "trendline": TRENDLINE_FORMULA_VERSION,
@@ -588,6 +684,7 @@ def build_market_chart_payload(
         "last": {"time": times[-1], "price": closes[-1]},
     }
     payload["ict"] = _ict_payload(
+        timeframe=timeframe,
         times=times,
         open_times=open_times,
         opens=opens,
@@ -598,6 +695,11 @@ def build_market_chart_payload(
         structure_swings=structure.swings,
         structure_breaks=structure.breaks,
         interval=interval,
+        higher_bars=higher_bars,
+        higher_timeframe=higher,
+        higher_interval=(
+            timedelta(seconds=MARKET_CHART_INTERVAL_SECONDS[higher]) if higher is not None else None
+        ),
     )
 
     if interval_seconds <= SESSION_MAX_INTERVAL_SECONDS:

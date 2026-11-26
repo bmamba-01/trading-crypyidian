@@ -1431,6 +1431,15 @@ async def _verify_scorer_repository_retries() -> dict[str, Any]:
 
 def _verify_paper_decisions() -> dict[str, Any]:
     with _connect() as connection:
+        statuses = connection.execute(
+            "SELECT status, count(*) FROM bot_decision WHERE workspace_id=%s GROUP BY status",
+            (WORKSPACE,),
+        ).fetchall()
+        evidence_row = connection.execute(
+            "SELECT count(*) FROM shared_signal_evidence WHERE workspace_id=%s", (WORKSPACE,)
+        ).fetchone()
+        assert evidence_row is not None
+        evidence_count = evidence_row[0]
         decision_count, snapshot_count, source_count = connection.execute(
             "SELECT count(DISTINCT decision.id), count(DISTINCT evidence.feature_snapshot_id), "
             "count(DISTINCT ref.value) "
@@ -1443,12 +1452,17 @@ def _verify_paper_decisions() -> dict[str, Any]:
             "WHERE decision.workspace_id=%s AND decision.status='CANDIDATE'",
             (WORKSPACE,),
         ).fetchone()
-    assert decision_count >= 3
-    assert snapshot_count >= 3
+    diagnostic = {
+        "statuses": [tuple(row) for row in statuses],
+        "evidence_count": int(evidence_count),
+    }
+    assert decision_count >= 3, diagnostic
+    assert snapshot_count >= 3, diagnostic
     return {
         "decision_count": decision_count,
         "snapshot_count": snapshot_count,
         "market_event_source_count": source_count,
+        **diagnostic,
     }
 
 

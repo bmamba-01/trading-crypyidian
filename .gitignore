@@ -25,3 +25,6 @@ var/
 # macOS
 .DS_Store
 .worktrees/
+
+# Ghi chú cục bộ của công cụ soạn thảo, không phải mã nguồn dự án.
+.commandcode/

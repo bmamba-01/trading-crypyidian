@@ -1000,8 +1000,12 @@
     tpoProfiles.set(p.volume_profiles || [], layerOn("tpo"));
     profileLevels.set(p.profile_levels || [], layerOn("profile_levels"));
     const ict = p.ict || { killzones: [], zones: [], equal_levels: [] };
+    const mobileZones = window.matchMedia("(max-width: 767px)").matches;
     killzones.set(ict.killzones, layerOn("killzones"));
-    ictZones.set(ict.zones, layerOn("ict_zones"));
+    ictZones.set(
+      mobileZones ? (ict.mobile_zones || ict.zones) : ict.zones,
+      layerOn("ict_zones"),
+    );
     equalLevels.set(ict.equal_levels, layerOn("equal_levels"));
     markers.setMarkers(buildMarkers(p));
     if (rsiPane) rsiPane.element.hidden = !layerOn("rsi");

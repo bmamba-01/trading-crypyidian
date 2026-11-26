@@ -71,6 +71,15 @@ def _connect() -> psycopg.Connection[Any]:
     )
 
 
+def _connect_scoped(bot_id: UUID | None = None) -> psycopg.Connection[Any]:
+    """Kết nối có RLS scope của workspace/bot để đọc bảng SIGNAL Decision."""
+    connection = _connect()
+    connection.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
+    if bot_id is not None:
+        connection.execute("SELECT set_config('app.bot_id', %s, false)", (str(bot_id),))
+    return connection
+
+
 def _sessions() -> tuple[Any, Any]:
     from trading_bot.adapters.database.engine import (
         create_database_engine,
@@ -427,8 +436,10 @@ def seed() -> dict[str, Any]:
             received_at=listed,
             available_at=listed,
         )
-        last_close = _history(connection, "1h", 206)
-        _history(connection, "4h", 205)
+        # h01-v1 có ema_200: warmup 3x = 600 nến, producer dùng cửa sổ 768 (CRY-455/CRY-241 F13).
+        # 206/205 nến cũ làm feature QUALITY_NOT_READY → 0 CANDIDATE.
+        last_close = _history(connection, "1h", 640)
+        _history(connection, "4h", 640)
         # CK-9: một bản sửa (revision 2, cùng giá) cho nến 1h cũ nhất và một khoảng trống ingest
         # chưa lấp, để kiểm truy vấn bản sửa/khoảng trống của admin-web trên PostgreSQL thật.
         connection.execute(
@@ -515,11 +526,17 @@ def produce() -> dict[str, Any]:
             time.sleep(0.05)
         assert worker.last_tick_succeeded, worker.last_error_code
         result = worker.last_scan_result
+        with _connect_scoped(UUID(STATE["bot_id"])) as connection:
+            decision_rows = connection.execute(
+                "SELECT status, payload->>'reason_code' FROM bot_decision ORDER BY created_at"
+            ).fetchall()
+        statuses = [f"{row[0]}:{row[1]}" for row in decision_rows]
         return {
             "decision_count": result.decision_count,
             "dispatched_count": result.dispatched_count,
             "stale_count": result.stale_count,
             "unusable_count": result.unusable_count,
+            "statuses": statuses,
         }
 
 
@@ -1683,7 +1700,11 @@ async def derivatives_write() -> dict[str, Any]:
     from sqlalchemy.exc import DBAPIError
 
     from trading_bot.adapters.database.models import DerivativesSnapshotRecord
-    from trading_bot.domain.research.derivatives import build_snapshot, payload_hash
+    from trading_bot.domain.research.derivatives import (
+        DERIVATIVES_RETENTION_DAYS,
+        build_snapshot,
+        payload_hash,
+    )
     from trading_bot.workers.derivatives_worker import database_derivatives_store_scope
 
     engine, sessions = _sessions()
@@ -1698,6 +1719,7 @@ async def derivatives_write() -> dict[str, Any]:
                         "workspace_id": WORKSPACE,
                         "policy_fingerprint": "f" * 64,
                         "payload_sha256": payload_hash(raw),
+                        "expires_at": DERIV_AT + timedelta(days=DERIVATIVES_RETENTION_DAYS),
                         **build_snapshot(symbol, DERIV_AT, raw).record(),
                     }
                 )
@@ -2006,7 +2028,7 @@ def pause_resume() -> dict[str, Any]:
 
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
-    with _connect() as connection, connection.transaction():
+    with _connect_scoped(UUID(STATE["bot_id"])) as connection, connection.transaction():
         evaluated_at = connection.execute(
             "SELECT evaluated_at FROM bot_decision WHERE workspace_id=%s AND status='CANDIDATE'",
             (WORKSPACE,),
@@ -2048,6 +2070,7 @@ def add_stop_bar() -> dict[str, Any]:
             event_at=funding_time,
             received_at=funding_time + timedelta(seconds=1),
             available_at=funding_time + timedelta(seconds=2),
+            expires_at=funding_time + timedelta(days=90),
             funding_rate=FUNDING_RATE,
             mark_price=FUNDING_MARK,
             rate_type="Regular",
@@ -2056,7 +2079,7 @@ def add_stop_bar() -> dict[str, Any]:
 
 
 def verify() -> dict[str, Any]:
-    with _connect() as connection:
+    with _connect_scoped(UUID(STATE["bot_id"])) as connection:
 
         def rows(query: str) -> list[tuple[Any, ...]]:
             return connection.execute(query, (WORKSPACE,)).fetchall()

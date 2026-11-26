@@ -631,6 +631,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(rows.nth(0)).to_contain_text("Chưa có nến 4H đã đóng trong kho dữ liệu.")
         expect(rows.nth(3)).to_contain_text("Thời điểm")
         expect(matrix.locator(".is-primary")).to_contain_text("5M")
+        # CK-2 mục 6: chip hướng + % đổi từ giá mở khung lớn, không hiện "độ mạnh %".
+        changes = page.locator("[data-ov-arrows] .mc-arrow__change")
+        expect(changes.first).to_have_text(re.compile(r"^[+-]\d+\.\d%$"))
+        assert "độ mạnh" not in matrix.inner_text().lower()
 
         # CK-3: lớp ICT — số vùng còn hiệu lực, công tắc killzone (mặc định tắt), chip killzone.
         expect(page.locator("[data-mc-ict-count]")).to_have_text(re.compile(r"^\d+$"))
@@ -1177,6 +1181,35 @@ def test_ck10_timeline_signals_paper_fills_r_dist_and_h06_source(server_url: str
         expect(by_setup).to_be_visible()
         expect(by_setup).to_contain_text("H01")
         expect(by_setup).to_contain_text("H06")
+
+        context.close()
+        browser.close()
+
+
+def test_ck3_zone_panel_lists_active_zones_and_caps_mobile(server_url: str) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        watch_browser_violations(page)
+        _login(page, server_url)
+        page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+
+        panel = page.locator("[data-mc-zones]")
+        expect(panel).to_be_visible()
+        expect(panel.locator("h3")).to_contain_text("Vùng (")
+        expect(panel.locator("h3")).to_contain_text("5M + 15M")
+        active = page.locator("[data-mc-ict-count]").inner_text()
+        assert panel.locator("h3").inner_text().startswith(f"Vùng ({active})")
+        rows = panel.locator("[data-mc-zone-row]")
+        assert rows.count() >= 1
+        assert rows.count() <= int(panel.get_attribute("data-mc-zone-limit") or "4")
+        assert {row.get_attribute("data-mc-zone-timeframe") for row in rows.all()} <= {"5m", "15m"}
+
+        page.set_viewport_size({"width": 390, "height": 860})
+        expect(panel).to_be_visible()
+        assert rows.count() <= 4
+        _assert_no_horizontal_overflow(page, "CK-3 zone panel mobile")
 
         context.close()
         browser.close()

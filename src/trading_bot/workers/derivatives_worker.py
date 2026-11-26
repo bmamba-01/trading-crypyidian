@@ -37,9 +37,11 @@ class _DerivativesStore:
         )
 
     async def insert(self, record: dict[str, Any]) -> None:
+        values = dict(record)
+        values.setdefault("id", uuid4())
         stmt = (
             pg_insert(DerivativesSnapshotRecord)
-            .values(id=record.get("id") or uuid4(), **record)
+            .values(**values)
             .on_conflict_do_nothing(constraint="uq_derivatives_snapshot_point")
         )
         await self._session.execute(stmt)

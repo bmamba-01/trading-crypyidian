@@ -1050,6 +1050,7 @@ class BotReportingService:
         symbol: str,
         timeframe: str,
         now: datetime | None = None,
+        mtf_roles: tuple[tuple[str, str], ...] | None = None,
     ) -> dict[str, Any]:
         """Dải thông số (CK-1) và ma trận đa khung (CK-2) của một symbol, chỉ đọc.
 
@@ -1062,12 +1063,13 @@ class BotReportingService:
             build_market_overview,
         )
 
+        roles = mtf_roles or MTF_ROLES
         if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
             raise BotReportError(
                 422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
             )
         instant = now or datetime.now(UTC)
-        frames = [timeframe, *(frame for frame, _ in MTF_ROLES if frame != timeframe)]
+        frames = [timeframe, *(frame for frame, _ in roles if frame != timeframe)]
         async with self._read_unit(
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
@@ -1128,6 +1130,7 @@ class BotReportingService:
                 if timeframe in sources
                 else "—"
             ),
+            mtf_roles=roles,
         )
 
     async def get_dashboard_reports(

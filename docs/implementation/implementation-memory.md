@@ -176,6 +176,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - Pitfall: probe RT1 dùng cả DB role migrate lẫn RLS; mọi phase đọc bảng SIGNAL phải set GUC sau `_connect()`. Khi assert compose thất bại, dùng `--assert=plain` để thấy stderr đầy đủ (pytest rewrite cắt repr).
 - WP06 Task9 (không phải RT1) sau cùng đạt `decision_count=3` nhưng dừng ở `verify-scorer-active-mode-gate`: `permission denied for table learning_score_event` dưới role admin-web (migration chỉ cấp column-level SELECT). Cần xử lý grant/role riêng, không tự mở rộng quyền để giả xanh.
 
+### 2026-11-26 — CRY-222 CK-3 OB đa khung + panel vùng
+
+- Chọn ticket thay WP06 theo chỉ đạo "bỏ qua WP06 làm ticket khác": CRY-222 Backlog → In Progress comment **#5069** → Done comment **#5202** (`columnId: 4`), branch `dev`, không worktree riêng, không file nào sửa gần đó. Không đụng schema/entitlement.
+- `higher_ob_timeframe()` ánh xạ 1 khung lớn hơn (1m→5m, 3m→15m, 5m→15m, 15m→1h, 30m→4h, 1h→4h, 4h→1d, 1d→None). `_ict_payload` lọc nến khung lớn theo `bar.time + higher_interval <= last_close_at` nên chỉ dùng nến đã đóng; tính `market_structure` + `order_blocks` với `SWING_LEFT_BARS/RIGHT_BARS` như khung nhỏ; tối đa `ICT_OB_HIGHER_LIMIT = 4`. Mọi zone payload có `timeframe`/`source`; thêm `ict.timeframes`, `counts.order_block_higher`, `panel_zones`, `mobile_zones`, `mobile_limit`.
+- Router page + API đều gọi `get_market_bars` thêm cho khung lớn và truyền `higher_bars`; `chart_fingerprint_with_higher` đưa cả nến lớn vào fingerprint để polling không trả `unchanged` nhầm.
+- Template panel `Vùng (n)` (data-mc-zones) liệt kê vùng live kèm khung/khoảng giá/trạng thái; dùng `.get(...)` vì payload rỗng khi chưa có nến vẫn render. CSS + JS: `ict.mobile_zones` (cap 4) được dùng khi viewport ≤767px.
+- Kiểm chứng: `test_ck3_ob_multi_timeframe.py` golden OB 1h `10.5–11.9`, xác nhận 10:00 UTC, loại nến chưa đóng, cap 4/fingerprint/1d; 39 unit passed/7,13s; Playwright chart 6 passed/50,61s; ruff/format/mypy/diff-check sạch. Pitfall: Jinja macro `price()` định nghĩa cuối template nên panel dùng `ov_price()` định nghĩa đầu; scalar fingerprint chỉ nhìn nến cuối nên test đổi nến cuối khung lớn.
+
 ### 2026-11-25 — CRY-241 golden fixture công thức feature
 
 - **Phạm vi:** `tests/unit/test_cry241_golden_feature_formulas.py` 11 test với giá trị tính tay: SMA/EMA seed + warmup, TR/ATR Wilder, +DI/−DI/DX/ADX nến phẳng, RSI flat/tăng, ER/Bollinger/z-score mẫu số 0, realized volatility không annualize, VWAP + reset session, input fail-closed, semantic review `MarketRegime` (TREND/RANGE/HIGH_VOLATILITY/UNKNOWN + reason code). Không đổi `formula_version` hay hash snapshot.

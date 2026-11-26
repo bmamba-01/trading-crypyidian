@@ -363,6 +363,7 @@ class _Reporting:
                 "event_at": OVERVIEW_NOW - timedelta(seconds=1),
             },
             mark=None,
+            mtf_roles=kwargs.get("mtf_roles"),
         )
 
 
@@ -474,16 +475,26 @@ def test_chart_page_shows_signal_card_checklist_and_overlay_payload() -> None:
 def test_chart_page_renders_live_header_and_mtf_matrix() -> None:
     reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
     html = _client(reporting).get("/admin/chart?timeframe=5m").text
-    assert reporting.overview_calls == [{"bot_id": BOT_ID, "symbol": "BTCUSDT", "timeframe": "5m"}]
+    assert reporting.overview_calls == [
+        {
+            "bot_id": BOT_ID,
+            "symbol": "BTCUSDT",
+            "timeframe": "5m",
+            "mtf_roles": (("15m", "Xu hướng chính"), ("5m", "Thời điểm")),
+        }
+    ]
     assert 'id="mc-live-strip"' in html
     assert 'data-overview-url="/admin/api/chart/overview?' in html
     # Bid / ask (định dạng VI) hiện sẵn khi tải trang.
     assert "100,1" in html
     assert "100,3" in html
     assert 'id="mc-mtf-matrix"' in html
-    for role in ("Xu hướng chính", "Xác nhận", "Động lượng", "Thời điểm"):
-        assert role in html
-    assert "Chưa có nến 4H đã đóng trong kho dữ liệu." in html
+    # CK-2 mục 3/6: chỉ 2 khung khai báo cho H06, chip % từ giá mở, không "độ mạnh %".
+    assert "Xu hướng chính" in html
+    assert "Thời điểm" in html
+    assert "Chưa có nến 4H đã đóng trong kho dữ liệu." not in html
+    assert "mc-arrow__change" in html
+    assert "độ mạnh" not in html
     assert ' style="' not in html
 
 

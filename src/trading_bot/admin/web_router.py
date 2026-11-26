@@ -90,10 +90,12 @@ from trading_bot.application.market_chart import (
     MARKET_CHART_INTERVAL_SECONDS,
     MARKET_CHART_MAX_LIMIT,
     build_market_chart_payload,
-    chart_fingerprint,
+    chart_fingerprint_with_higher,
+    higher_ob_timeframe,
 )
 from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import decision_narrative, market_narrative
+from trading_bot.application.market_overview import resolve_mtf_roles
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
 from trading_bot.application.operational_telemetry import OperationalHealthService
 from trading_bot.application.signal_outcome_review import (
@@ -3715,8 +3717,23 @@ async def market_chart_page(
                     timeframe=timeframe,
                     limit=MARKET_CHART_DEFAULT_LIMIT,
                 )
+                ob_higher = higher_ob_timeframe(timeframe)
+                higher_bars = (
+                    await service.get_market_bars(
+                        identity.principal,
+                        bot_id=UUID(selected.id),
+                        symbol=selected_symbol,
+                        timeframe=ob_higher,
+                        limit=MARKET_CHART_DEFAULT_LIMIT,
+                    )
+                    if ob_higher is not None
+                    else None
+                )
                 payload = build_market_chart_payload(
-                    symbol=selected_symbol, timeframe=timeframe, bars=bars
+                    symbol=selected_symbol,
+                    timeframe=timeframe,
+                    bars=bars,
+                    higher_bars=higher_bars,
                 )
             signal_view = await service.get_latest_signal(
                 identity.principal, bot_id=UUID(selected.id)
@@ -3724,11 +3741,14 @@ async def market_chart_page(
             if payload is not None:
                 payload["signal_card"] = _card_for_symbol(signal_view, selected_symbol)
             if selected_symbol is not None:
+                # CK-2 mục 3: vai trò khung lấy từ setup/strategy đang ghim, không cứng trong UI.
+                strategy_id = ((signal_view or {}).get("card") or {}).get("strategy_id")
                 overview = await service.get_market_overview(
                     identity.principal,
                     bot_id=UUID(selected.id),
                     symbol=selected_symbol,
                     timeframe=timeframe,
+                    mtf_roles=resolve_mtf_roles(strategy_id),
                 )
                 # CK-6: bảng Entry — setup của các bot giao dịch mã này (hoặc chưa ghim mã).
                 calendar_events = await _calendar_events(request, identity.principal)
@@ -3968,12 +3988,28 @@ async def market_chart_api(
             timeframe=timeframe,
             limit=limit,
         )
+        ob_higher = higher_ob_timeframe(timeframe)
+        higher_bars = (
+            await _reporting_service(request).get_market_bars(
+                identity.principal,
+                bot_id=bot_id,
+                symbol=chart_symbol,
+                timeframe=ob_higher,
+                limit=limit,
+            )
+            if ob_higher is not None
+            else None
+        )
     except BotReportError as error:
         raise _report_http_error(error) from error
-    fingerprint = chart_fingerprint(chart_symbol, timeframe, bars)
+    fingerprint = chart_fingerprint_with_higher(
+        chart_symbol, timeframe, bars, ob_higher, higher_bars
+    )
     if fp is not None and fp == fingerprint:
         return {"status": "unchanged", "fingerprint": fingerprint}
-    payload = build_market_chart_payload(symbol=chart_symbol, timeframe=timeframe, bars=bars)
+    payload = build_market_chart_payload(
+        symbol=chart_symbol, timeframe=timeframe, bars=bars, higher_bars=higher_bars
+    )
     try:
         signal_view = await _reporting_service(request).get_latest_signal(
             identity.principal, bot_id=bot_id

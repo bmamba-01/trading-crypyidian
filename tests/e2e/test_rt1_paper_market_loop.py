@@ -139,14 +139,15 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert "d0e1f2a3b4c5 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
-        # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
-        # lượt quét ghi audit_event và hiện trong nhật ký.
+        # CK-11: bộ quét đọc nến thật bằng report-reader, ghi audit_event và hiện trong nhật ký.
+        # Sau khi chốt F13 (warmup 600/cửa sổ 768) probe gieo 640 nến 1h ≈ 26,7 ngày
+        # → đã đủ 21 ngày, nên 1h không còn bị loại vì "Thiếu dữ liệu 21 ngày" như bản 206 nến.
         assert run("scanner") == {
             "reader_role": "crypidian_admin_report_reader",
             "universe": 1,
             "passed_4h": ["BTCUSDT"],
             "deterministic": True,
-            "excluded_1h": ["Thiếu dữ liệu 21 ngày để tính biên và thay đổi tuần."],
+            "excluded_1h": [],
             "runs": 1,
             "run_summary_matches": True,
         }
@@ -179,8 +180,9 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert run("genesis") == {"genesis": True}
 
         produced = run("produce")
-        assert produced["dispatched_count"] == 1, produced
         assert produced["decision_count"] == 1, produced
+        assert produced["statuses"] == ["CANDIDATE:H01_LONG_ENTRY"], produced
+        assert produced["dispatched_count"] == 1, produced
         state.update(run("add_minutes"))
         minute_base = datetime.fromisoformat(state["minute_base"])
         # Nến 0..2 phải đóng và khả dụng (close + 1s) theo đồng hồ thật trước khi runtime chạy.
