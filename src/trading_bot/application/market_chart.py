@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from trading_bot.domain.market.bar_source_policy import REAL_BAR_SOURCES
 from trading_bot.domain.market.features import atr, ema, macd, rsi, vwap
 from trading_bot.domain.market.ict import (
     ICT_FORMULA_VERSION,
@@ -107,7 +108,7 @@ NOTICE_STRUCTURE_DELAY = (
 )
 
 
-REAL_MARKET_SOURCES = frozenset({"BINANCE_USDM_REST_BACKFILL", "BINANCE_USDM"})
+REAL_MARKET_SOURCES = REAL_BAR_SOURCES
 
 
 def market_source_label(source: str) -> str:

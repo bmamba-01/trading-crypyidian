@@ -350,6 +350,7 @@ async def test_opposing_signal_detected_on_bearish_crossover_for_long_position(
         timeframe: str,
         as_of: datetime,
         max_bars: int = 256,
+        pinned_source: str | None = None,
     ) -> tuple[OHLCVBar, ...]:
         return bars_by_tf.get(timeframe, ())
 
@@ -407,6 +408,7 @@ async def test_opposing_signal_ignored_when_same_direction(
         timeframe: str,
         as_of: datetime,
         max_bars: int = 256,
+        pinned_source: str | None = None,
     ) -> tuple[OHLCVBar, ...]:
         return bars_by_tf.get(timeframe, ())
 
@@ -464,6 +466,7 @@ async def test_opposing_signal_detected_on_bullish_crossover_for_short_position(
         timeframe: str,
         as_of: datetime,
         max_bars: int = 256,
+        pinned_source: str | None = None,
     ) -> tuple[OHLCVBar, ...]:
         return bars_by_tf.get(timeframe, ())
 
@@ -521,6 +524,7 @@ async def test_opposing_signal_ignored_when_short_position_meets_short_signal(
         timeframe: str,
         as_of: datetime,
         max_bars: int = 256,
+        pinned_source: str | None = None,
     ) -> tuple[OHLCVBar, ...]:
         return bars_by_tf.get(timeframe, ())
 

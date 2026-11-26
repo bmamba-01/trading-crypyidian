@@ -373,6 +373,9 @@ def _position_to_json(position: PaperPosition) -> dict[str, Any]:
     # FX-4: chỉ ghi pending_exit_reason khi có pending exit → checkpoint cũ không đổi.
     if position.pending_exit_reason is not None:
         value["pending_exit_reason"] = position.pending_exit_reason
+    # RT-1/CRY-205: chỉ ghi bar_source khi có giá trị → hash checkpoint cũ không đổi.
+    if position.bar_source is not None:
+        value["bar_source"] = position.bar_source
     return value
 
 
@@ -436,6 +439,7 @@ def _position_from_json(row: dict[str, Any]) -> PaperPosition:
         pending_exit_reason=(
             str(row["pending_exit_reason"]) if row.get("pending_exit_reason") is not None else None
         ),
+        bar_source=(str(row["bar_source"]) if row.get("bar_source") is not None else None),
     )
 
 

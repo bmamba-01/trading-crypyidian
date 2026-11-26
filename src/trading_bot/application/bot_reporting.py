@@ -39,6 +39,10 @@ from trading_bot.auth.bot_policy import (
     role_allows_bot_permission,
 )
 from trading_bot.auth.policy import Principal
+from trading_bot.domain.market.bar_source_policy import (
+    BAR_SOURCE_PRIORITY,
+    select_primary_bar_source,
+)
 from trading_bot.domain.portfolio.reporting import (
     MAX_BOTS_PER_WORKSPACE_REPORT,
     MAX_OPEN_TRADES_PER_BOT,
@@ -75,17 +79,16 @@ CHART_INTERVAL_SECONDS = {
 }
 
 
-# Nguồn nến ưu tiên cho chart: REST công khai Binance (backfill/collector SIG-0) rồi tới nguồn
-# Binance khác; nguồn mẫu/kiểm thử chỉ dùng khi không có nguồn thật.
-MARKET_SOURCE_PRIORITY = ("BINANCE_USDM_REST_BACKFILL", "BINANCE_USDM")
+# Nguồn nến ưu tiên thống nhất với runtime (CRY-205): live WS > REST công khai > nguồn mẫu.
+MARKET_SOURCE_PRIORITY = BAR_SOURCE_PRIORITY
 
 
-def preferred_market_source(sources: Sequence[str]) -> str:
-    """Chọn một nguồn theo thứ tự ưu tiên; nguồn ngoài danh sách xếp theo tên cho ổn định."""
-    for source in MARKET_SOURCE_PRIORITY:
-        if source in sources:
-            return source
-    return sorted(sources)[0]
+def preferred_market_source(sources: Sequence[str], *, pinned_source: str | None = None) -> str:
+    """Chọn một nguồn theo thứ tự ưu tiên thống nhất; tôn trọng ``pinned_source`` nếu có."""
+    selected = select_primary_bar_source(sources, pinned_source=pinned_source)
+    if selected is None:
+        raise ValueError("Không tìm thấy nguồn nến phù hợp trong danh sách khả dụng.")
+    return selected
 
 
 def build_latest_signal_view(

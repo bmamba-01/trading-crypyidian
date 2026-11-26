@@ -70,12 +70,20 @@ from trading_bot.application.paper_runtime_application import (
 from trading_bot.application.strategy_market_requirements import entry_timeframe_for_release
 from trading_bot.domain.execution.funding import FundingSettlement
 from trading_bot.domain.execution.paper import PaperBar
+from trading_bot.domain.market.bar_source_policy import (
+    BAR_SOURCE_PRIORITY,
+    LIVE_BAR_SOURCE,
+    REST_BACKFILL_BAR_SOURCE,
+    allowed_bar_sources,
+    extract_bar_source_from_key,
+    resolve_bar_source,
+)
 
 logger = logging.getLogger(__name__)
 
-LIVE_SOURCE = "BINANCE_USDM"
-BACKFILL_SOURCE = "BINANCE_USDM_REST_BACKFILL"
-BAR_SOURCES = (LIVE_SOURCE, BACKFILL_SOURCE)
+LIVE_SOURCE = LIVE_BAR_SOURCE
+BACKFILL_SOURCE = REST_BACKFILL_BAR_SOURCE
+BAR_SOURCES = BAR_SOURCE_PRIORITY
 EXECUTION_TIMEFRAME = "1m"
 ENTRY_STATUSES = ("ACCEPTED", "PARTIALLY_FILLED")
 
@@ -157,6 +165,7 @@ def paper_bar_from_row(row: Any) -> PaperBar | None:
             row.high,
             row.low,
             row.close,
+            bar_source=row.source,
         )
     except ValueError:
         return None
@@ -172,13 +181,19 @@ async def closed_bars_after(
     after: datetime | None,
     at_or_after: datetime | None,
     limit: int,
+    pinned_source: str | None = None,
 ) -> tuple[PaperBar, ...]:
-    """Nến đóng tăng dần theo open_time, một bản ghi mỗi open_time (live trước REST backfill)."""
+    """Nến đóng tăng dần theo open_time, một bản ghi mỗi open_time (tôn trọng pinned_source)."""
+    sources = allowed_bar_sources(pinned_source=pinned_source)
+    source_rank = case(
+        *((MarketBar.source == source, idx) for idx, source in enumerate(BAR_SOURCE_PRIORITY)),
+        else_=len(BAR_SOURCE_PRIORITY),
+    )
     filters = [
         MarketBar.workspace_id == workspace_id,
         MarketBar.symbol == symbol,
         MarketBar.timeframe == timeframe,
-        MarketBar.source.in_(BAR_SOURCES),
+        MarketBar.source.in_(sources),
         MarketBar.is_closed.is_(True),
         MarketBar.close_time <= now,
         MarketBar.available_at <= now,
@@ -187,17 +202,17 @@ async def closed_bars_after(
         filters.append(MarketBar.open_time > after)
     if at_or_after is not None:
         filters.append(MarketBar.open_time >= at_or_after)
+    order_columns: list[Any] = [MarketBar.open_time]
+    if len(sources) > 1:
+        order_columns.append(source_rank)
+    order_columns.extend(
+        (MarketBar.available_at.desc(), MarketBar.revision.desc(), MarketBar.id.desc())
+    )
     rows = await session.scalars(
         select(MarketBar)
         .where(*filters)
         .ext(distinct_on(MarketBar.open_time))
-        .order_by(
-            MarketBar.open_time,
-            case((MarketBar.source == LIVE_SOURCE, 0), else_=1),
-            MarketBar.available_at.desc(),
-            MarketBar.revision.desc(),
-            MarketBar.id.desc(),
-        )
+        .order_by(*order_columns)
         .limit(limit)
     )
     bars = (paper_bar_from_row(row) for row in rows.all())
@@ -243,24 +258,29 @@ async def closed_bar_before(
     symbol: str,
     timeframe: str,
     before: datetime,
+    pinned_source: str | None = None,
 ) -> PaperBar | None:
-    """Nến đóng liền trước ``before`` (live trước REST), để kiểm tính liên tục."""
+    """Nến đóng liền trước ``before`` (tôn trọng pinned_source), để kiểm tính liên tục."""
+    sources = allowed_bar_sources(pinned_source=pinned_source)
+    source_rank = case(
+        *((MarketBar.source == source, idx) for idx, source in enumerate(BAR_SOURCE_PRIORITY)),
+        else_=len(BAR_SOURCE_PRIORITY),
+    )
+    order_columns: list[Any] = [MarketBar.open_time.desc()]
+    if len(sources) > 1:
+        order_columns.append(source_rank)
+    order_columns.extend((MarketBar.available_at.desc(), MarketBar.revision.desc()))
     row = await session.scalar(
         select(MarketBar)
         .where(
             MarketBar.workspace_id == workspace_id,
             MarketBar.symbol == symbol,
             MarketBar.timeframe == timeframe,
-            MarketBar.source.in_(BAR_SOURCES),
+            MarketBar.source.in_(sources),
             MarketBar.is_closed.is_(True),
             MarketBar.open_time < before,
         )
-        .order_by(
-            MarketBar.open_time.desc(),
-            case((MarketBar.source == LIVE_SOURCE, 0), else_=1),
-            MarketBar.available_at.desc(),
-            MarketBar.revision.desc(),
-        )
+        .order_by(*order_columns)
         .limit(1)
     )
     return None if row is None else paper_bar_from_row(row)
@@ -281,6 +301,8 @@ class _Scope:
     # FX-3 lát 2: lúc mở trade (fill đầu) và mốc funding cuối đã ghi (scope funding riêng).
     trade_opened_at: datetime | None = None
     funding_cursor: datetime | None = None
+    # RT-1/CRY-205: nguồn nến đã ghim của vị thế mở (chỉ đọc nến đúng nguồn này).
+    pinned_bar_source: str | None = None
 
 
 @dataclass(slots=True)
@@ -505,6 +527,7 @@ class PaperMarketEventLoop:
                 )
                 trade = open_trades.get(intent.id)
                 funding_cursor = None
+                pinned_bar_source: str | None = None
                 if trade is not None:
                     funding_cursor = await session.scalar(
                         select(func.max(PaperExecutionCheckpointRecord.event_at)).where(
@@ -514,6 +537,15 @@ class PaperMarketEventLoop:
                             == funding_event_scope(paper_intent_id, intent.symbol),
                         )
                     )
+                    gateway = getattr(account, "gateway", None)
+                    position_fn = getattr(gateway, "position", None)
+                    position = position_fn(paper_intent_id) if callable(position_fn) else None
+                    if position is not None:
+                        pinned_bar_source = getattr(
+                            position, "bar_source", None
+                        ) or extract_bar_source_from_key(
+                            str(getattr(position, "entry_bar_key", "") or "")
+                        )
                 scopes.append(
                     _Scope(
                         intent_id=intent.id,
@@ -526,6 +558,7 @@ class PaperMarketEventLoop:
                         cursor=cursor,
                         trade_opened_at=trade.opened_at if trade is not None else None,
                         funding_cursor=funding_cursor,
+                        pinned_bar_source=pinned_bar_source,
                     )
                 )
             return now, tuple(scopes)
@@ -561,6 +594,7 @@ class PaperMarketEventLoop:
                 )
         trade_id = scope.trade_id
         entry_pending = scope.entry_pending and eligible_at is not None
+        active_bar_source = scope.pinned_bar_source
         key = (account.account_id, scope.intent_id)
         self._funding_holding.discard(key)
         self._funding_missing.pop(key, None)
@@ -592,8 +626,12 @@ class PaperMarketEventLoop:
                 self.counters.entry_fills += int(entry.persisted_fill_count or 0)
                 if entry.trade_id is not None:
                     if trade_id is None:
-                        # Trade vừa mở ở nến này: mốc funding tính từ lúc khớp đầu.
+                        # Trade vừa mở ở nến này: mốc funding tính từ lúc khớp đầu và ghim nguồn.
                         moments = await self._load_funding(scope, opened_at=bar.opened_at, now=now)
+                        pos_source = getattr(getattr(entry, "position", None), "bar_source", None)
+                        active_bar_source = pos_source or resolve_bar_source(
+                            bar.bar_source, bar.bar_key
+                        )
                     trade_id = entry.trade_id
                 status = str(getattr(entry.order.status, "value", entry.order.status))
                 entry_pending = status in ENTRY_STATUSES
@@ -603,6 +641,12 @@ class PaperMarketEventLoop:
                 continue
             if trade_id is None:
                 return
+            if (
+                active_bar_source is not None
+                and resolve_bar_source(bar.bar_source, bar.bar_key) != active_bar_source
+            ):
+                # RT-1/CRY-205: bỏ qua nến khác nguồn đã ghim của vị thế đang mở.
+                continue
             monitored = await self._application.monitor_position(
                 PaperMonitorCommand(
                     account_id=account.account_id,
@@ -703,6 +747,7 @@ class PaperMarketEventLoop:
                 after=scope.cursor,
                 at_or_after=at_or_after,
                 limit=self._max_bars,
+                pinned_source=scope.pinned_bar_source,
             )
 
     async def _previous_bar(self, scope: _Scope, *, before: datetime) -> PaperBar | None:
@@ -714,6 +759,7 @@ class PaperMarketEventLoop:
                 symbol=scope.symbol,
                 timeframe=scope.timeframe,
                 before=before,
+                pinned_source=scope.pinned_bar_source,
             )
 
     def _record_error(self, error: BaseException) -> None:

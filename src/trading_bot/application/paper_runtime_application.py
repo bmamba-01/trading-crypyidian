@@ -139,6 +139,20 @@ LEASE_LOSS_REASONS = frozenset(
     }
 )
 
+# Mã lỗi tạm thời (hạ tầng/lease): không ghi receipt từ chối terminal để tick sau thử lại.
+TRANSIENT_CANDIDATE_ERROR_CODES = LEASE_LOSS_REASONS | frozenset(
+    {
+        "DATABASE_UNAVAILABLE",
+        "DATABASE_CLOCK_UNAVAILABLE",
+        "OperationalError",
+        "TimeoutError",
+        "InterfaceError",
+        "ConnectionError",
+        "CancelledError",
+        "OSError",
+    }
+)
+
 
 class PaperRuntimeApplicationError(RuntimeError):
     """Lỗi command PAPER có mã an toàn, không chứa dữ liệu nhạy cảm."""

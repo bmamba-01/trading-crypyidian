@@ -2039,8 +2039,14 @@ async def _submit_bot_candidates(
             )
         except Exception as error:
             # Một candidate lỗi không được chặn candidate khác của bot; ghi mã để vận hành thấy.
+            # Lỗi tạm thời (lease/DB) không ghi receipt terminal để tick sau thử lại.
+            from trading_bot.application.paper_runtime_application import (
+                TRANSIENT_CANDIDATE_ERROR_CODES,
+            )
+
             code = str(getattr(error, "reason_code", type(error).__name__))
-            if await _first_rejection(decision, (("ERROR", code),), record):
+            terminal_recorder = None if code in TRANSIENT_CANDIDATE_ERROR_CODES else record
+            if await _first_rejection(decision, (("ERROR", code),), terminal_recorder):
                 logger.warning(
                     "PAPER candidate không submit được; decision_id=%s reason_code=%s",
                     decision.decision_id,

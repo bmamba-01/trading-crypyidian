@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from trading_bot.domain.execution.funding import FundingSettlement, funding_cashflow
+from trading_bot.domain.market.bar_source_policy import resolve_bar_source
 from trading_bot.domain.risk.liquidation import MaintenanceMarginTier, calculate_liquidation_price
 from trading_bot.domain.risk.planner import TradePlan
 from trading_bot.domain.risk.take_profit import PlanTarget
@@ -92,6 +93,8 @@ class PaperBar:
     high: Decimal
     low: Decimal
     close: Decimal
+    # RT-1/CRY-205: nguồn nến tường minh để ghim theo vị thế; None giữ tương thích ngược.
+    bar_source: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.opened_at, self.closed_at, self.available_at):
@@ -187,6 +190,8 @@ class PaperPosition:
     quantity_step: Decimal = ZERO
     # FX-4: lý do thoát chờ khớp ở giá mở nến kế tiếp, lưu bền trong checkpoint.
     pending_exit_reason: str | None = None
+    # RT-1/CRY-205: nguồn nến đã khớp entry; monitor chỉ được dùng nến cùng nguồn này.
+    bar_source: str | None = None
 
     @property
     def net_realized_pnl(self) -> Decimal:
@@ -439,7 +444,11 @@ class PaperExecutionGateway:
             status=status,
             fills=(*order.fills, fill),
         )
-        self._add_to_position(updated, fill)
+        self._add_to_position(
+            updated,
+            fill,
+            bar_source=resolve_bar_source(bar.bar_source, bar.bar_key),
+        )
         return updated
 
     def _apply_limit_maker_bar(
@@ -494,7 +503,11 @@ class PaperExecutionGateway:
             fills=(*order.fills, fill),
             queue_ahead_quantity=queue_ahead,
         )
-        self._add_to_position(updated, fill)
+        self._add_to_position(
+            updated,
+            fill,
+            bar_source=resolve_bar_source(bar.bar_source, bar.bar_key),
+        )
         return updated
 
     def cancel_unfilled(self, intent_id: str) -> PaperOrderIntent:
@@ -615,8 +628,15 @@ class PaperExecutionGateway:
             monitor_position,
         )
 
-        self._accept_market_event(bar, event_scope=position.intent_id)
         current = self._positions.get(position.intent_id, position)
+        if current.bar_source is not None:
+            incoming_source = resolve_bar_source(bar.bar_source, bar.bar_key)
+            if incoming_source != current.bar_source:
+                raise IntentConflict(
+                    "Nến monitor khác nguồn đã ghim của vị thế "
+                    f"({incoming_source!r} != {current.bar_source!r})."
+                )
+        self._accept_market_event(bar, event_scope=position.intent_id)
         if current.is_closed and bar.bar_key in current.seen_bar_keys:
             return PositionMonitorResult(current, current.exit_reason, current.exit_reference_price)
         if not current.is_closed and bar.bar_key not in current.seen_bar_keys:
@@ -872,12 +892,19 @@ class PaperExecutionGateway:
             is_maker=True,
         )
 
-    def _add_to_position(self, order: PaperOrderIntent, fill: PaperFill) -> None:
+    def _add_to_position(
+        self,
+        order: PaperOrderIntent,
+        fill: PaperFill,
+        *,
+        bar_source: str | None = None,
+    ) -> None:
         plan = self._plans[order.intent_id]
         position = self._positions.get(order.intent_id)
         old_quantity = position.quantity if position else ZERO
         total = old_quantity + fill.quantity
         if position is None:
+            pinned_source = resolve_bar_source(bar_source, fill.bar_key)
             position = PaperPosition(
                 position_id=order.intent_id,
                 intent_id=order.intent_id,
@@ -893,6 +920,7 @@ class PaperExecutionGateway:
                 protective_stop_quantity=ZERO,
                 entry_bar_key=fill.bar_key,
                 fill_policy_version=fill.fill_policy_version,
+                bar_source=pinned_source,
             )
         avg_reference = (
             position.entry_reference_price * old_quantity + fill.reference_price * fill.quantity

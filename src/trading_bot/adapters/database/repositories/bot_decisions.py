@@ -17,6 +17,7 @@ from sqlalchemy import DateTime, String, cast, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.models.analyst_entities import PaperCandidateOutcomeRecord
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord
 from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionJobRecord,
@@ -269,6 +270,28 @@ class BotDecisionRepository:
             )
             .exists()
         )
+        # RT-1/CRY-205: bỏ qua candidate đã có receipt từ chối terminal trong
+        # paper_candidate_outcome để tránh đánh giá lại mỗi tick; lỗi tạm thời vẫn được thử lại.
+        from trading_bot.application.paper_runtime_application import (
+            TRANSIENT_CANDIDATE_ERROR_CODES,
+        )
+
+        existing_terminal_rejection = (
+            select(PaperCandidateOutcomeRecord.id)
+            .where(
+                PaperCandidateOutcomeRecord.workspace_id == BotDecisionRecord.workspace_id,
+                PaperCandidateOutcomeRecord.bot_id == BotDecisionRecord.bot_id,
+                PaperCandidateOutcomeRecord.account_id == BotDecisionRecord.account_id,
+                PaperCandidateOutcomeRecord.decision_id == BotDecisionRecord.id,
+                or_(
+                    PaperCandidateOutcomeRecord.stage != "ERROR",
+                    PaperCandidateOutcomeRecord.reason_code.notin_(
+                        tuple(sorted(TRANSIENT_CANDIDATE_ERROR_CODES))
+                    ),
+                ),
+            )
+            .exists()
+        )
         rows = await self._session.scalars(
             select(BotDecisionRecord)
             .where(
@@ -278,6 +301,7 @@ class BotDecisionRepository:
                 BotDecisionRecord.status == "CANDIDATE",
                 expiry > now,
                 ~existing_intent,
+                ~existing_terminal_rejection,
             )
             .order_by(BotDecisionRecord.created_at.desc(), BotDecisionRecord.id)
             .limit(limit)

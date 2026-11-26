@@ -50,6 +50,12 @@ from trading_bot.application.strategy_market_requirements import (
     feature_settings_for,
 )
 from trading_bot.domain.execution.runtime_control import BotEntryState, WorkspaceKillState
+from trading_bot.domain.market.bar_source_policy import (
+    BAR_SOURCE_PRIORITY,
+    LIVE_BAR_SOURCE,
+    REST_BACKFILL_BAR_SOURCE,
+    allowed_bar_sources,
+)
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnapshot, OHLCVBar
 from trading_bot.domain.research.macro_calendar import UNKNOWN_MACRO
@@ -58,11 +64,11 @@ from trading_bot.domain.strategy.contracts import DecisionSnapshot
 _MAX_BARS_PER_STREAM = 768
 # Cửa sổ nến producer dùng cho mỗi luồng; replay kiểm định SIG-5 dùng cùng giá trị để khớp live.
 PRODUCER_MAX_BARS_PER_STREAM = _MAX_BARS_PER_STREAM
-_LIVE_BAR_SOURCE = "BINANCE_USDM"
-_BACKFILL_BAR_SOURCE = "BINANCE_USDM_REST_BACKFILL"
-# Nguồn nến tín hiệu dùng (live ưu tiên, rồi REST backfill); CRY-430 chấm kết quả trên cùng nguồn.
+_LIVE_BAR_SOURCE = LIVE_BAR_SOURCE
+_BACKFILL_BAR_SOURCE = REST_BACKFILL_BAR_SOURCE
+# Nguồn nến tín hiệu dùng (chính sách thống nhất: live WS > REST backfill); CRY-430 dùng cùng nguồn.
 SIGNAL_LIVE_BAR_SOURCE = _LIVE_BAR_SOURCE
-SIGNAL_BAR_SOURCES = (_LIVE_BAR_SOURCE, _BACKFILL_BAR_SOURCE)
+SIGNAL_BAR_SOURCES = BAR_SOURCE_PRIORITY
 
 
 class PostgresClosedMarketObservationSource(QualifiedMarketObservationSource):
@@ -265,6 +271,7 @@ async def load_closed_market_bars(
     timeframe: str,
     as_of: datetime,
     max_bars: int = _MAX_BARS_PER_STREAM,
+    pinned_source: str | None = None,
 ) -> tuple[OHLCVBar, ...]:
     """Tối đa `max_bars` nến đóng mới nhất đã khả dụng tại `as_of`, tăng dần theo open_time."""
     _validate_as_of(as_of)
@@ -275,6 +282,7 @@ async def load_closed_market_bars(
         symbols=(symbol,),
         timeframes=(timeframe,),
         max_bars_per_stream=max_bars,
+        pinned_source=pinned_source,
     )
     return tuple(_to_bar(row) for row in _group_bars(rows).get((symbol, timeframe), ()))
 
@@ -373,7 +381,13 @@ async def _latest_bar_rows(
     symbols: Sequence[str],
     timeframes: Sequence[str],
     max_bars_per_stream: int,
+    pinned_source: str | None = None,
 ) -> tuple[MarketBar, ...]:
+    sources = allowed_bar_sources(pinned_source=pinned_source)
+    source_rank = case(
+        *((MarketBar.source == source, idx) for idx, source in enumerate(BAR_SOURCE_PRIORITY)),
+        else_=len(BAR_SOURCE_PRIORITY),
+    )
     result_rows: list[MarketBar] = []
     for symbol in sorted(set(symbols)):
         for timeframe in sorted(set(timeframes)):
@@ -381,7 +395,7 @@ async def _latest_bar_rows(
                 MarketBar.workspace_id == workspace_id,
                 MarketBar.symbol == symbol,
                 MarketBar.timeframe == timeframe,
-                MarketBar.source.in_((_LIVE_BAR_SOURCE, _BACKFILL_BAR_SOURCE)),
+                MarketBar.source.in_(sources),
                 MarketBar.is_closed.is_(True),
                 MarketBar.close_time <= as_of,
                 MarketBar.available_at <= as_of,
@@ -396,21 +410,17 @@ async def _latest_bar_rows(
             open_times = tuple(open_times_result.all())
             if not open_times:
                 continue
+            order_columns: list[Any] = [MarketBar.open_time]
+            if len(sources) > 1:
+                order_columns.append(source_rank.asc())
+            order_columns.extend(
+                (MarketBar.available_at.desc(), MarketBar.revision.desc(), MarketBar.id.desc())
+            )
             rows_result = await session.scalars(
                 select(MarketBar)
                 .where(*filters, MarketBar.open_time.in_(open_times))
                 .ext(distinct_on(MarketBar.open_time))
-                .order_by(
-                    MarketBar.open_time,
-                    case(
-                        (MarketBar.source == _LIVE_BAR_SOURCE, 0),
-                        (MarketBar.source == _BACKFILL_BAR_SOURCE, 1),
-                        else_=2,
-                    ).asc(),
-                    MarketBar.available_at.desc(),
-                    MarketBar.revision.desc(),
-                    MarketBar.id.desc(),
-                )
+                .order_by(*order_columns)
             )
             result_rows.extend(rows_result.all())
     return tuple(result_rows)

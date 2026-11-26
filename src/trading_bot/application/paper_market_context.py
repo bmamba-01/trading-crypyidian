@@ -74,6 +74,10 @@ from trading_bot.application.strategy_market_requirements import (
     feature_settings_for,
 )
 from trading_bot.application.workspace_risk import mark_policy_from
+from trading_bot.domain.market.bar_source_policy import (
+    extract_bar_source_from_key,
+    resolve_bar_source,
+)
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
 from trading_bot.domain.risk.circuit_breaker import CircuitBreakerPolicy
@@ -234,7 +238,9 @@ class PostgresPaperDecisionContextProvider:
     ) -> None:
         self._sessions = sessions
         self._workspace_id = workspace_id
-        self._feature_cache: dict[tuple[str, str, datetime], tuple[Any, datetime | None]] = {}
+        self._feature_cache: dict[
+            tuple[str, str, datetime, str | None], tuple[Any, datetime | None]
+        ] = {}
         self._feature_cache_size = feature_cache_size
 
     # --- DecisionSnapshotProvider (dispatcher runtime) ------------------------------------
@@ -505,6 +511,13 @@ class PostgresPaperDecisionContextProvider:
         release = pinned_strategy_release_name or ""
         entry_timeframe = entry_timeframe_for_release(release) if release else None
         execution = _execution_timeframe(bar)
+        pinned_source = (
+            getattr(position, "bar_source", None)
+            or extract_bar_source_from_key(str(getattr(position, "entry_bar_key", "") or ""))
+            or resolve_bar_source(
+                getattr(bar, "bar_source", None), str(getattr(bar, "bar_key", "") or "")
+            )
+        )
         atr: Decimal | None = None
         known_at: list[datetime] = []
         if entry_timeframe is not None:
@@ -514,6 +527,7 @@ class PostgresPaperDecisionContextProvider:
                 timeframe=entry_timeframe,
                 cutoff=bar.opened_at,
                 name="atr_14",
+                pinned_source=pinned_source,
             )
             if atr_available is not None:
                 known_at.append(atr_available)
@@ -534,6 +548,7 @@ class PostgresPaperDecisionContextProvider:
                     timeframe=spec.timeframe,
                     as_of=bar.opened_at,
                     max_bars=spec.channel_period,
+                    pinned_source=pinned_source,
                 )
                 if len(strategy_bars) >= spec.channel_period:
                     window = strategy_bars[-spec.channel_period :]
@@ -553,6 +568,7 @@ class PostgresPaperDecisionContextProvider:
                     cutoff=bar.available_at,
                     name=spec.feature_name,
                     positive_only=False,
+                    pinned_source=pinned_source,
                 )
         elif entry_timeframe is not None and execution is not None:
             # Recipe v1: đếm `max_hold_bars` theo nến của timeframe chiến lược, không theo 1m.
@@ -577,6 +593,7 @@ class PostgresPaperDecisionContextProvider:
                 pinned_strategy_parameters=pinned_strategy_parameters,
                 position_direction=position.direction,
                 as_of=bar.opened_at,
+                pinned_source=pinned_source,
             )
         # ATR/kênh chỉ dùng nến đóng trước lúc nến monitor mở nên mốc này không sau `opened_at`.
         available_at = max(known_at) if known_at else bar.opened_at - timedelta(microseconds=1)
@@ -611,6 +628,7 @@ class PostgresPaperDecisionContextProvider:
         pinned_strategy_parameters: tuple[tuple[str, int], ...],
         position_direction: str,
         as_of: datetime,
+        pinned_source: str | None = None,
     ) -> bool:
         """Đánh giá tín hiệu đối ứng point-in-time từ nến đã đóng (RT-1/opposing-h01)."""
         if not release:
@@ -627,6 +645,7 @@ class PostgresPaperDecisionContextProvider:
                 symbol=symbol,
                 timeframe=tf,
                 as_of=as_of,
+                pinned_source=pinned_source,
             )
             if not bars:
                 return False
@@ -813,6 +832,7 @@ class PostgresPaperDecisionContextProvider:
         cutoff: datetime,
         name: str,
         positive_only: bool = True,
+        pinned_source: str | None = None,
     ) -> tuple[Decimal | None, datetime | None]:
         """Giá trị feature tính từ nến đóng đã khả dụng tại `cutoff` (không nhìn trước)."""
         bars = await load_closed_market_bars(
@@ -821,11 +841,12 @@ class PostgresPaperDecisionContextProvider:
             symbol=symbol,
             timeframe=timeframe,
             as_of=cutoff,
+            pinned_source=pinned_source,
         )
         if not bars:
             return None, None
         last = bars[-1]
-        key = (symbol, timeframe, last.open_time)
+        key = (symbol, timeframe, last.open_time, pinned_source)
         cached = self._feature_cache.get(key)
         if cached is None:
             cached = (_calculate_features(self._workspace_id, bars, timeframe), last.available_at)
