@@ -732,7 +732,7 @@ def create_app(
                     rights_worker.run(stopping), name="research-rights-maintenance-worker"
                 )
                 application.state.rights_worker_task = rights_worker_task
-                live_subscriptions = app_settings.ingestion_live_subscriptions
+                live_subscriptions = app_settings.effective_live_kline_subscriptions
                 if live_subscriptions:
                     # Live ingest chỉ đọc market data công khai; không nhận API key hay cổng lệnh.
                     live_factory = live_market_ingestion_factory or build_live_market_ingestion
@@ -768,7 +768,10 @@ def create_app(
                             live_quote_worker.run(stopping), name="live-market-quote-worker"
                         )
                         application.state.live_quote_task = live_quote_task
-                if app_settings.market_collector_enabled:
+                if (
+                    app_settings.market_collector_enabled
+                    and app_settings.market_collector_transport == "rest"
+                ):
                     market_collector_task = _start_market_collector(
                         application,
                         app_settings=app_settings,
@@ -1271,7 +1274,7 @@ def create_app(
                 or worker_task.done()
             ):
                 pending.append("rights_worker")
-            if app_settings.ingestion_live_subscriptions:
+            if app_settings.effective_live_kline_subscriptions:
                 live_worker = getattr(app.state, "live_market_worker", None)
                 live_task = getattr(app.state, "live_market_task", None)
                 if (

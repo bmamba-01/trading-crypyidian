@@ -155,6 +155,7 @@ class AppSettings(BaseSettings):
     # SIG-0: collector nến công khai Binance trong ingestion-worker (owner duyệt 15/11/2026 cho
     # PAPER nội bộ). Mặc định tắt; khi bật vẫn phải có policy PAPER_DEMO hợp lệ trong registry.
     market_collector_enabled: bool = False
+    market_collector_transport: Literal["rest", "websocket"] = "rest"
     market_collector_streams: str = "BTCUSDT:1m,5m,15m,1h,4h;ETHUSDT:1m,5m,15m,1h,4h"
     market_collector_tick_seconds: float = Field(default=30.0, ge=5, le=600)
     market_collector_initial_bars: int = Field(default=1000, ge=1, le=15000)
@@ -440,10 +441,36 @@ class AppSettings(BaseSettings):
             (symbol, timeframe) for symbol in sorted(symbols) for timeframe in sorted(timeframes)
         )
 
+    @property
+    def effective_live_kline_subscriptions(self) -> tuple[tuple[str, str], ...]:
+        """Danh sách (symbol, timeframe) dùng WebSocket `/market` (gồm collector transport WS)."""
+        if self.market_collector_enabled and self.market_collector_transport == "websocket":
+            from trading_bot.application.market_bar_collector import parse_collector_streams
+
+            collector_pairs = tuple(
+                (stream.symbol, stream.interval)
+                for stream in parse_collector_streams(self.market_collector_streams)
+            )
+            return collector_pairs
+        return self.ingestion_live_subscriptions
+
     @model_validator(mode="after")
     def validate_live_ingestion(self) -> AppSettings:
         """Chỉ ingestion worker được bật live ingest, với symbol/timeframe hợp lệ."""
         symbols = _split_csv(self.ingestion_live_symbols)
+        if self.market_collector_enabled and self.market_collector_transport == "websocket":
+            from trading_bot.application.market_bar_collector import parse_collector_streams
+
+            collector_streams = parse_collector_streams(self.market_collector_streams)
+            if any(stream.interval not in _LIVE_TIMEFRAMES for stream in collector_streams):
+                raise ValueError("market_collector_streams chứa interval không hỗ trợ WebSocket.")
+            if len(collector_streams) > _MAX_LIVE_STREAMS:
+                raise ValueError("market_collector_streams vượt giới hạn stream WebSocket.")
+            if symbols:
+                raise ValueError(
+                    "Không được bật trùng luồng giữa market_collector (websocket) và "
+                    "ingestion_live_symbols."
+                )
         if not symbols:
             if _split_csv(self.ingestion_live_events):
                 raise ValueError("ingestion_live_events cần ingestion_live_symbols.")
@@ -465,6 +492,19 @@ class AppSettings(BaseSettings):
             raise ValueError("ingestion_live_timeframes chứa interval không được hỗ trợ.")
         if len(symbols) * len(timeframes) > _MAX_LIVE_STREAMS:
             raise ValueError("ingestion_live_symbols vượt giới hạn stream của một worker.")
+        if self.market_collector_enabled:
+            from trading_bot.application.market_bar_collector import parse_collector_streams
+
+            collector_pairs = {
+                (stream.symbol, stream.interval)
+                for stream in parse_collector_streams(self.market_collector_streams)
+            }
+            live_pairs = set(self.ingestion_live_subscriptions)
+            if collector_pairs & live_pairs:
+                raise ValueError(
+                    "Không được bật trùng luồng giữa market_collector (REST) và "
+                    "ingestion_live_symbols (WebSocket)."
+                )
         events = _split_csv(self.ingestion_live_events)
         if len(set(events)) != len(events) or not set(events) <= _LIVE_EVENT_KINDS:
             raise ValueError("ingestion_live_events chứa loại stream không được hỗ trợ.")

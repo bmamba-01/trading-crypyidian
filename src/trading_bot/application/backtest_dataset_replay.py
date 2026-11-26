@@ -98,12 +98,15 @@ class BacktestDatasetReplayLoader:
         workspace_id: UUID,
         dataset_hash: str,
         now: datetime,
+        require_taker_flow: bool = False,
     ) -> BacktestDatasetReplayInput:
         """Chỉ trả snapshot khi coverage, quyền và toàn vẹn bar còn hợp lệ."""
         if type(workspace_id) is not UUID:
             raise ValueError("workspace_id phải là UUID.")
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now phải có múi giờ.")
+        if type(require_taker_flow) is not bool:
+            raise ValueError("require_taker_flow phải là boolean.")
         manifest = await self._repository.get_by_hash(
             workspace_id=workspace_id,
             dataset_hash=dataset_hash,
@@ -115,6 +118,10 @@ class BacktestDatasetReplayLoader:
         if manifest.rights_workspace_id != workspace_id:
             raise PermissionError("Manifest không thuộc workspace đã được duyệt quyền.")
         manifest.require_ready()
+        if require_taker_flow and not manifest.has_pinned_taker_flow:
+            raise BacktestDatasetDataChanged(
+                "Manifest không ghim dữ liệu taker theo yêu cầu chiến lược (cần schema v5)."
+            )
         evidence = await self._authorize_current_rights(
             manifest=manifest, workspace_id=workspace_id, now=now
         )
@@ -134,6 +141,15 @@ class BacktestDatasetReplayLoader:
             raise BacktestDatasetDataChanged(
                 "Số lượng bar đọc lại không khớp snapshot READY của manifest."
             )
+        if require_taker_flow and any(
+            bar.trade_count is None
+            or bar.taker_buy_base_volume is None
+            or bar.taker_buy_quote_volume is None
+            for bar in bars
+        ):
+            raise BacktestDatasetDataChanged(
+                "Dữ liệu bar đọc lại thiếu trường taker theo yêu cầu chiến lược."
+            )
         try:
             if manifest.schema_version == 2 and any(bar.quote_volume is not None for bar in bars):
                 raise BacktestDatasetDataChanged(
@@ -142,14 +158,17 @@ class BacktestDatasetReplayLoader:
             observed_hash = backtest_dataset_bars_hash(bars, schema_version=manifest.schema_version)
             observed_identity_hash = (
                 backtest_dataset_bar_identity_hash(bars, workspace_id=workspace_id)
-                if manifest.schema_version == 4
+                if manifest.has_pinned_source_identities
                 else None
             )
         except ValueError as error:
             raise BacktestDatasetDataChanged("Dữ liệu bar đọc lại không hợp lệ.") from error
         if observed_hash != manifest.bars_content_hash:
             raise BacktestDatasetDataChanged("Hash bar đọc lại không khớp snapshot của manifest.")
-        if manifest.schema_version == 4 and observed_identity_hash != manifest.bar_identity_hash:
+        if (
+            manifest.has_pinned_source_identities
+            and observed_identity_hash != manifest.bar_identity_hash
+        ):
             raise BacktestDatasetDataChanged(
                 "Identity record/revision bar đọc lại không khớp manifest."
             )

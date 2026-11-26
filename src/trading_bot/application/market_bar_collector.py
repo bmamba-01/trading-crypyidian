@@ -31,6 +31,7 @@ from trading_bot.application.binance_rest_backfill import (
 from trading_bot.application.binance_rest_backfill_ingestion import make_backfill_bar_version
 from trading_bot.domain.market.ingestion import (
     IngestionCursor,
+    IngestionGap,
     InstrumentObservation,
     MarketStream,
 )
@@ -130,6 +131,8 @@ class CollectorRepository(Protocol):
     ) -> Any: ...
 
     async def append_bar(self, **kwargs: Any) -> Any: ...
+
+    async def append_gap(self, *, workspace_id: UUID, gap: IngestionGap) -> UUID: ...
 
 
 class CollectorMarketData(RestKlineProvider, Protocol):
@@ -268,7 +271,18 @@ class MarketBarCollector:
             )
             if batch.bars:
                 instrument_id = await self._instrument_id(market, stream.symbol, instant)
+            expected = start
             for bar in batch.bars:
+                if bar.open_time > expected:
+                    await market.append_gap(
+                        workspace_id=self._workspace_id,
+                        gap=IngestionGap(
+                            stream=MarketStream(bar.source, stream.symbol, stream.interval),
+                            gap_start=expected,
+                            gap_end=bar.open_time,
+                            detected_at=instant,
+                        ),
+                    )
                 versioned_bar, version = make_backfill_bar_version(
                     workspace_id=self._workspace_id, bar=bar
                 )
@@ -278,6 +292,7 @@ class MarketBarCollector:
                     bar=versioned_bar,
                     version=version,
                 )
+                expected = bar.open_time + duration
             # Chỉ tiến cursor tới sau nến cuối thực nhận; nến chưa phát hành sẽ được lấy lượt sau.
             covered_until = batch.bars[-1].open_time + duration if batch.bars else start
             missing = int((covered_until - start) / duration) - len(batch.bars)

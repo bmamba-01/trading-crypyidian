@@ -78,8 +78,8 @@ class BacktestDatasetManifest:
     schema_version: int = 3
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version not in {2, 3, 4}:
-            raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
+        if type(self.schema_version) is not int or self.schema_version not in {2, 3, 4, 5}:
+            raise ValueError("schema_version chỉ hỗ trợ 2, 3, 4 hoặc 5.")
         for name in (
             "prepared_at",
             "rights_verified_at",
@@ -113,6 +113,11 @@ class BacktestDatasetManifest:
         if self.schema_version == 4:
             if not _is_sha256(self.bar_identity_hash):
                 raise ValueError("bar_identity_hash phải là SHA-256 khi schema v4.")
+        elif self.schema_version == 5:
+            if self.bar_identity_hash is not None and not _is_sha256(self.bar_identity_hash):
+                raise ValueError(
+                    "bar_identity_hash phải là SHA-256 hợp lệ hoặc None khi schema v5."
+                )
         elif self.bar_identity_hash is not None:
             raise ValueError("Manifest v2/v3 không được có bar_identity_hash.")
         if self.warmup_start > self.evaluation_start or self.evaluation_start >= self.range_end:
@@ -186,7 +191,12 @@ class BacktestDatasetManifest:
     @property
     def has_pinned_source_identities(self) -> bool:
         """Cho biết manifest có ghim ordered MarketBar identity cho scorer parity."""
-        return self.schema_version == 4 and self.bar_identity_hash is not None
+        return self.schema_version >= 4 and self.bar_identity_hash is not None
+
+    @property
+    def has_pinned_taker_flow(self) -> bool:
+        """Cho biết manifest có ghim trade_count và taker buy volume vào bars_content_hash."""
+        return self.schema_version >= 5
 
     @property
     def status(self) -> str:
@@ -246,9 +256,9 @@ class BacktestDatasetManifest:
             "dataset_hash",
         }
         schema_version = payload.get("schema_version")
-        if schema_version == 4:
+        if type(schema_version) is int and schema_version >= 4:
             expected_fields.add("bar_identity_hash")
-        if set(payload) != expected_fields or schema_version not in {2, 3, 4}:
+        if set(payload) != expected_fields or schema_version not in {2, 3, 4, 5}:
             raise ValueError("canonical_json fields/schema_version không hợp lệ.")
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if canonical != canonical_json:
@@ -312,6 +322,7 @@ def build_backtest_dataset_manifest(
     rights_evidence: BackfillRightsEvidence,
     prepared_at: datetime,
     schema_version: int = 3,
+    require_taker_flow: bool = False,
 ) -> BacktestDatasetManifest:
     """Tạo manifest chuẩn hóa; nến thiếu được liệt kê chứ không nội suy."""
     if type(request) not in {RestBackfillRequest, FirstPartyQADatasetRequest}:
@@ -402,14 +413,36 @@ def build_backtest_dataset_manifest(
     )
     warmup_observed = sum(item.open_time.astimezone(UTC) < evaluation for item in ordered)
     evaluation_observed = len(ordered) - warmup_observed
-    if type(schema_version) is not int or schema_version not in {2, 3, 4}:
-        raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
+    if type(schema_version) is not int or schema_version not in {2, 3, 4, 5}:
+        raise ValueError("schema_version chỉ hỗ trợ 2, 3, 4 hoặc 5.")
+    if type(require_taker_flow) is not bool:
+        raise ValueError("require_taker_flow phải là boolean.")
+    if require_taker_flow:
+        if schema_version < 5:
+            raise ValueError("Chiến lược yêu cầu dữ liệu taker phải dùng manifest schema v5.")
+        if any(
+            item.trade_count is None
+            or item.taker_buy_base_volume is None
+            or item.taker_buy_quote_volume is None
+            for item in ordered
+        ):
+            raise ValueError(
+                "Thiếu trường taker (trade_count/taker_buy_base_volume/taker_buy_quote_volume) "
+                "trong dữ liệu bar."
+            )
     bars_hash = backtest_dataset_bars_hash(ordered, schema_version=schema_version)
-    bar_identity_hash = (
-        backtest_dataset_bar_identity_hash(ordered, workspace_id=rights_evidence.workspace_id)
-        if schema_version == 4
-        else None
-    )
+    if schema_version == 4:
+        bar_identity_hash: str | None = backtest_dataset_bar_identity_hash(
+            ordered, workspace_id=rights_evidence.workspace_id
+        )
+    elif (
+        schema_version == 5 and ordered and all(bar.source_identity is not None for bar in ordered)
+    ):
+        bar_identity_hash = backtest_dataset_bar_identity_hash(
+            ordered, workspace_id=rights_evidence.workspace_id
+        )
+    else:
+        bar_identity_hash = None
     manifest_payload = {
         "schema_version": schema_version,
         "request_fingerprint": request.fingerprint,
@@ -440,7 +473,7 @@ def build_backtest_dataset_manifest(
         "bars_content_hash": bars_hash,
         "status": "READY" if not missing else "INCOMPLETE",
     }
-    if schema_version == 4:
+    if schema_version >= 4:
         manifest_payload["bar_identity_hash"] = bar_identity_hash
     canonical = json.dumps(
         manifest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -587,8 +620,8 @@ def backtest_dataset_identity_metadata_hash(
 
 def backtest_dataset_bars_hash(bars: Sequence[OHLCVBar], *, schema_version: int = 3) -> str:
     """Tính hash ổn định theo thời gian mở nến cho snapshot dataset."""
-    if type(schema_version) is not int or schema_version not in {2, 3, 4}:
-        raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
+    if type(schema_version) is not int or schema_version not in {2, 3, 4, 5}:
+        raise ValueError("schema_version chỉ hỗ trợ 2, 3, 4 hoặc 5.")
     if not isinstance(bars, Sequence) or any(type(bar) is not OHLCVBar for bar in bars):
         raise ValueError("bars phải là dãy OHLCVBar hợp lệ.")
     ordered = tuple(
@@ -604,7 +637,7 @@ def backtest_dataset_bars_hash(bars: Sequence[OHLCVBar], *, schema_version: int 
     )
     digest = hashlib.sha256()
     for bar in ordered:
-        payload = {
+        payload: dict[str, object] = {
             "source": bar.source,
             "symbol": bar.symbol,
             "timeframe": bar.timeframe,
@@ -625,6 +658,14 @@ def backtest_dataset_bars_hash(bars: Sequence[OHLCVBar], *, schema_version: int 
         }
         if schema_version >= 3:
             payload["quote_volume"] = None if bar.quote_volume is None else str(bar.quote_volume)
+        if schema_version >= 5:
+            payload["trade_count"] = bar.trade_count
+            payload["taker_buy_base_volume"] = (
+                None if bar.taker_buy_base_volume is None else str(bar.taker_buy_base_volume)
+            )
+            payload["taker_buy_quote_volume"] = (
+                None if bar.taker_buy_quote_volume is None else str(bar.taker_buy_quote_volume)
+            )
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest.update(canonical.encode("utf-8"))
         digest.update(b"\n")
@@ -662,6 +703,6 @@ def _manifest_payload(manifest: BacktestDatasetManifest) -> dict[str, object]:
         "bars_content_hash": manifest.bars_content_hash,
         "status": manifest.status,
     }
-    if manifest.schema_version == 4:
+    if manifest.schema_version >= 4:
         payload["bar_identity_hash"] = manifest.bar_identity_hash
     return payload

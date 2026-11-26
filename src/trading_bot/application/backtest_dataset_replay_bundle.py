@@ -299,7 +299,7 @@ class BacktestDatasetReplayBundle:
                 != manifest.bars_content_hash
             ):
                 raise BacktestDatasetBundleMismatch("Hash bars của manifest con bị thay đổi.")
-            if manifest.schema_version == 4:
+            if manifest.has_pinned_source_identities:
                 try:
                     observed_identity_hash = backtest_dataset_bar_identity_hash(
                         item.bars,
@@ -344,14 +344,32 @@ def build_backtest_dataset_replay_bundle(
     inputs: Sequence[BacktestDatasetReplayInput],
     *,
     funding: ReplayFundingSeries | None = None,
+    require_taker_flow: bool = False,
 ) -> BacktestDatasetReplayBundle:
     """Ghép child manifest cùng symbol/window/rights thành hash ổn định."""
     if not isinstance(inputs, Sequence) or not inputs:
         raise ValueError("inputs phải là dãy replay input không rỗng.")
     if any(type(item) is not BacktestDatasetReplayInput for item in inputs):
         raise ValueError("Mọi bundle component phải là BacktestDatasetReplayInput.")
+    if type(require_taker_flow) is not bool:
+        raise ValueError("require_taker_flow phải là boolean.")
 
     components = tuple(sorted(inputs, key=lambda item: item.manifest.interval))
+    if require_taker_flow:
+        for item in components:
+            if not item.manifest.has_pinned_taker_flow:
+                raise BacktestDatasetBundleMismatch(
+                    "Bundle yêu cầu dữ liệu taker nhưng manifest con không dùng schema v5."
+                )
+            if any(
+                bar.trade_count is None
+                or bar.taker_buy_base_volume is None
+                or bar.taker_buy_quote_volume is None
+                for bar in item.bars
+            ):
+                raise BacktestDatasetBundleMismatch(
+                    "Bundle yêu cầu dữ liệu taker nhưng có bar thiếu trường taker."
+                )
     manifests = tuple(item.manifest for item in components)
     intervals = tuple(manifest.interval for manifest in manifests)
     if len(intervals) != len(set(intervals)):

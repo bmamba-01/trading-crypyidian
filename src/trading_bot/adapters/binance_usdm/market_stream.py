@@ -105,6 +105,24 @@ def parse_kline_stream_message(message: str, *, received_at: datetime) -> OHLCVB
             if close_time - instant > _CLOCK_LAG_TOLERANCE:
                 raise MarketDataContractError("Kline báo đã đóng trước thời điểm đóng nến.")
             instant = close_time + _MILLISECOND
+        volume = _decimal(kline["v"], "volume")
+        quote_volume = _decimal(kline["q"], "quote asset volume")
+        trade_count: int | None = None
+        if "n" in kline and kline["n"] is not None:
+            raw_count = kline["n"]
+            if type(raw_count) is not int or raw_count < 0:
+                raise MarketDataContractError("Kline stream có trade_count không hợp lệ.")
+            trade_count = raw_count
+        taker_buy_base_volume = (
+            _decimal(kline["V"], "taker buy base volume")
+            if "V" in kline and kline["V"] is not None
+            else None
+        )
+        taker_buy_quote_volume = (
+            _decimal(kline["Q"], "taker buy quote volume")
+            if "Q" in kline and kline["Q"] is not None
+            else None
+        )
         return OHLCVBar(
             symbol=symbol,
             timeframe=interval,
@@ -117,8 +135,11 @@ def parse_kline_stream_message(message: str, *, received_at: datetime) -> OHLCVB
             high=_decimal(kline["h"], "high"),
             low=_decimal(kline["l"], "low"),
             close=_decimal(kline["c"], "close"),
-            volume=_decimal(kline["v"], "volume"),
-            quote_volume=_decimal(kline["q"], "quote asset volume"),
+            volume=volume,
+            quote_volume=quote_volume,
+            trade_count=trade_count,
+            taker_buy_base_volume=taker_buy_base_volume,
+            taker_buy_quote_volume=taker_buy_quote_volume,
             is_closed=closed,
             source=_SOURCE,
             source_cursor=str(kline["t"]),

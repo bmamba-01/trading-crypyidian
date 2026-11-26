@@ -162,7 +162,9 @@ class MarketDataRepository:
             )
         )
         if existing is not None:
-            if _same_version(existing, version):
+            if _same_version(existing, version) or _same_rest_backfill_bar_content(
+                existing, bar, version
+            ):
                 return MarketAppendResult(IngestionDisposition.DUPLICATE, existing.id)
             raise MarketRepositoryConflict("idempotency key của bar đã có payload khác.")
         latest = await self._session.scalar(
@@ -227,7 +229,10 @@ class MarketDataRepository:
                 MarketBar.source == version.stream.source,
                 MarketBar.idempotency_key == version.idempotency_key,
             ),
-            matches=lambda existing: _same_version(existing, version),
+            matches=lambda existing: (
+                _same_version(existing, version)
+                or _same_rest_backfill_bar_content(existing, bar, version)
+            ),
             conflict_message="idempotency key hoặc revision bar xung đột khi ghi đồng thời.",
         )
         if duplicate is not None:
@@ -420,8 +425,24 @@ class MarketDataRepository:
             detected_at=gap.detected_at,
             resolved_at=gap.resolved_at,
         )
-        self._session.add(row)
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            concurrent = await self._session.scalar(
+                select(IngestionGapRow).where(
+                    IngestionGapRow.workspace_id == workspace_id,
+                    IngestionGapRow.source == stream.source,
+                    IngestionGapRow.symbol == stream.symbol,
+                    IngestionGapRow.timeframe == stream.timeframe,
+                    IngestionGapRow.gap_start == gap.gap_start,
+                    IngestionGapRow.gap_end == gap.gap_end,
+                )
+            )
+            if concurrent is not None:
+                return concurrent.id
+            raise
         return row.id
 
     async def resolve_gap(
@@ -924,6 +945,48 @@ def _same_version(record: MarketBar, version: MarketRecordVersion) -> bool:
         and record.supersedes_id == version.supersedes_record_id
         and record.available_at == version.available_at
     )
+
+
+_MISSING = object()
+_REST_BACKFILL_SOURCE = "BINANCE_USDM_REST_BACKFILL"
+
+
+def _same_rest_backfill_bar_content(
+    record: MarketBar, bar: OHLCVBar, version: MarketRecordVersion
+) -> bool:
+    """Cho phép backfill REST trùng khoảng với ``feed_delay`` khác là DUPLICATE an toàn.
+
+    Chỉ áp dụng khi cùng ``BINANCE_USDM_REST_BACKFILL``, cùng revision/logical_key và toàn bộ
+    nội dung OHLCV + taker khớp tuyệt đối; mọi sai lệch giá/volume/taker vẫn fail-closed.
+    """
+    if version.stream.source != _REST_BACKFILL_SOURCE:
+        return False
+    if (
+        getattr(record, "logical_key", _MISSING) != version.logical_key
+        or getattr(record, "revision", _MISSING) != version.revision
+        or getattr(record, "supersedes_id", _MISSING) != version.supersedes_record_id
+    ):
+        return False
+    for field_name in (
+        "symbol",
+        "timeframe",
+        "open_time",
+        "close_time",
+        "event_at",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "trade_count",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+        "is_closed",
+    ):
+        if getattr(record, field_name, _MISSING) != getattr(bar, field_name):
+            return False
+    return True
 
 
 def _validate_causal_timestamps(

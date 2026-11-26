@@ -162,6 +162,9 @@ class FakeMarket:
         self.bars.append(kwargs["bar"])
         return None
 
+    async def append_gap(self, **kwargs: Any) -> UUID:
+        return uuid4()
+
 
 def _collector(
     binance: FakeBinance, market: FakeMarket, gate: Any, *, streams: str = "BTCUSDT:1m"

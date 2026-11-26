@@ -10,13 +10,19 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from trading_bot.application.binance_rest_backfill import (
+    _SOURCE,
     BinanceRestBackfillRunner,
     RestBackfillBatch,
     RestBackfillCheckpoint,
     RestBackfillError,
     RestBackfillRequest,
 )
-from trading_bot.domain.market.ingestion import IngestionCursor, MarketRecordVersion, MarketStream
+from trading_bot.domain.market.ingestion import (
+    IngestionCursor,
+    IngestionGap,
+    MarketRecordVersion,
+    MarketStream,
+)
 from trading_bot.domain.market.models import OHLCVBar
 
 
@@ -41,6 +47,8 @@ class RestBackfillRepository(Protocol):
     ) -> object: ...
 
     async def save_cursor(self, *, workspace_id: UUID, cursor: IngestionCursor) -> None: ...
+
+    async def append_gap(self, *, workspace_id: UUID, gap: IngestionGap) -> UUID: ...
 
 
 class BinanceRestBackfillIngestionService:
@@ -99,13 +107,27 @@ class BinanceRestBackfillIngestionService:
         elif checkpoint is None and saved_cursor is not None:
             checkpoint = _checkpoint_from_cursor(saved_cursor, request)
 
+        start_cursor = checkpoint.next_open_time if checkpoint is not None else request.start
         batch = await self._runner.run_batch(
             request,
             now=instant,
             max_pages=max_pages,
             checkpoint=checkpoint,
         )
+        bar_stream = MarketStream(_SOURCE, request.symbol, request.interval)
+        expected = start_cursor
+        interval = request.interval_duration
         for bar in batch.bars:
+            if bar.open_time > expected:
+                await self._repository.append_gap(
+                    workspace_id=self._workspace_id,
+                    gap=IngestionGap(
+                        stream=bar_stream,
+                        gap_start=expected,
+                        gap_end=bar.open_time,
+                        detected_at=instant,
+                    ),
+                )
             versioned_bar, version = _make_version(
                 workspace_id=self._workspace_id,
                 bar=bar,
@@ -115,6 +137,17 @@ class BinanceRestBackfillIngestionService:
                 instrument_id=self._instrument_id,
                 bar=versioned_bar,
                 version=version,
+            )
+            expected = bar.open_time + interval
+        if batch.checkpoint.finished and expected < batch.checkpoint.next_open_time:
+            await self._repository.append_gap(
+                workspace_id=self._workspace_id,
+                gap=IngestionGap(
+                    stream=bar_stream,
+                    gap_start=expected,
+                    gap_end=batch.checkpoint.next_open_time,
+                    detected_at=instant,
+                ),
             )
         await self._repository.save_cursor(
             workspace_id=self._workspace_id,

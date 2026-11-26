@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -16,7 +16,12 @@ from trading_bot.application.binance_rest_backfill import (
 from trading_bot.application.binance_rest_backfill_ingestion import (
     BinanceRestBackfillIngestionService,
 )
-from trading_bot.domain.market.ingestion import IngestionCursor, MarketRecordVersion, MarketStream
+from trading_bot.domain.market.ingestion import (
+    IngestionCursor,
+    IngestionGap,
+    MarketRecordVersion,
+    MarketStream,
+)
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.ports.market_data import MarketDataPage
 
@@ -97,6 +102,7 @@ class _Repository:
     def __init__(self) -> None:
         self.cursors: dict[MarketStream, IngestionCursor] = {}
         self.bars: dict[str, tuple[UUID, OHLCVBar, MarketRecordVersion]] = {}
+        self.gaps: list[IngestionGap] = []
 
     async def get_cursor(
         self, *, workspace_id: UUID, stream: MarketStream, as_of: datetime
@@ -123,6 +129,11 @@ class _Repository:
     async def save_cursor(self, *, workspace_id: UUID, cursor: IngestionCursor) -> None:
         assert workspace_id == WORKSPACE_ID
         self.cursors[cursor.stream] = cursor
+
+    async def append_gap(self, *, workspace_id: UUID, gap: IngestionGap) -> UUID:
+        assert workspace_id == WORKSPACE_ID
+        self.gaps.append(gap)
+        return uuid4()
 
 
 @pytest.mark.asyncio

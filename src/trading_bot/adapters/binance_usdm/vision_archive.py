@@ -353,6 +353,9 @@ class ArchivedKline:
     quote_volume: Decimal
     open_time_ms: int
     checksum: str
+    trade_count: int | None = None
+    taker_buy_base_volume: Decimal | None = None
+    taker_buy_quote_volume: Decimal | None = None
 
     def __post_init__(self) -> None:
         if _SYMBOL.fullmatch(self.symbol) is None or self.interval not in _INTERVALS:
@@ -374,6 +377,9 @@ class ArchivedKline:
             self.close,
             self.volume,
             self.quote_volume,
+            trade_count=self.trade_count,
+            taker_buy_base_volume=self.taker_buy_base_volume,
+            taker_buy_quote_volume=self.taker_buy_quote_volume,
         )
 
     def to_simulated_backtest_bar(
@@ -402,6 +408,9 @@ class ArchivedKline:
             close=self.close,
             volume=self.volume,
             quote_volume=self.quote_volume,
+            trade_count=self.trade_count,
+            taker_buy_base_volume=self.taker_buy_base_volume,
+            taker_buy_quote_volume=self.taker_buy_quote_volume,
             is_closed=True,
             source=source,
             source_cursor=str(self.open_time_ms),
@@ -775,6 +784,8 @@ def parse_kline_archive(
                 for row_number, fields in enumerate(reader, start=1):
                     if row_number > max_rows:
                         raise HistoricalBackfillError("Archive vượt giới hạn số bar.")
+                    if row_number == 1 and _is_kline_header_row(fields):
+                        continue
                     parsed_row = _parse_kline_row(
                         fields, row_number=row_number, symbol=symbol, interval=interval
                     )
@@ -1019,6 +1030,9 @@ async def append_archive_to_market_repository(
             close=bar.close,
             volume=bar.volume,
             quote_volume=bar.quote_volume,
+            trade_count=bar.trade_count,
+            taker_buy_base_volume=bar.taker_buy_base_volume,
+            taker_buy_quote_volume=bar.taker_buy_quote_volume,
             is_closed=True,
             source=actual_source,
             source_cursor=f"{archive.url}:{archived_bar.open_time_ms}",
@@ -1048,6 +1062,30 @@ async def append_archive_to_market_repository(
     return tuple(output)
 
 
+_KLINE_CSV_HEADERS = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume",
+    "count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+)
+
+
+def _is_kline_header_row(fields: list[str]) -> bool:
+    """Nhận diện dòng tiêu đề 12 cột tùy chọn của CSV Binance Vision USDⓈ-M."""
+    if len(fields) != 12:
+        return False
+    normalized = tuple(item.strip().lower() for item in fields)
+    return normalized == _KLINE_CSV_HEADERS
+
+
 def _parse_kline_row(
     fields: list[str], *, row_number: int, symbol: str, interval: str
 ) -> ArchivedKline:
@@ -1059,11 +1097,24 @@ def _parse_kline_row(
         close_time = _from_milliseconds(int(fields[6]))
         open_price, high, low, close, volume = (Decimal(fields[index]) for index in range(1, 6))
         quote_volume = Decimal(fields[7])
+        trade_count = int(fields[8])
+        taker_buy_base_volume = Decimal(fields[9])
+        taker_buy_quote_volume = Decimal(fields[10])
     except (ValueError, InvalidOperation, IndexError, OverflowError) as error:
         raise HistoricalBackfillError(
             f"Kline dòng {row_number} có timestamp/Decimal sai."
         ) from error
-    _validate_kline_values(open_price, high, low, close, volume, quote_volume)
+    _validate_kline_values(
+        open_price,
+        high,
+        low,
+        close,
+        volume,
+        quote_volume,
+        trade_count=trade_count,
+        taker_buy_base_volume=taker_buy_base_volume,
+        taker_buy_quote_volume=taker_buy_quote_volume,
+    )
     expected_close = open_time + _INTERVALS[interval] - timedelta(milliseconds=1)
     if close_time != expected_close:
         raise HistoricalBackfillError(f"Kline dòng {row_number} có close time không khớp interval.")
@@ -1083,6 +1134,9 @@ def _parse_kline_row(
         quote_volume=quote_volume,
         open_time_ms=open_ms,
         checksum=hashlib.sha256(canonical).hexdigest(),
+        trade_count=trade_count,
+        taker_buy_base_volume=taker_buy_base_volume,
+        taker_buy_quote_volume=taker_buy_quote_volume,
     )
 
 
@@ -1093,6 +1147,10 @@ def _validate_kline_values(
     close: Decimal,
     volume: Decimal,
     quote_volume: Decimal,
+    *,
+    trade_count: int | None = None,
+    taker_buy_base_volume: Decimal | None = None,
+    taker_buy_quote_volume: Decimal | None = None,
 ) -> None:
     values = (open_price, high, low, close, volume, quote_volume)
     if any(not value.is_finite() for value in values):
@@ -1105,6 +1163,19 @@ def _validate_kline_values(
         raise HistoricalBackfillError("Kline có giá không dương hoặc volume âm.")
     if high < max(open_price, close) or low > min(open_price, close) or high < low:
         raise HistoricalBackfillError("Kline vi phạm quan hệ OHLC.")
+    if trade_count is not None and (type(trade_count) is not int or trade_count < 0):
+        raise HistoricalBackfillError("Kline có trade_count âm hoặc không phải số nguyên.")
+    if taker_buy_base_volume is not None:
+        if not taker_buy_base_volume.is_finite() or not 0 <= taker_buy_base_volume <= volume:
+            raise HistoricalBackfillError("Kline có taker_buy_base_volume nằm ngoài [0, volume].")
+    if taker_buy_quote_volume is not None:
+        if (
+            not taker_buy_quote_volume.is_finite()
+            or not 0 <= taker_buy_quote_volume <= quote_volume
+        ):
+            raise HistoricalBackfillError(
+                "Kline có taker_buy_quote_volume nằm ngoài [0, quote_volume]."
+            )
 
 
 def _from_milliseconds(value: int) -> datetime:
@@ -1269,17 +1340,29 @@ def _request_fingerprint(request: BackfillRequest, urls: tuple[str, ...]) -> str
 
 
 def _kline_checksum(bar: ArchivedKline) -> str:
-    canonical = "|".join(
-        (
-            bar.symbol,
-            bar.interval,
-            str(bar.open_time_ms),
-            str(bar.open),
-            str(bar.high),
-            str(bar.low),
-            str(bar.close),
-            str(bar.volume),
-            str(bar.quote_volume),
+    parts = [
+        bar.symbol,
+        bar.interval,
+        str(bar.open_time_ms),
+        str(bar.open),
+        str(bar.high),
+        str(bar.low),
+        str(bar.close),
+        str(bar.volume),
+        str(bar.quote_volume),
+    ]
+    # SIG-0: chỉ thêm trường taker khi có giá trị để checksum bar cũ không đổi.
+    if (
+        bar.trade_count is not None
+        or bar.taker_buy_base_volume is not None
+        or bar.taker_buy_quote_volume is not None
+    ):
+        parts.extend(
+            (
+                "" if bar.trade_count is None else str(bar.trade_count),
+                "" if bar.taker_buy_base_volume is None else str(bar.taker_buy_base_volume),
+                "" if bar.taker_buy_quote_volume is None else str(bar.taker_buy_quote_volume),
+            )
         )
-    ).encode("utf-8")
+    canonical = "|".join(parts).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
