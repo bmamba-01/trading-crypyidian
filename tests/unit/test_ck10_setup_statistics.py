@@ -41,3 +41,64 @@ def test_r_distribution_when_available_and_empty_input() -> None:
 def test_mixed_quote_assets_are_rejected() -> None:
     with pytest.raises(ValueError, match="đồng định giá"):
         trade_statistics([_trade("1"), {"net_pnl": "1", "quote_asset": "USDC"}])
+
+
+def test_planned_risk_computes_r_multiple_quantiles_and_by_setup_breakdown() -> None:
+    trades = [
+        {
+            "net_pnl": "20",
+            "quote_asset": "USDT",
+            "strategy_release_id": "h01-v1",
+            "setup_type": "H01",
+            "planned_risk": "10",
+        },
+        {
+            "net_pnl": "-10",
+            "quote_asset": "USDT",
+            "strategy_release_id": "h01-v1",
+            "setup_type": "H01",
+            "planned_risk": "10",
+        },
+        {
+            "net_pnl": "15",
+            "quote_asset": "USDT",
+            "strategy_release_id": "h06-v1",
+            "planned_risk": "10",
+        },
+        {
+            # Thiếu planned_risk → fail-closed: không đưa vào r_count / r_buckets
+            "net_pnl": "5",
+            "quote_asset": "USDT",
+            "strategy_release_id": "h06-v1",
+            "planned_risk": None,
+        },
+        {
+            # planned_risk <= 0 → fail-closed
+            "net_pnl": "-5",
+            "quote_asset": "USDT",
+            "strategy_release_id": "h06-v1",
+            "planned_risk": "0",
+        },
+    ]
+    stats = trade_statistics(trades)
+    assert stats["n"] == 5
+    assert stats["r_count"] == 3
+    assert stats["r_buckets"] == {"≤ −1R": 1, "−1R…0": 0, "0…1R": 0, "1R…2R": 1, "≥ 2R": 1}
+    assert stats["r_expectancy"] == pytest.approx((2.0 - 1.0 + 1.5) / 3)
+    assert stats["r_quantiles"] == {
+        "p25": pytest.approx(0.25),
+        "p50": pytest.approx(1.5),
+        "p75": pytest.approx(1.75),
+    }
+
+    by_setup = {row["setup"]: row for row in stats["by_setup"]}
+    assert set(by_setup) == {"H01", "H06"}
+    assert by_setup["H01"]["n"] == 2
+    assert by_setup["H01"]["win_rate"] == pytest.approx(0.5)
+    assert by_setup["H01"]["r_count"] == 2
+    assert by_setup["H01"]["r_expectancy"] == pytest.approx(0.5)
+    assert by_setup["H01"]["total_net"] == pytest.approx(10.0)
+    assert by_setup["H06"]["n"] == 3
+    assert by_setup["H06"]["r_count"] == 1
+    assert by_setup["H06"]["r_expectancy"] == pytest.approx(1.5)
+    assert by_setup["H06"]["total_net"] == pytest.approx(15.0)

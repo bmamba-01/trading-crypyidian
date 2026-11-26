@@ -1155,6 +1155,10 @@ class FakeRepository:
             [], bot_id=kwargs["bot_id"], account_id=kwargs["account_id"]
         )
 
+    async def load_trade_plans(self, **kwargs: Any) -> dict[UUID, dict[str, Any]]:
+        plans = getattr(STORE, "trade_plans", None) or {}
+        return {trade_id: plans[trade_id] for trade_id in kwargs["trade_ids"] if trade_id in plans}
+
     async def list_market_series(self, **kwargs: Any) -> list[str]:
         STORE.calls.append("market_series")
         return [
@@ -1477,6 +1481,27 @@ async def test_trade_history_filters_symbol_from_bot_report() -> None:
         ANALYST, bot_id=BOT_A, symbol="NOPEUSDT", start=START, end=END
     )
     assert trades == []
+
+
+@pytest.mark.asyncio
+async def test_trade_history_attaches_planned_risk_r_multiple_setup_and_fills() -> None:
+    t1 = make_trade(gross="21", fee="1", slippage="0")
+    t2 = make_trade(gross="-4", fee="1", slippage="0")
+    STORE.snapshots[BOT_A] = snapshot([t1, t2], bot_id=BOT_A, account_id=ACC_A)
+    STORE.trade_plans = {t1.trade_id: {"estimated_loss": "10"}}  # type: ignore[attr-defined]
+    try:
+        rows = await service().get_trade_history(
+            ANALYST, bot_id=BOT_A, symbol="BTCUSDT", start=START, end=END
+        )
+    finally:
+        STORE.trade_plans = {}  # type: ignore[attr-defined]
+    by_id = {row["trade_id"]: row for row in rows}
+    assert by_id[str(t1.trade_id)]["planned_risk"] == "10"
+    assert by_id[str(t1.trade_id)]["r_multiple"] == pytest.approx(2.0)
+    assert isinstance(by_id[str(t1.trade_id)]["fills"], list)
+    # t2 không có plan → fail-closed None
+    assert by_id[str(t2.trade_id)]["planned_risk"] is None
+    assert by_id[str(t2.trade_id)]["r_multiple"] is None
 
 
 @pytest.mark.asyncio

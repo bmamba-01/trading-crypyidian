@@ -146,6 +146,11 @@ from trading_bot.auth.service import (
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
 from trading_bot.config.workspace_settings import decimal_text
+from trading_bot.domain.market.chart_timeline import (
+    TIMELINE_VERSION,
+    build_chart_timeline,
+    macro_h06_status_view,
+)
 from trading_bot.domain.market.economic_calendar import IMPACT_LABELS_VI, EconomicEventInput
 from trading_bot.domain.market.scanner import SCAN_INTERVALS, ScanCriteria
 from trading_bot.domain.portfolio.post_mortem import evaluate_trade_post_mortem
@@ -3750,7 +3755,52 @@ async def market_chart_page(
                         strategy_id=item.get("strategy_id"),
                         strategy_release_id=item.get("strategy_release_id"),
                     )
-                # CK-10: cột phân tích — nhận định, mức giá, lịch, thống kê lệnh đã đóng.
+                # CK-10: cột phân tích — nhận định, mức giá, lịch, H06 AI-4, timeline, thống kê.
+                now_utc = datetime.now(UTC)
+                history_trades = await service.get_trade_history(
+                    identity.principal,
+                    bot_id=UUID(selected.id),
+                    symbol=selected_symbol,
+                    start=now_utc - STATISTICS_WINDOW,
+                    end=now_utc,
+                )
+                decision_log = await _decision_log_safe(
+                    service, identity.principal, bot_id=UUID(selected.id), limit=40
+                )
+                macro_h06 = await _macro_h06_status(
+                    service, identity.principal, bot_id=UUID(selected.id), now=now_utc
+                )
+                timeline_signals = list(decision_log.get("decisions") or [])
+                if signal_view and signal_view.get("card"):
+                    card = signal_view["card"]
+                    if card.get("symbol") == selected_symbol and not any(
+                        d.get("status") == "CANDIDATE"
+                        and d.get("evaluated_at") == card.get("evaluated_at")
+                        for d in timeline_signals
+                    ):
+                        timeline_signals.append(
+                            {
+                                "evaluated_at": card.get("evaluated_at") or card.get("signal_at"),
+                                "status": "CANDIDATE",
+                                "direction": card.get("direction"),
+                                "symbol": card.get("symbol"),
+                                "strategy_release_id": card.get("strategy_release_id"),
+                                "reference_price": (card.get("entry_zone") or {}).get("low"),
+                                "reason_code": card.get("reason_code"),
+                            }
+                        )
+                timeline = build_chart_timeline(
+                    symbol=selected_symbol,
+                    signals=timeline_signals,
+                    trades=history_trades,
+                    open_positions=(overview or {}).get("positions") or (),
+                    official_macro_events=macro_h06.get("upcoming") or (),
+                    internal_calendar_events=calendar_events or (),
+                )
+                if payload is not None:
+                    payload["timeline_events"] = [
+                        event for event in timeline if event["kind"] in ("signal", "paper_fill")
+                    ]
                 insights = {
                     "narrative": market_narrative(payload or {}, overview),
                     "levels": price_levels(
@@ -3760,18 +3810,12 @@ async def market_chart_page(
                     "calendar": [
                         event
                         for event in calendar_events or []
-                        if datetime.fromisoformat(event["event_at"]) >= datetime.now(UTC)
+                        if datetime.fromisoformat(event["event_at"]) >= now_utc
                     ][:10],
                     "calendar_available": calendar_events is not None,
-                    "statistics": trade_statistics(
-                        await service.get_trade_history(
-                            identity.principal,
-                            bot_id=UUID(selected.id),
-                            symbol=selected_symbol,
-                            start=datetime.now(UTC) - STATISTICS_WINDOW,
-                            end=datetime.now(UTC),
-                        )
-                    ),
+                    "macro_h06": macro_h06,
+                    "timeline": timeline,
+                    "statistics": trade_statistics(history_trades),
                 }
         except BotReportError as error:
             raise _report_http_error(error) from error
@@ -3836,6 +3880,34 @@ async def _runtime_status(
     except Exception:  # noqa: BLE001 - bảng giám sát chỉ đọc, lỗi một bot không làm hỏng trang
         return None
     return dict(status.as_dict())
+
+
+async def _decision_log_safe(
+    service: Any, principal: Principal, *, bot_id: UUID, limit: int = 40
+) -> dict[str, Any]:
+    """Đọc nhật ký quyết định cho dòng thời gian CK-10; lỗi không làm hỏng trang chart."""
+    getter = getattr(service, "get_decision_log", None)
+    if getter is None:
+        return {"decisions": []}
+    try:
+        result: dict[str, Any] = await getter(principal, bot_id=bot_id, limit=limit)
+    except BotReportError:
+        return {"decisions": []}
+    return result
+
+
+async def _macro_h06_status(
+    service: Any, principal: Principal, *, bot_id: UUID, now: datetime
+) -> dict[str, Any]:
+    """Trạng thái ``macro_blackout`` H06 từ lịch chính thức AI-4; thiếu nguồn → ``unknown``."""
+    getter = getattr(service, "get_macro_h06_status", None)
+    if getter is None:
+        return macro_h06_status_view([], now=now)
+    try:
+        status: dict[str, Any] = await getter(principal, bot_id=bot_id, now=now)
+    except BotReportError:
+        return macro_h06_status_view([], now=now)
+    return status
 
 
 async def _calendar_events(request: Request, principal: Principal) -> list[dict[str, Any]] | None:
@@ -4142,6 +4214,58 @@ async def market_chart_history_api(
         "end": end.isoformat(),
         "trades": trades,
         "csv_url": f"/admin/reports/export.csv?{csv_query}",
+    }
+
+
+@router.get("/api/chart/timeline", dependencies=[_CHART_API_POLICY])
+async def market_chart_timeline_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    period: str = "30d",
+) -> dict[str, Any]:
+    """Dòng thời gian CK-10 (tín hiệu, khớp PAPER, lịch vĩ mô AI-4 & nội bộ) theo chuẩn UTC."""
+    response.headers["Cache-Control"] = "no-store"
+    if period not in _HISTORY_PERIODS:
+        raise HTTPException(
+            status_code=422, detail="Kỳ dòng thời gian chỉ nhận today, 7d hoặc 30d."
+        )
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    now_utc = datetime.now(UTC)
+    window = _HISTORY_PERIODS[period]
+    start = (
+        now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        if window is None
+        else now_utc - window
+    )
+    service = _reporting_service(request)
+    try:
+        trades = await service.get_trade_history(
+            identity.principal, bot_id=bot_id, symbol=chart_symbol, start=start, end=now_utc
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    decision_log = await _decision_log_safe(service, identity.principal, bot_id=bot_id, limit=40)
+    macro_h06 = await _macro_h06_status(service, identity.principal, bot_id=bot_id, now=now_utc)
+    calendar_events = await _calendar_events(request, identity.principal)
+    events = build_chart_timeline(
+        symbol=chart_symbol,
+        signals=decision_log.get("decisions") or (),
+        trades=trades,
+        official_macro_events=macro_h06.get("upcoming") or (),
+        internal_calendar_events=calendar_events or (),
+    )
+    return {
+        "status": "ok",
+        "formula_version": TIMELINE_VERSION,
+        "symbol": chart_symbol,
+        "period": period,
+        "events": events,
+        "macro_h06": macro_h06,
     }
 
 

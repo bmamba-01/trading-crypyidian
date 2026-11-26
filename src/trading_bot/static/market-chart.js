@@ -757,12 +757,16 @@
     const events = [
       ...p.structure.breaks.map((item) => ({
         time: item.time,
+        kind: "structure",
+        badge: "Cấu trúc",
         text: `${item.kind === "CHOCH" ? "CHoCH" : "BOS"} ${item.direction === "bullish" ? "tăng" : "giảm"}: giá đóng cửa vượt swing ${fmtNumber(item.level)}`,
       })),
       ...p.levels
         .filter((level) => level.event_time !== null)
         .map((level) => ({
           time: level.event_time,
+          kind: "structure",
+          badge: "Thanh khoản",
           text:
             level.state === "rejected"
               ? `Quét thanh khoản ${level.label} ${fmtNumber(level.price)} rồi đóng cửa quay lại`
@@ -770,28 +774,45 @@
         })),
       ...((p.ict && p.ict.zones) || []).map((zone) => ({
         time: zone.confirmed_time,
+        kind: "structure",
+        badge: "ICT",
         text: `${zone.kind === "fvg" ? (zone.direction === "bullish" ? "FVG tăng" : "FVG giảm") : zone.label} xác nhận: vùng ${fmtNumber(zone.bottom)} – ${fmtNumber(zone.top)}`,
       })),
       ...((p.ict && p.ict.equal_levels) || [])
         .filter((level) => level.swept)
         .map((level) => ({
           time: level.end_time,
+          kind: "structure",
+          badge: "ICT",
           text: `Quét ${level.label} ${fmtNumber(level.price)}`,
         })),
+      ...((p.timeline_events) || []).map((item) => ({
+        time: Number(item.timestamp),
+        kind: item.kind || "signal",
+        badge: item.kind_label_vi || (item.kind === "paper_fill" ? "Khớp PAPER" : "Tín hiệu"),
+        text: item.summary_vi || "",
+      })),
     ]
+      .filter((event) => Number.isFinite(event.time))
       .sort((a, b) => b.time - a.time)
-      .slice(0, 12);
+      .slice(0, 20);
+    const countNode = document.querySelector('[data-dock-count="events"]');
+    if (countNode) countNode.textContent = String(events.length);
     const items = events.map((event) => {
       const li = document.createElement("li");
+      li.dataset.eventKind = event.kind;
+      const badge = document.createElement("span");
+      badge.className = `mc-timeline-badge mc-timeline-badge--${event.kind}`;
+      badge.textContent = event.badge;
       const time = document.createElement("time");
       time.dateTime = new Date(event.time * 1000).toISOString();
       time.textContent = fmtTime(event.time);
-      li.append(time, document.createTextNode(` — ${event.text}`));
+      li.append(badge, document.createTextNode(" "), time, document.createTextNode(` — ${event.text}`));
       return li;
     });
     if (items.length === 0) {
       const li = document.createElement("li");
-      li.textContent = "Chưa có sự kiện cấu trúc hoặc quét thanh khoản trong vùng dữ liệu.";
+      li.textContent = "Chưa có sự kiện cấu trúc, tín hiệu hoặc khớp PAPER trong vùng dữ liệu.";
       items.push(li);
     }
     list.replaceChildren(...items);

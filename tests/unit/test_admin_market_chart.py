@@ -996,3 +996,132 @@ def test_overview_api_returns_tp_ladder_targets_with_hit_status() -> None:
     assert [t["hit"] for t in pos["targets"]] == [True, False, False]
     assert pos["targets"][0]["stop_to_entry_after"] is True
     assert pos["targets"][1]["close_fraction"] == 0.3
+
+
+def test_ck10_timeline_api_r_distribution_by_setup_and_h06_source() -> None:
+    """CRY-228: dòng thời gian tín hiệu/khớp PAPER, thống kê theo setup + phân phối R, nguồn H06."""
+
+    class _RichReporting(_Reporting):
+        async def get_decision_log(self, principal: Principal, **kwargs: Any) -> dict:
+            return {
+                "decisions": [
+                    {
+                        "evaluated_at": "2026-11-16T08:00:00+00:00",
+                        "status": "CANDIDATE",
+                        "reason_code": "H01_TREND_SIGNAL",
+                        "detail_vi": "Đủ điều kiện xu hướng H01.",
+                        "direction": "long",
+                        "symbol": "BTCUSDT",
+                        "reference_price": "101.20",
+                        "strategy_release_id": "h01-v1",
+                    }
+                ],
+                "unverified_decisions": 0,
+            }
+
+        async def get_trade_history(self, principal: Principal, **kwargs: Any) -> list[dict]:
+            self.history_calls.append(kwargs)
+            return [
+                {
+                    "trade_id": "t1",
+                    "symbol": kwargs["symbol"],
+                    "side": "LONG",
+                    "quote_asset": "USDT",
+                    "opened_at": "2026-11-16T08:05:00+00:00",
+                    "closed_at": "2026-11-16T09:00:00+00:00",
+                    "net_pnl": "20.0",
+                    "total_cost": "0.20",
+                    "exit_reason": "TAKE_PROFIT",
+                    "strategy_release_id": "h01-v1",
+                    "setup_type": "H01",
+                    "planned_risk": "10.0",
+                    "fills": [
+                        {
+                            "role": "ENTRY",
+                            "price": "101.20",
+                            "quantity": "1",
+                            "occurred_at": "2026-11-16T08:05:00+00:00",
+                            "exit_reason": None,
+                        },
+                        {
+                            "role": "EXIT",
+                            "price": "121.40",
+                            "quantity": "1",
+                            "occurred_at": "2026-11-16T09:00:00+00:00",
+                            "exit_reason": "TAKE_PROFIT",
+                        },
+                    ],
+                },
+                {
+                    "trade_id": "t2",
+                    "symbol": kwargs["symbol"],
+                    "side": "SHORT",
+                    "quote_asset": "USDT",
+                    "opened_at": "2026-11-16T10:00:00+00:00",
+                    "closed_at": "2026-11-16T10:30:00+00:00",
+                    "net_pnl": "-10.0",
+                    "total_cost": "0.20",
+                    "exit_reason": "STOP_LOSS",
+                    "strategy_release_id": "h06-v1",
+                    "setup_type": "H06",
+                    "planned_risk": "10.0",
+                },
+            ]
+
+        async def get_macro_h06_status(self, principal: Principal, **kwargs: Any) -> dict:
+            return {
+                "source": "AI-4 official calendar",
+                "source_label_vi": "Lịch vĩ mô chính thức AI-4 (FOMC, BEA, OMB PFEI)",
+                "policy_version": "macro-blackout-v2",
+                "status": "clear",
+                "status_label_vi": "Thông thoáng (không trong khoảng cấm H06)",
+                "blackout": False,
+                "is_fresh": True,
+                "blocking_event": None,
+                "missing_sources": [],
+                "sources": [],
+                "upcoming": [
+                    {
+                        "label_vi": "Fed quyết định lãi suất (FOMC)",
+                        "title": "FOMC rate decision",
+                        "source_id": "FED_FOMC_CALENDAR",
+                        "scheduled_at_utc": "2026-11-18T19:00:00+00:00",
+                    }
+                ],
+                "manual_calendar_isolated": True,
+                "as_of": "2026-11-16T12:00:00+00:00",
+            }
+
+    client = _client(_RichReporting(_bars(200, start=START, step=timedelta(minutes=5))))
+    html = client.get("/admin/chart?timeframe=5m").text
+    assert "data-macro-h06-status" in html
+    assert "AI-4 official calendar" in html
+    assert "data-insight-timeline" in html
+    assert "Khớp PAPER" in html
+    assert "Tín hiệu" in html
+    assert "data-stats-r-dist" in html
+    assert "data-stats-by-setup" in html
+    assert "H01" in html
+    assert "H06" in html
+    assert ' style="' not in html
+
+    payload = _embedded_payload(html)
+    assert any(item["kind"] == "signal" for item in payload["timeline_events"])
+    assert any(item["kind"] == "paper_fill" for item in payload["timeline_events"])
+
+    api = client.get(f"/admin/api/chart/timeline?bot_id={BOT_ID}&symbol=BTCUSDT&period=30d")
+    assert api.status_code == 200
+    assert api.headers["cache-control"] == "no-store"
+    body = api.json()
+    assert body["formula_version"] == "ck10-timeline-v1"
+    assert body["macro_h06"]["source"] == "AI-4 official calendar"
+    kinds = {item["kind"] for item in body["events"]}
+    assert kinds == {"macro_calendar", "signal", "paper_fill"}
+    timestamps = [item["timestamp"] for item in body["events"]]
+    assert timestamps == sorted(timestamps, reverse=True)
+    assert (
+        client.get(
+            f"/admin/api/chart/timeline?bot_id={BOT_ID}&symbol=BTCUSDT&period=1y"
+        ).status_code
+        == 422
+    )

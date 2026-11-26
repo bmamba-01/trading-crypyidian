@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Self
 from uuid import UUID
@@ -192,6 +192,45 @@ def build_setup_progress(
     card = build_latest_signal_view(rows, now=now)["card"]
     progress["card"] = card if card and not card.get("is_expired", True) else None
     return progress
+
+
+def _setup_from_release(release_id: object) -> str | None:
+    """Suy ra nhãn setup ngắn (vd ``h01-v1`` → ``H01``) từ ``strategy_release_id``."""
+    if not isinstance(release_id, str) or not release_id.strip():
+        return None
+    token = release_id.strip()
+    prefix = token.split("-", 1)[0].split(":", 1)[0].strip()
+    if prefix and len(prefix) <= 12 and prefix.isalnum():
+        return prefix.upper()
+    return token
+
+
+def _positive_decimal(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        dec = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return dec if dec.is_finite() and dec > 0 else None
+
+
+def _extract_planned_risk(
+    plan: Mapping[str, Any], entry_reason: Mapping[str, Any]
+) -> Decimal | None:
+    """Rủi ro kế hoạch 1R tại SL từ ``TradePlanRecord``; fail-closed ``None`` khi thiếu."""
+    for source in (plan, entry_reason):
+        for key in ("estimated_loss", "planned_risk", "estimated_loss_at_stop"):
+            found = _positive_decimal(source.get(key))
+            if found is not None:
+                return found
+    entry = _positive_decimal(plan.get("entry_price") or plan.get("entry_reference_price"))
+    stop = _positive_decimal(plan.get("stop_price"))
+    qty = _positive_decimal(plan.get("quantity"))
+    if entry is not None and stop is not None and qty is not None and entry != stop:
+        risk = abs(entry - stop) * qty
+        return risk if risk.is_finite() and risk > 0 else None
+    return None
 
 
 class ReportScope(StrEnum):
@@ -662,6 +701,8 @@ class BotReportingService:
                     "reason_code": payload.get("reason_code"),
                     "detail_vi": payload.get("detail_vi"),
                     "direction": candidate.get("direction"),
+                    "symbol": candidate.get("symbol"),
+                    "reference_price": candidate.get("reference_price"),
                     "strategy_release_id": payload.get("strategy_release_id"),
                 }
             )
@@ -681,15 +722,31 @@ class BotReportingService:
         start: datetime,
         end: datetime,
     ) -> list[dict[str, Any]]:
-        """Lịch sử lệnh PAPER đã đóng của bot cho mã đang xem (CK-9), lấy từ báo cáo ledger."""
-        report = await self.get_bot_report(
-            BotReportQuery(
-                workspace_id=principal.workspace_id, bot_id=bot_id, start=start, end=end
-            ),
-            principal,
+        """Lịch sử lệnh PAPER đã đóng của bot cho mã đang xem (CK-9/CK-10), kèm rủi ro kế hoạch."""
+        query = BotReportQuery(
+            workspace_id=principal.workspace_id, bot_id=bot_id, start=start, end=end
         )
-        return [
-            {
+        report = await self.get_bot_report(query, principal)
+        matching = [
+            trade for trade in report.as_dict().get("trades", []) if trade.get("symbol") == symbol
+        ]
+        if not matching:
+            return []
+        trade_uuids: list[UUID] = []
+        for trade in matching:
+            try:
+                trade_uuids.append(UUID(str(trade.get("trade_id"))))
+            except ValueError:
+                continue
+        plans: dict[UUID, dict[str, Any]] = {}
+        if trade_uuids:
+            try:
+                plans = await self.get_trade_plan_summaries(query, principal, trade_ids=trade_uuids)
+            except BotReportError:
+                plans = {}
+        rows: list[dict[str, Any]] = []
+        for trade in matching:
+            row = {
                 key: trade.get(key)
                 for key in (
                     "trade_id",
@@ -703,9 +760,68 @@ class BotReportingService:
                     "exit_reason",
                 )
             }
-            for trade in report.as_dict().get("trades", [])
-            if trade.get("symbol") == symbol
-        ]
+            lineage = trade.get("lineage") or {}
+            entry_reason = trade.get("entry_reason") or {}
+            release_id = (
+                entry_reason.get("strategy_release_id")
+                or lineage.get("strategy_release_id")
+                or trade.get("strategy_release_id")
+            )
+            setup_type = entry_reason.get("strategy_id") or _setup_from_release(release_id)
+            plan: dict[str, Any] = {}
+            try:
+                plan = plans.get(UUID(str(trade.get("trade_id"))), {})
+            except ValueError:
+                plan = {}
+            planned_risk = _extract_planned_risk(plan, entry_reason)
+            r_multiple: float | None = None
+            if planned_risk is not None and planned_risk > 0:
+                try:
+                    r_multiple = float(Decimal(str(trade["net_pnl"])) / planned_risk)
+                except ArithmeticError, KeyError, TypeError, ValueError:
+                    r_multiple = None
+            row["strategy_release_id"] = release_id
+            row["setup_type"] = setup_type
+            row["planned_risk"] = str(planned_risk) if planned_risk is not None else None
+            row["r_multiple"] = r_multiple
+            row["fills"] = [
+                {
+                    "role": fill.get("role"),
+                    "price": fill.get("price"),
+                    "quantity": fill.get("quantity"),
+                    "occurred_at": fill.get("occurred_at"),
+                    "exit_reason": fill.get("exit_reason"),
+                }
+                for fill in (trade.get("fills") or [])
+                if isinstance(fill, Mapping)
+            ]
+            rows.append(row)
+        return rows
+
+    async def get_macro_h06_status(
+        self, principal: Principal, *, bot_id: UUID, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Trạng thái `macro_blackout` H06 chỉ đọc từ lịch chính thức AI-4."""
+        from trading_bot.application.macro_calendar_state import load_macro_fetches
+        from trading_bot.domain.market.chart_timeline import macro_h06_status_view
+
+        instant = now or datetime.now(UTC)
+        async with self._read_unit(
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            try:
+                await self._grants(unit.authorization_session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            fetches = await load_macro_fetches(
+                unit.session, workspace_id=principal.workspace_id, as_of=instant
+            )
+        return macro_h06_status_view(fetches, now=instant)
 
     async def get_setup_board(
         self,

@@ -229,8 +229,81 @@ class _Reporting:
                 "net_pnl": "-1.25",
                 "total_cost": "0.20",
                 "exit_reason": "STOP_LOSS",
-            }
+                "strategy_release_id": "h01-v1",
+                "setup_type": "H01",
+                "planned_risk": "1.25",
+                "fills": [
+                    {
+                        "role": "ENTRY",
+                        "price": "101.50",
+                        "quantity": "1",
+                        "occurred_at": "2026-11-16T08:00:00+00:00",
+                        "exit_reason": None,
+                    },
+                    {
+                        "role": "EXIT",
+                        "price": "100.25",
+                        "quantity": "1",
+                        "occurred_at": "2026-11-16T09:00:00+00:00",
+                        "exit_reason": "STOP_LOSS",
+                    },
+                ],
+            },
+            {
+                "trade_id": "t2",
+                "symbol": kwargs["symbol"],
+                "side": "SHORT",
+                "quote_asset": "USDT",
+                "opened_at": "2026-11-16T10:30:00+00:00",
+                "closed_at": "2026-11-16T11:30:00+00:00",
+                "net_pnl": "3.00",
+                "total_cost": "0.20",
+                "exit_reason": "TAKE_PROFIT",
+                "strategy_release_id": "h06-v1",
+                "setup_type": "H06",
+                "planned_risk": "1.50",
+                "fills": [
+                    {
+                        "role": "ENTRY",
+                        "price": "103.00",
+                        "quantity": "1",
+                        "occurred_at": "2026-11-16T10:30:00+00:00",
+                        "exit_reason": None,
+                    },
+                    {
+                        "role": "EXIT",
+                        "price": "100.00",
+                        "quantity": "1",
+                        "occurred_at": "2026-11-16T11:30:00+00:00",
+                        "exit_reason": "TAKE_PROFIT",
+                    },
+                ],
+            },
         ]
+
+    async def get_macro_h06_status(self, principal: Principal, **kwargs: Any) -> dict:
+        return {
+            "source": "AI-4 official calendar",
+            "source_label_vi": "Lịch vĩ mô chính thức AI-4 (FOMC, BEA, OMB PFEI)",
+            "policy_version": "macro-blackout-v2",
+            "status": "clear",
+            "status_label_vi": "Thông thoáng (không trong khoảng cấm H06)",
+            "blackout": False,
+            "is_fresh": True,
+            "blocking_event": None,
+            "missing_sources": [],
+            "sources": [],
+            "upcoming": [
+                {
+                    "label_vi": "Fed quyết định lãi suất (FOMC)",
+                    "title": "FOMC rate decision",
+                    "source_id": "FED_FOMC_CALENDAR",
+                    "scheduled_at_utc": "2026-11-18T19:00:00+00:00",
+                }
+            ],
+            "manual_calendar_isolated": True,
+            "as_of": "2026-11-16T12:00:00+00:00",
+        }
 
     async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
         """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
@@ -1060,5 +1133,50 @@ def test_scanner_page_watchlist_is_saved_in_browser(server_url: str) -> None:
             "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
         )
         assert overflow <= 1, f"390px: tràn ngang {overflow}px"
+        context.close()
+        browser.close()
+
+
+def test_ck10_timeline_signals_paper_fills_r_dist_and_h06_source(server_url: str) -> None:
+    """CRY-228 E2E: dòng thời gian tín hiệu/khớp PAPER, thống kê setup + phân phối R, H06."""
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        watch_browser_violations(page)
+        _login(page, server_url)
+        page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+
+        # 1. Dock "Sự kiện" gộp tín hiệu + khớp PAPER + sự kiện cấu trúc với bộ đếm > 0.
+        dock = page.locator("[data-dock]")
+        dock.locator('[data-dock-tab="events"]').click()
+        expect(dock.locator('[data-dock-count="events"]')).not_to_have_text("0")
+        paper_fill_event = dock.locator('[data-mc-events] [data-event-kind="paper_fill"]').first
+        expect(paper_fill_event).to_be_visible()
+
+        # 2. Tab "Tin & Lịch" CK-10 hiển thị nguồn AI-4 cho H06 và dòng thời gian UTC.
+        insights = page.locator("[data-insights]")
+        insights.locator('[data-insight-tab="calendar"]').click()
+        h06_box = insights.locator("[data-macro-h06-status]")
+        expect(h06_box).to_be_visible()
+        expect(h06_box).to_contain_text("AI-4 official calendar")
+        expect(h06_box).to_contain_text("Thông thoáng")
+        timeline = insights.locator("[data-insight-timeline]")
+        expect(timeline).to_be_visible()
+        expect(timeline.locator('[data-timeline-kind="paper_fill"]').first).to_be_visible()
+        expect(timeline.locator('[data-timeline-kind="signal"]').first).to_be_visible()
+        expect(timeline.locator('[data-timeline-kind="macro_calendar"]').first).to_be_visible()
+
+        # 3. Tab "Thống kê" CK-10 hiển thị phân phối R và bảng tách theo setup (H01, H06).
+        insights.locator('[data-insight-tab="stats"]').click()
+        r_dist = insights.locator("[data-stats-r-dist]")
+        expect(r_dist).to_be_visible()
+        expect(r_dist).to_contain_text("Phân phối R")
+        expect(r_dist).to_contain_text("Kỳ vọng R")
+        by_setup = insights.locator("[data-stats-by-setup]")
+        expect(by_setup).to_be_visible()
+        expect(by_setup).to_contain_text("H01")
+        expect(by_setup).to_contain_text("H06")
+
         context.close()
         browser.close()

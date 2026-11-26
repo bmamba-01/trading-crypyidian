@@ -247,6 +247,26 @@
       {% if overview and overview.mark and overview.mark.funding_seconds_left is not none %}
       <p class="mc-calendar-funding">Funding kế tiếp sau <strong class="mc-live__clock" data-insight-funding>{{ ov_clock(overview.mark.funding_seconds_left) }}</strong> · {{ overview.mark.next_funding_time | local_minute }}</p>
       {% endif %}
+      {% set mh = insights.macro_h06 %}
+      {% if mh %}
+      <div class="mc-macro-h06 mc-macro-h06--{{ mh.status }}" data-macro-h06-status data-macro-source="{{ mh.source }}">
+        <div class="mc-macro-h06__head">
+          <strong>H06 macro_blackout</strong>
+          <span class="badge badge-neutral">{{ mh.source }}</span>
+        </div>
+        <p class="mc-macro-h06__state">{{ mh.status_label_vi }}</p>
+        {% if mh.blocking_event %}<p class="sc-meta">Sự kiện chặn: <code>{{ mh.blocking_event }}</code></p>{% endif %}
+        {% if mh.upcoming %}
+        <ul class="mc-calendar-list">
+          {% for ev in mh.upcoming[:5] %}
+          <li><span class="mc-impact mc-impact--high">AI-4</span> <strong>{{ ev.scheduled_at_utc | local_minute }}</strong> {{ ev.label_vi }} <span class="sc-meta">({{ ev.source_id }})</span></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        <p class="sc-meta">Nguồn chính thức: {{ mh.source_label_vi }} ({{ mh.policy_version }}). Lịch nội bộ bên dưới chỉ dùng cho điều kiện cộng điểm CK-6, không kích hoạt <code>macro_blackout</code> H06. Nguồn tin ngoài (Giai đoạn 2) chờ WP-05.</p>
+      </div>
+      {% endif %}
+      <h3 class="mc-insights__subhead">Lịch sự kiện nội bộ</h3>
       {% if not insights.calendar_available %}
       <p class="sc-empty">Không đọc được lịch sự kiện nội bộ.</p>
       {% elif insights.calendar %}
@@ -259,6 +279,21 @@
       <p class="sc-empty">Chưa có sự kiện sắp tới trong lịch nội bộ.</p>
       {% endif %}
       <p class="sc-note"><a href="/admin/calendar">Mở lịch sự kiện</a> để thêm FOMC, CPI…; tin tác động cao trong ±30 phút làm điều kiện "Tin tức" của bảng Entry không đạt.</p>
+      <h3 class="mc-insights__subhead">Dòng thời gian (UTC · tín hiệu &amp; khớp PAPER)</h3>
+      {% if insights.timeline %}
+      <ol class="mc-timeline-list" data-insight-timeline>
+        {% for item in insights.timeline[:15] %}
+        <li data-timeline-kind="{{ item.kind }}">
+          <span class="mc-timeline-badge mc-timeline-badge--{{ item.kind }}">{{ item.kind_label_vi }}</span>
+          <time datetime="{{ item.occurred_at }}">{{ item.occurred_at | local_minute }}</time>
+          <span class="mc-timeline-summary">{{ item.summary_vi }}</span>
+          <span class="sc-meta">· {{ item.source_badge }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="sc-empty" data-insight-timeline>Chưa có tín hiệu, khớp lệnh PAPER hoặc sự kiện lịch nào cho {{ selected_symbol }}.</p>
+      {% endif %}
     </div>
     <div id="mc-ipanel-stats" role="tabpanel" aria-labelledby="mc-itab-stats" data-insight-panel="stats" hidden>
       {% set st = insights.statistics %}
@@ -271,7 +306,39 @@
         <div><dt>Profit factor</dt><dd>{{ st.profit_factor | number2_vi if st.profit_factor is not none else '—' }}</dd></div>
         <div><dt>Tổng PnL ròng</dt><dd>{{ st.total_net | number2_vi }} {{ st.quote_asset }}</dd></div>
       </dl>
-      <p class="sc-note">{% if st.edge == 'above_breakeven' %}Tỷ lệ thắng đang trên ngưỡng hòa vốn.{% else %}Tỷ lệ thắng đang dưới ngưỡng hòa vốn.{% endif %}{% if st.sample_warning %} Mới {{ st.n }} lệnh — chưa đủ mẫu (cần ≥ 30) để kết luận.{% endif %} {% if st.r_count %}{% else %}Chưa có phân phối R (lệnh trong báo cáo chưa kèm rủi ro kế hoạch).{% endif %}</p>
+      {% if st.r_count %}
+      <div class="mc-r-dist" data-stats-r-dist>
+        <h3 class="mc-insights__subhead">Phân phối R ({{ st.r_count }}/{{ st.n }} lệnh có rủi ro kế hoạch)</h3>
+        <p class="sc-meta">Kỳ vọng R: <strong class="{{ 'is-up' if st.r_expectancy >= 0 else 'is-down' }}">{{ st.r_expectancy | number2_vi }}R</strong>{% if st.r_quantiles %} · p25 {{ st.r_quantiles.p25 | number2_vi }}R · p50 {{ st.r_quantiles.p50 | number2_vi }}R · p75 {{ st.r_quantiles.p75 | number2_vi }}R{% endif %}</p>
+        <dl class="mc-r-buckets">
+          {% for label, count in st.r_buckets.items() %}
+          <div><dt>{{ label }}</dt><dd>{{ count }}</dd></div>
+          {% endfor %}
+        </dl>
+      </div>
+      {% endif %}
+      {% if st.by_setup %}
+      <div class="mc-setup-stats" data-stats-by-setup>
+        <h3 class="mc-insights__subhead">Thống kê theo setup</h3>
+        <div class="table-wrapper">
+          <table class="mc-setup-stats-table">
+            <thead><tr><th scope="col">Setup</th><th scope="col">n</th><th scope="col">Thắng</th><th scope="col">Kỳ vọng R</th><th scope="col">PnL ròng</th></tr></thead>
+            <tbody>
+              {% for row in st.by_setup %}
+              <tr>
+                <th scope="row">{{ row.setup }}</th>
+                <td>{{ row.n }}</td>
+                <td>{% if row.win_rate is not none %}{{ (row.win_rate * 100) | round(1) | number_vi }}%{% else %}—{% endif %}</td>
+                <td class="{% if row.r_expectancy is not none %}{{ 'is-up' if row.r_expectancy >= 0 else 'is-down' }}{% endif %}">{% if row.r_expectancy is not none %}{{ row.r_expectancy | number2_vi }}R{% else %}—{% endif %}</td>
+                <td class="{{ 'is-up' if row.total_net >= 0 else 'is-down' }}">{{ row.total_net | number2_vi }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+      <p class="sc-note">{% if st.edge == 'above_breakeven' %}Tỷ lệ thắng đang trên ngưỡng hòa vốn.{% else %}Tỷ lệ thắng đang dưới ngưỡng hòa vốn.{% endif %}{% if st.sample_warning %} Mới {{ st.n }} lệnh — chưa đủ mẫu (cần ≥ 30) để kết luận.{% endif %} {% if st.r_count %}1R tính từ rủi ro kế hoạch tại SL (<code>planned_risk</code>).{% else %}Chưa có phân phối R (lệnh trong báo cáo chưa kèm rủi ro kế hoạch).{% endif %}</p>
       {% else %}
       <p class="sc-empty">Bot chưa có lệnh PAPER đã đóng trên {{ selected_symbol }} trong 90 ngày.</p>
       {% endif %}
@@ -469,7 +536,7 @@
       <button type="button" role="tab" id="mc-tab-positions" aria-controls="mc-panel-positions" aria-selected="true" data-dock-tab="positions">Vị thế PAPER <span class="mc-dock__count" data-dock-count="positions">0</span></button>
       <button type="button" role="tab" id="mc-tab-history" aria-controls="mc-panel-history" aria-selected="false" tabindex="-1" data-dock-tab="history">Lịch sử</button>
       <button type="button" role="tab" id="mc-tab-decisions" aria-controls="mc-panel-decisions" aria-selected="false" tabindex="-1" data-dock-tab="decisions">Nhật ký quyết định</button>
-      <button type="button" role="tab" id="mc-tab-events" aria-controls="mc-panel-events" aria-selected="false" tabindex="-1" data-dock-tab="events">Sự kiện</button>
+      <button type="button" role="tab" id="mc-tab-events" aria-controls="mc-panel-events" aria-selected="false" tabindex="-1" data-dock-tab="events">Sự kiện <span class="mc-dock__count" data-dock-count="events">0</span></button>
     </div>
     <div id="mc-panel-positions" role="tabpanel" aria-labelledby="mc-tab-positions" data-dock-panel="positions">
       <div class="table-wrapper"><table class="mc-dock__table">
