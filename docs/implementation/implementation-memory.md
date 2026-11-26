@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-26 — CRY-308 [WP-05G/erasure] Done: Hợp đồng erasure, retention, blob object store, deletion receipt & lan truyền takedown
+
+- **Thay đổi:**
+  - `src/trading_bot/domain/research/erasure.py`: định nghĩa `RetentionPolicy` (tính hạn lưu giữ `deadline_for`), `ErasureTargetKind` (`BLOB_OBJECT`, `EXTRACTED_EVENT`, `DATASET_MANIFEST`, `REPORT_ARTIFACT`, `MODEL_REGISTRY`), `ErasureTaskStatus` (`ERASED`, `EXCLUDED_FAIL_CLOSED`, `RETRY_PENDING`, `DEAD_LETTER`), `BlobObjectStorePort`, `ErasureTargetRef`, `ErasureRequest`, `DeletionReceipt` bất biến có SHA-256 `receipt_hash` và bất biến cấm `status=ERASED` khi `confirmed_absent=False`, cùng `build_deletion_receipt` và `ErasureSummary`.
+  - `src/trading_bot/application/source_erasure.py`: triển khai `InMemoryBlobObjectStore`, `DerivedArtifactErasureHandler` và `SourceErasureOrchestrator` (idempotent theo `(idempotency_key, target_kind, target_ref)`, xác nhận vắng mặt thật qua `not blob_store.exists()`, cơ chế retry + `DEAD_LETTER` không bao giờ nhận bừa `erased_claimed=True`, và loại trừ fail-closed `EXCLUDED_FAIL_CLOSED` / `ERASURE_IMMUTABLE_HASH_EXCLUDED` đối với manifest bất biến WP-06 khi `require_hash_erasure=True`).
+  - `tests/unit/test_wp05g_erasure.py` & `tests/e2e/test_wp05g_erasure_e2e.py`: kiểm chứng toàn bộ bất biến deletion receipt, lan truyền 4 tầng artifact dẫn xuất, idempotency, retry/dead-letter, và PostgreSQL Compose E2E chứng minh trigger append-only `reject_market_data_mutation()` trên `market_raw_reference`, xóa sạch blob thật khỏi object store/export list, giữ tombstone `SourceItemTakedownRecord`, và loại trừ fail-closed manifest bất biến.
+- **Bài học/Quyết định:**
+  - Bảng `market_raw_reference` trong PostgreSQL là append-only có trigger `reject_market_data_mutation()`. Do đó takedown/erasure xóa blob nội dung thật ở object store, lan truyền xóa artifact dẫn xuất, giữ tombstone `SourceItemTakedownRecord` bất biến, và fail-closed loại trừ manifest bất biến khi điều khoản yêu cầu xóa cả hash.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format` & `uv run mypy` trên 2 source files + 2 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_wp05g_erasure.py tests/e2e/test_wp05g_erasure_e2e.py`: exit code `0`, **5 passed in 14.42s**, 0 skipped.
+
 ### 2026-11-26 — CRY-295 [WP-03D/Task7-runbook] Done: Runbook tiếng Việt vận hành thực thi Binance USDⓈ-M
 
 - **Thay đổi:**
@@ -129,7 +141,8 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 - **Tác động đã cập nhật theo phương án chốt:** dòng WP-02B trong `project-status.md` → hoàn thiện (golden + semantic review #4942); probe RT1 `206/205 → 640` nến theo warmup 600/cửa sổ 768 (F13). E2E RT1 chạy 3 lần đều dừng ở `postgres is unhealthy` do Docker daemon quá tải (nhiều container `crypidian-review` unhealthy), chưa có bằng chứng xanh — không ép chạy bằng cách kill container của agent khác. `scalping_validation.py` có nhãn version riêng `crypidian-features-v1` (khác `crypidian-formulas-v1` của FeatureCalculator) — ghi nhận review riêng, không đổi vội.
 - **CRY-220 [CK-2/con-lai]:** Backlog → In Progress, comment **#4950**. `tests/unit/test_cry220_ck2_golden_sideways.py`: golden đi ngang (`trend=range`, không hướng/không "độ mạnh %"), chip % từ giá mở khung lớn, streaming=batch cho swing đã xác nhận. Kiểm chứng 3 test mới + regression `test_ck_market_overview.py` **10 passed/0,08s**; ruff sạch.
-- **Còn mở CRY-220:** vai trò khung khai báo theo setup, mục 7 (bộ lọc khung lớn chờ owner quyết lược đồ), Playwright chart; E2E RT1 cần chạy lại khi Docker rảnh.
+- **Còn mở sau CRY-220:** mục 7 (bộ lọc khung lớn/lược đồ v2 chờ owner quyết định), E2E RT1 cần chạy lại khi Docker rảnh.
+- **CRY-220 hoàn thiện → Done** (comment **#4964**): thêm `SETUP_MTF_ROLES`/`resolve_mtf_roles` (h01/h03/h06), luồng `web_router → service.get_market_overview(mtf_roles=...) → build_market_overview`, payload `roles_source`; template + JS + CSS chip `%` từ giá mở khung lớn, bỏ "độ mạnh %". Bằng chứng: unit CRY-220 5 passed; chart+overview 44 passed; regression sec18+chart+CRY-220 **153 passed/33,97s**; Playwright biểu đồ **4 passed/40,26s**; ruff/mypy/`git diff --check` sạch. Pitfall: đổi chữ ký `get_market_overview` bắt buộc cập nhật mock service trong `test_admin_market_chart.py`.
 
 ### 2026-11-25 — CRY-241 golden fixture công thức feature
 
