@@ -414,8 +414,9 @@ services:
       TRADING_BOT_INGESTION_LIVE_TIMEFRAMES: ${TRADING_BOT_INGESTION_LIVE_TIMEFRAMES:-15m,1h,4h}
       TRADING_BOT_INGESTION_LIVE_WARMUP_BARS: ${TRADING_BOT_INGESTION_LIVE_WARMUP_BARS:-300}
       # Stream bổ sung cho các symbol trên: mark_price,liquidation,trade_flow,book_ticker (để trống là tắt).
+      # Mặc định bật liquidation (<symbol>@forceOrder) khi có TRADING_BOT_INGESTION_LIVE_SYMBOLS trên PAPER.
       # book_ticker (giá mua/bán tốt nhất) mở kết nối riêng trên route /public.
-      TRADING_BOT_INGESTION_LIVE_EVENTS: ${TRADING_BOT_INGESTION_LIVE_EVENTS:-}
+      TRADING_BOT_INGESTION_LIVE_EVENTS: ${TRADING_BOT_INGESTION_LIVE_EVENTS:-${TRADING_BOT_INGESTION_LIVE_SYMBOLS:+liquidation}}
       TRADING_BOT_INGESTION_LIVE_MARK_PRICE_INTERVAL_SECONDS: ${TRADING_BOT_INGESTION_LIVE_MARK_PRICE_INTERVAL_SECONDS:-60}
       TRADING_BOT_INGESTION_LIVE_QUOTE_INTERVAL_SECONDS: ${TRADING_BOT_INGESTION_LIVE_QUOTE_INTERVAL_SECONDS:-2}
       # SIG-0: thu nến công khai Binance (owner duyệt 15/11/2026 cho PAPER nội bộ). Mặc định tắt;

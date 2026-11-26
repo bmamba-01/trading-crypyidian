@@ -23,6 +23,7 @@ from trading_bot.adapters.database.models.market_entities import (
     IngestionGap,
     MarketBar,
     MarketInstrument,
+    MarketLiquidation,
     MarketLiveQuote,
     MarketMarkPrice,
 )
@@ -870,6 +871,47 @@ class BotReportRepository:
                 "source": row.source,
             }
             for row in latest
+        ]
+
+    async def load_recent_liquidations(
+        self,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        start: datetime,
+        as_of: datetime,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Đọc các sự kiện thanh lý ``forceOrder`` khả dụng tại ``as_of`` trong cửa sổ gần nhất."""
+        rows = await self._scalars(
+            select(MarketLiquidation)
+            .join(
+                MarketInstrument,
+                (MarketInstrument.workspace_id == MarketLiquidation.workspace_id)
+                & (MarketInstrument.id == MarketLiquidation.instrument_id),
+            )
+            .where(
+                MarketLiquidation.workspace_id == workspace_id,
+                MarketInstrument.symbol == symbol,
+                MarketLiquidation.available_at <= as_of,
+                MarketLiquidation.event_at >= start,
+                MarketLiquidation.event_at <= as_of,
+            )
+            .order_by(MarketLiquidation.event_at.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "symbol": symbol,
+                "side": row.side,
+                "price": row.price,
+                "average_price": row.average_price,
+                "quantity": row.quantity,
+                "filled_quantity": row.filled_quantity,
+                "event_at": row.event_at,
+                "available_at": row.available_at,
+            }
+            for row in rows
         ]
 
     async def workspace_closed_totals(

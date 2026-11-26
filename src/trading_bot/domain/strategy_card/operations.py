@@ -348,6 +348,18 @@ _RAW_SPECS: tuple[OperationSpec, ...] = (
         "order_book_imbalance_gate",
         "Cổng lọc/cảnh báo OBI sổ lệnh L2 tầng L4.",
     ),
+    OperationSpec(
+        "liquidation_heatmap_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "liquidation_heatmap_gate",
+        "Cổng bối cảnh bản đồ nhiệt thanh lý ước lượng tầng L4 (chỉ lọc/cảnh báo).",
+    ),
+    OperationSpec(
+        "liq_heatmap_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "liquidation_heatmap_gate",
+        "Cổng bối cảnh cụm thanh lý ước lượng tầng L4.",
+    ),
     # --- L5: Strategy Trigger ---
     OperationSpec(
         "wick_reversal_trigger",

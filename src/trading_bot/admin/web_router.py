@@ -4045,6 +4045,36 @@ async def market_overview_api(
     return {"status": "ok"} | overview
 
 
+@router.get("/api/chart/liquidation-heatmap", dependencies=[_CHART_API_POLICY])
+async def market_liquidation_heatmap_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+    limit: Annotated[int, Query(ge=50, le=MARKET_CHART_MAX_LIMIT)] = 120,
+) -> dict[str, Any]:
+    """Đọc nhanh bản đồ nhiệt cụm thanh lý ước lượng (IND-4) cho symbol trên chart."""
+    response.headers["Cache-Control"] = "no-store"
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    try:
+        payload = await _reporting_service(request).get_liquidation_heatmap(
+            identity.principal,
+            bot_id=bot_id,
+            symbol=chart_symbol,
+            timeframe=timeframe,
+            limit=limit,
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    return {"status": "ok"} | payload
+
+
 def _resolve_strategy_card_id(
     strategy_id: str | None = None,
     strategy_release_id: str | None = None,

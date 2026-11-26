@@ -20,6 +20,13 @@ from trading_bot.domain.market.derivatives_context import (
     FundingCrowdingState,
     observation_from_snapshot_features,
 )
+from trading_bot.domain.market.liquidation_heatmap import (
+    LiquidationHeatmapObservation,
+    compute_liquidation_heatmap,
+)
+from trading_bot.domain.market.liquidation_heatmap import (
+    observation_from_snapshot_features as liq_observation_from_snapshot_features,
+)
 from trading_bot.domain.market.order_book import (
     OrderBookContext,
 )
@@ -400,6 +407,103 @@ class ContextGateEvaluator:
             )
         return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
 
+    def evaluate_liquidation_heatmap_gate(
+        self,
+        *,
+        observation: LiquidationHeatmapObservation | None,
+        expected_direction: str = "NEUTRAL",
+        mode: str = "warn",
+        fail_closed_on_missing: bool = False,
+        min_cluster_atr: float = 0.5,
+        max_recent_realized_liq_notional: Decimal | None = None,
+    ) -> ContextGateResult:
+        """Đánh giá cổng bối cảnh L4 cho Bản đồ nhiệt cụm thanh lý (IND-4).
+
+        CHỈ lọc hoặc cảnh báo ở tầng L4 khi giá tiếp cận sát cụm thanh lý có nguy cơ
+        quét stop-hunt hoặc vừa xảy ra bão thanh lý quá mức.
+        """
+        normalized_mode = mode.strip().lower()
+        is_filter_mode = normalized_mode in {"filter", "block"}
+        direction = expected_direction.strip().upper() or "NEUTRAL"
+
+        metrics: dict[str, Any] = {
+            "liquidation_heatmap": (
+                observation.to_metrics()
+                if observation is not None
+                else {"is_stale": True, "liq_heatmap_skew": None}
+            ),
+            "liquidation_heatmap_gate_mode": normalized_mode,
+            "liquidation_heatmap_expected_direction": direction,
+        }
+
+        if observation is None or observation.is_stale:
+            msg = (
+                "LIQ_HEATMAP_UNAVAILABLE: Dữ liệu bản đồ nhiệt thanh lý thiếu mẫu hoặc quá cũ "
+                "(stale), không thể xác nhận cụm thanh lý gần nhất."
+            )
+            if is_filter_mode and fail_closed_on_missing:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=(msg,),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=(msg,),
+            )
+
+        findings: list[str] = []
+        if direction in {"LONG", "BULLISH", "NEUTRAL", "BIDIRECTIONAL"}:
+            if (
+                observation.nearest_long_liq_atr is not None
+                and observation.nearest_long_liq_atr <= min_cluster_atr
+            ):
+                findings.append(
+                    f"LIQ_CLUSTER_STOP_HUNT_LONG: Cụm thanh lý Long tại "
+                    f"{observation.nearest_long_liq_price} chỉ cách "
+                    f"{observation.nearest_long_liq_atr:.2f} ATR <= {min_cluster_atr} ATR."
+                )
+        if direction in {"SHORT", "BEARISH", "NEUTRAL", "BIDIRECTIONAL"}:
+            if (
+                observation.nearest_short_liq_atr is not None
+                and observation.nearest_short_liq_atr <= min_cluster_atr
+            ):
+                findings.append(
+                    f"LIQ_CLUSTER_STOP_HUNT_SHORT: Cụm thanh lý Short tại "
+                    f"{observation.nearest_short_liq_price} chỉ cách "
+                    f"{observation.nearest_short_liq_atr:.2f} ATR <= {min_cluster_atr} ATR."
+                )
+
+        total_realized = (
+            observation.recent_realized_liq_long_notional
+            + observation.recent_realized_liq_short_notional
+        )
+        if (
+            max_recent_realized_liq_notional is not None
+            and total_realized >= max_recent_realized_liq_notional
+        ):
+            findings.append(
+                f"LIQ_STORM_REALIZED_EXCESS: Tổng thanh lý thật gần nhất {total_realized} "
+                f">= ngưỡng {max_recent_realized_liq_notional}."
+            )
+
+        if findings:
+            if is_filter_mode:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=tuple(findings),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=tuple(findings),
+            )
+        return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
+
     def evaluate_order_book_imbalance_gate(
         self,
         *,
@@ -477,6 +581,7 @@ class ContextGateEvaluator:
                 metrics=metrics,
                 warnings=tuple(findings),
             )
+
         return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
 
     def _resolve_atr(
@@ -698,6 +803,38 @@ class ContextGateEvaluator:
                     obi_band=obi_band,
                     mode=mode,
                     fail_closed_on_missing=fail_closed_on_missing,
+                )
+                all_metrics.update(res.metrics)
+                all_warnings.extend(res.warnings)
+                if res.status == ContextGateStatus.BLOCK:
+                    all_reasons.extend(res.reasons)
+
+            elif canonical == "liquidation_heatmap_gate":
+                mode = str(params.get("mode", "warn")).strip().lower()
+                expected_direction = str(
+                    params.get("direction", params.get("expected_direction", "NEUTRAL"))
+                ).strip()
+                fail_closed_on_missing = bool(params.get("fail_closed_on_missing", False))
+                min_cluster_atr = float(params.get("min_cluster_atr", 0.5))
+                max_realized = (
+                    Decimal(str(params["max_recent_realized_liq_notional"]))
+                    if "max_recent_realized_liq_notional" in params
+                    else None
+                )
+                liq_obs = liq_observation_from_snapshot_features(snapshot)
+                if liq_obs is None and snapshot.series:
+                    liq_obs = compute_liquidation_heatmap(
+                        snapshot.series[0].bars,
+                        symbol=snapshot.symbol,
+                        as_of=snapshot.decision_time,
+                    )
+                res = self.evaluate_liquidation_heatmap_gate(
+                    observation=liq_obs,
+                    expected_direction=expected_direction,
+                    mode=mode,
+                    fail_closed_on_missing=fail_closed_on_missing,
+                    min_cluster_atr=min_cluster_atr,
+                    max_recent_realized_liq_notional=max_realized,
                 )
                 all_metrics.update(res.metrics)
                 all_warnings.extend(res.warnings)

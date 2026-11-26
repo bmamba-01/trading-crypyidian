@@ -1789,6 +1789,54 @@ def _card_l4_items(
                     obi_passed,
                 )
             )
+        elif "liquidation_heatmap" in op or "liq_heatmap" in op:
+            mode = str(params.get("mode", "warn")).strip().lower()
+            direction = (
+                str(params.get("direction", params.get("expected_direction", "NEUTRAL")))
+                .strip()
+                .upper()
+            )
+            min_cluster_atr = str(params.get("min_cluster_atr", 0.5))
+            gate_res = result.gate_result
+            liq_metrics = (
+                gate_res.metrics.get("liquidation_heatmap", {})
+                if gate_res is not None and isinstance(gate_res.metrics, dict)
+                else {}
+            )
+            is_stale = bool(liq_metrics.get("is_stale", True))
+            skew_val = liq_metrics.get("liq_heatmap_skew")
+            if macro_blocked:
+                liq_passed: bool | None = None
+                liq_actual = "ngắt mạch macro blackout"
+            elif gate_res is None or is_stale:
+                liq_blocked = gate_res is not None and any(
+                    "LIQ_HEATMAP_UNAVAILABLE" in r for r in gate_res.reasons
+                )
+                liq_passed = False if liq_blocked else None
+                liq_actual = "thiếu dữ liệu / stale"
+            else:
+                liq_blocked = any(
+                    tag in reason
+                    for reason in gate_res.reasons
+                    for tag in (
+                        "LIQ_CLUSTER_STOP_HUNT_",
+                        "LIQ_CLUSTER_NEAR_",
+                        "LIQ_STORM_REALIZED_EXCESS",
+                    )
+                )
+                liq_passed = not liq_blocked
+                skew_text = f"{float(skew_val):+.2f}" if skew_val is not None else "n/a"
+                liq_actual = f"skew={skew_text}"
+            items.append(
+                ChecklistItem(
+                    "l4_liquidation_heatmap",
+                    f"Cổng L4: Bản đồ nhiệt thanh lý ({mode}/{direction})",
+                    liq_actual,
+                    ">",
+                    f"{min_cluster_atr} ATR",
+                    liq_passed,
+                )
+            )
 
         if not atr_added and (
             "volatility" in op or "atr" in op or "min_atr" in params or "max_atr" in params

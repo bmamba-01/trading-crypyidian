@@ -1042,6 +1042,115 @@ class BotReportingService:
             )
             return bars
 
+    async def get_liquidation_heatmap(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        symbol: str,
+        timeframe: str,
+        limit: int = 120,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Tính bản đồ nhiệt cụm thanh lý ước lượng point-in-time cho chart cockpit (IND-4)."""
+        from trading_bot.domain.market.liquidation_heatmap import (
+            RealizedLiquidation,
+            compute_liquidation_heatmap,
+        )
+        from trading_bot.domain.market.models import OHLCVBar
+
+        if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+            raise BotReportError(
+                422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
+            )
+        if not 1 <= limit <= MARKET_CHART_MAX_LIMIT:
+            raise BotReportError(422, "CHART_LIMIT_INVALID", "Số nến yêu cầu không hợp lệ.")
+        instant = now or datetime.now(UTC)
+        interval_seconds = MARKET_CHART_INTERVAL_SECONDS[timeframe]
+        async with self._read_unit(
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.authorization_session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            sources = [
+                pair.split("|", 2)[2]
+                for pair in await repository.list_market_series(
+                    workspace_id=principal.workspace_id, as_of=instant
+                )
+                if pair.split("|", 2)[:2] == [symbol, timeframe]
+            ]
+            raw_bars: list[dict[str, Any]] = []
+            if sources:
+                raw_bars = await repository.load_recent_bars(
+                    workspace_id=principal.workspace_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    as_of=instant,
+                    limit=limit,
+                    source=preferred_market_source(sources),
+                )
+            raw_liqs = await repository.load_recent_liquidations(
+                workspace_id=principal.workspace_id,
+                symbol=symbol,
+                start=instant - timedelta(days=7),
+                as_of=instant,
+            )
+
+        domain_bars = [
+            OHLCVBar(
+                symbol=symbol,
+                timeframe=timeframe,
+                open_time=datetime.fromtimestamp(int(item["time"]), UTC),
+                close_time=datetime.fromtimestamp(int(item["time"]) + interval_seconds - 1, UTC),
+                event_at=datetime.fromtimestamp(int(item["time"]) + interval_seconds - 1, UTC),
+                received_at=datetime.fromtimestamp(int(item["time"]) + interval_seconds - 1, UTC),
+                available_at=datetime.fromtimestamp(int(item["time"]) + interval_seconds - 1, UTC),
+                open=Decimal(str(item["open"])),
+                high=Decimal(str(item["high"])),
+                low=Decimal(str(item["low"])),
+                close=Decimal(str(item["close"])),
+                volume=Decimal(str(item["volume"])),
+                quote_volume=(
+                    Decimal(str(item["quote_volume"]))
+                    if item.get("quote_volume") is not None
+                    else None
+                ),
+                is_closed=True,
+                source=str(item.get("source") or ""),
+            )
+            for item in raw_bars
+        ]
+        domain_liqs = [
+            RealizedLiquidation(
+                symbol=symbol,
+                side=str(item["side"]),
+                price=Decimal(str(item["price"])),
+                average_price=Decimal(str(item["average_price"])),
+                quantity=Decimal(str(item["quantity"])),
+                filled_quantity=Decimal(str(item["filled_quantity"])),
+                event_at=item["event_at"],
+                available_at=item["available_at"],
+            )
+            for item in raw_liqs
+        ]
+        observation = compute_liquidation_heatmap(
+            domain_bars,
+            symbol=symbol,
+            as_of=instant,
+            liquidations=domain_liqs,
+        )
+        return observation.to_metrics() | {"timeframe": timeframe}
+
     async def get_market_overview(
         self,
         principal: Principal,
