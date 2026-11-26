@@ -36,12 +36,19 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
         "h01-v1": MappingProxyType(
             {"1h": ("ema_20", "ema_80", "adx_14", "atr_14"), "4h": ("ema_200",)}
         ),
+        # FX-8 (CRY-30): các release cải tiến độc lập cho H01/H03/H06.
+        "h01-v2": MappingProxyType(
+            {"1h": ("ema_20", "ema_80", "adx_14", "atr_14"), "4h": ("ema_200",)}
+        ),
         "h03-v1": MappingProxyType({"1h": ("atr_14",)}),
         "h03-v2": MappingProxyType({"1h": ("atr_14",)}),
         # H03 v3 (15/11/2026): mỗi khung vào lệnh một release (domain/strategy/rules_v3.py).
         "h03-v3-15m": MappingProxyType({"15m": ("atr_14",)}),
         "h03-v3-1h": MappingProxyType({"1h": ("atr_14",)}),
         "h03-v3-4h": MappingProxyType({"4h": ("atr_14",)}),
+        "h03-v4-15m": MappingProxyType({"15m": ("atr_14", "adx_14", "efficiency_ratio_40")}),
+        "h03-v4-1h": MappingProxyType({"1h": ("atr_14", "adx_14", "efficiency_ratio_40")}),
+        "h03-v4-4h": MappingProxyType({"4h": ("atr_14", "adx_14", "efficiency_ratio_40")}),
         "h06-v1": MappingProxyType(
             {
                 "15m": (
@@ -56,6 +63,17 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
         "h06-v2": MappingProxyType(
             {
                 "15m": (
+                    "adx_14",
+                    "efficiency_ratio_40",
+                    "zscore_20",
+                    "rsi_14",
+                    "atr_14",
+                )
+            }
+        ),
+        "h06-v3-1h": MappingProxyType(
+            {
+                "1h": (
                     "adx_14",
                     "efficiency_ratio_40",
                     "zscore_20",
@@ -143,13 +161,18 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
 ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
     {
         "h01-v1": "1h",
+        "h01-v2": "1h",
         "h03-v1": "1h",
         "h06-v1": "15m",
         "h03-v2": "1h",
         "h03-v3-15m": "15m",
         "h03-v3-1h": "1h",
         "h03-v3-4h": "4h",
+        "h03-v4-15m": "15m",
+        "h03-v4-1h": "1h",
+        "h03-v4-4h": "4h",
         "h06-v2": "15m",
+        "h06-v3-1h": "1h",
         CARD_VOL_BREAKOUT_RELEASE: "1h",
         "h18-v1": "5m",
         "h19-v1": "5m",

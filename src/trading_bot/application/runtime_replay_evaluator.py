@@ -76,7 +76,7 @@ from trading_bot.domain.strategy.contracts import (
 )
 from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import StrategyRegistry
-from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
+from trading_bot.domain.strategy.rules_fx8 import exit_evidence_spec
 
 ZERO = Decimal("0")
 ONE = Decimal("1")

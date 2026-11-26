@@ -108,7 +108,7 @@ from trading_bot.domain.strategy.contracts import (
     StrategyCandidate,
     StrategySelection,
 )
-from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
+from trading_bot.domain.strategy.rules_fx8 import exit_evidence_spec
 
 # v2: ngắt mạch drawdown FX-2; v3 (CRY-428): ngưỡng drawdown lấy từ workspace settings.
 CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v3"

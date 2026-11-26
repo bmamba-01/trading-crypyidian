@@ -52,6 +52,7 @@ from trading_bot.application.candidate_universe_proof import CandidateUniversePr
 from trading_bot.application.strategy_catalog import (
     PRODUCT_CARD_IDS,
     expanded_rules,
+    fx8_rules,
     scalping_rules,
     strategy_card_rules,
     strategy_registry,
@@ -155,7 +156,7 @@ def test_candidate_universe_proofs_uses_port_without_importing_domain_strategy_r
 
 
 def test_single_catalog_exposes_all_cards_scalping_and_expanded_releases() -> None:
-    """`strategy_registry()` chứa đủ built-ins, 8 Strategy Cards, 3 scalping và 6 expanded."""
+    """`strategy_registry()` chứa đủ built-ins, 8 cards, 3 scalping, 6 expanded và 5 FX-8."""
     catalog = strategy_registry()
     bare = StrategyRegistry()
 
@@ -164,13 +165,15 @@ def test_single_catalog_exposes_all_cards_scalping_and_expanded_releases() -> No
     card_ids = {rule.release_id for rule, _, _, _ in strategy_card_rules()}
     scalp_ids = {rule.release_id for rule, _, _, _ in scalping_rules()}
     exp_ids = {rule.release_id for rule, _, _, _ in expanded_rules()}
+    fx8_ids = {rule.release_id for rule, _, _, _ in fx8_rules()}
 
     assert len(PRODUCT_CARD_IDS) == 8
     assert len(card_ids) == 8
     assert len(scalp_ids) == 3
     assert len(exp_ids) == 6
-    assert bare_ids.isdisjoint(card_ids | scalp_ids | exp_ids)
-    assert catalog_ids == bare_ids | card_ids | scalp_ids | exp_ids
+    assert len(fx8_ids) == 5
+    assert bare_ids.isdisjoint(card_ids | scalp_ids | exp_ids | fx8_ids)
+    assert catalog_ids == bare_ids | card_ids | scalp_ids | exp_ids | fx8_ids
 
 
 def _build_bars(timeframe: str, *, count: int, range_end) -> tuple[OHLCVBar, ...]:

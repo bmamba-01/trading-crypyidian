@@ -37,6 +37,7 @@ from trading_bot.domain.risk.planner import TradePlanner
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, FeatureQuality
 from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.rules_fx8 import EXIT_EVIDENCE_BY_RECIPE_FX8
 from trading_bot.domain.strategy.rules_v2 import EXIT_EVIDENCE_BY_RECIPE, ExitEvidenceSpec
 from trading_bot.domain.strategy.rules_v3 import EXIT_EVIDENCE_BY_RECIPE_V3
 
@@ -48,7 +49,11 @@ OpposingSignalProviderFactory = Callable[
 ]
 
 
-_EXIT_EVIDENCE_ALL = {**EXIT_EVIDENCE_BY_RECIPE, **EXIT_EVIDENCE_BY_RECIPE_V3}
+_EXIT_EVIDENCE_ALL = {
+    **EXIT_EVIDENCE_BY_RECIPE,
+    **EXIT_EVIDENCE_BY_RECIPE_V3,
+    **EXIT_EVIDENCE_BY_RECIPE_FX8,
+}
 
 
 class BacktestReplayContextBuildError(ValueError):

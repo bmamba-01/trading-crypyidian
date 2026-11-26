@@ -19,6 +19,7 @@ from trading_bot.application.strategy_pipeline.demo_cards import build_default_d
 from trading_bot.domain.strategy.contracts import Strategy
 from trading_bot.domain.strategy.expanded_rules import EXPANDED_RULES
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.rules_fx8 import FX8_RULES
 from trading_bot.domain.strategy.scalping_rules import (
     H18SweepReclaimRule,
     H19VwapRangeReversionRule,
@@ -124,8 +125,13 @@ def expanded_rules() -> tuple[tuple[Strategy, str, str, str], ...]:
     return EXPANDED_RULES  # type: ignore[return-value]
 
 
+def fx8_rules() -> tuple[tuple[Strategy, str, str, str], ...]:
+    """5 release cải tiến FX-8 (CRY-30) cho H01 v2, H03 v4 (15m/1h/4h) và H06 v3 (1h)."""
+    return FX8_RULES
+
+
 def strategy_registry() -> StrategyRegistry:
     """Registry đầy đủ của sản phẩm; rẻ để dựng và không giữ trạng thái."""
     return StrategyRegistry(
-        extra_rules=(*strategy_card_rules(), *scalping_rules(), *expanded_rules())
+        extra_rules=(*strategy_card_rules(), *scalping_rules(), *expanded_rules(), *fx8_rules())
     )

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from trading_bot.domain.market.feature_snapshot import (
@@ -242,6 +242,8 @@ class DecisionSnapshot:
     timeframe_lineage: tuple[DecisionSnapshotTimeframeLineage, ...] = ()
     freshness_as_of: datetime | None = None
     feature_snapshots: tuple[FeatureSnapshot, ...] = ()
+    # Thời điểm đóng STOP_LOSS gần nhất (tùy chọn cho cooldown FX-8; None không đổi snapshot_id).
+    last_stop_exit_at: datetime | None = None
 
     @property
     def workspace_id(self) -> UUID | None:
@@ -324,6 +326,8 @@ class DecisionSnapshot:
             raise ValueError("macro_is_fresh chỉ nhận bool hoặc None.")
         if len(self.macro_evidence_ids) != len(set(self.macro_evidence_ids)):
             raise ValueError("Không được lặp macro evidence ID.")
+        if self.last_stop_exit_at is not None:
+            _aware(self.last_stop_exit_at, "last_stop_exit_at")
 
     def get_series(self, timeframe: str) -> MarketSeries | None:
         """Tìm chuỗi nến theo khung thời gian."""
@@ -372,7 +376,9 @@ class StrategySelection:
     settings_version_id: str
     active_release_ids: tuple[str, ...]
     published: bool
-    parameters: tuple[tuple[str, int], ...] = ()
+    # Kiểu Any để giữ tương thích mypy với slice index trong rules.py/rules_v3.py (bất biến);
+    # __post_init__ kiểm biên và kiểu int/float nghiêm ngặt theo từng khóa.
+    parameters: tuple[tuple[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.settings_version_id.strip():
@@ -386,19 +392,41 @@ class StrategySelection:
             not key.strip() for key in parameter_keys
         ):
             raise ValueError("strategy parameter cần key không rỗng và duy nhất.")
-        supported_ranges = {
+        supported_int_ranges = {
             "donchian_lookback": (20, 200),
             "volume_median_lookback": (5, 100),
+            "cross_window_bars": (1, 12),
+            "cooldown_bars_after_stop": (0, 48),
+        }
+        supported_float_ranges = {
+            "min_ema_gap_atr_multiple": (0.0, 2.0),
+            "breakout_atr_buffer": (0.0, 2.0),
+            "volume_median_multiplier": (1.0, 5.0),
+            "min_adx": (0.0, 60.0),
+            "min_efficiency_ratio": (0.0, 1.0),
+            "min_tp_atr_multiple": (0.5, 5.0),
         }
         for key, value in self.parameters:
-            bounds = supported_ranges.get(key)
-            if bounds is None:
+            if key in supported_int_ranges:
+                low_i, high_i = supported_int_ranges[key]
+                if type(value) is not int or not low_i <= value <= high_i:
+                    raise ValueError(
+                        f"strategy parameter '{key}' phải là số nguyên trong miền {low_i}–{high_i}."
+                    )
+            elif key in supported_float_ranges:
+                low_f, high_f = supported_float_ranges[key]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or not low_f <= float(value) <= high_f
+                ):
+                    raise ValueError(
+                        f"strategy parameter '{key}' phải là số thực hữu hạn trong miền "
+                        f"{low_f}–{high_f}."
+                    )
+            else:
                 raise ValueError(f"strategy parameter '{key}' không được hỗ trợ.")
-            if type(value) is not int or not bounds[0] <= value <= bounds[1]:
-                raise ValueError(
-                    f"strategy parameter '{key}' phải là số nguyên trong miền "
-                    f"{bounds[0]}–{bounds[1]}."
-                )
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,6 +49,11 @@ from trading_bot.domain.strategy.expanded_rules import (
     H22TakerFlowBreakoutRule,
     _percentile_threshold,
 )
+from trading_bot.domain.strategy.rules_fx8 import (
+    H03_V4_TIMEFRAMES,
+    _has_recent_ema_cross,
+    _is_reversal_candle,
+)
 from trading_bot.domain.strategy.rules_v3 import H03_V3_TIMEFRAMES
 from trading_bot.domain.strategy_card.anatomy import (
     lower_wick_ratio,
@@ -336,6 +341,339 @@ def _h06(snapshot: DecisionSnapshot, settings: StrategySelection) -> tuple[Check
                 safe,
             )
         )
+    return tuple(items)
+
+
+def _h01_v2(snapshot: DecisionSnapshot, settings: StrategySelection) -> tuple[ChecklistItem, ...]:
+    params = dict(settings.parameters)
+    cross_window_bars = int(params.get("cross_window_bars", 3))
+    min_ema_gap_atr_multiple = float(params.get("min_ema_gap_atr_multiple", 0.15))
+    cooldown_bars_after_stop = int(params.get("cooldown_bars_after_stop", 6))
+
+    fast = _feature(snapshot, "ema_20", "1h")
+    slow = _feature(snapshot, "ema_80", "1h")
+    atr_obs = _feature(snapshot, "atr_14", "1h")
+    series_1h = snapshot.get_series("1h")
+    direction: str | None = None
+    has_cross: bool | None = None
+    if fast is not None and slow is not None and series_1h is not None and len(series_1h.bars) >= 2:
+        if fast.value > slow.value:
+            direction = "long"
+        elif fast.value < slow.value:
+            direction = "short"
+        if direction is not None:
+            has_cross = _has_recent_ema_cross(
+                series_1h.bars,
+                direction=direction,
+                cross_window_bars=cross_window_bars,
+                fast_current=float(fast.value),
+                slow_current=float(slow.value),
+                fast_previous=fast.previous_value,
+                slow_previous=slow.previous_value,
+            )
+        else:
+            has_cross = False
+
+    items: list[ChecklistItem] = [
+        ChecklistItem(
+            "ema_cross",
+            f"EMA20 cắt EMA80 trong {cross_window_bars} nến 1h gần nhất",
+            "thiếu dữ liệu"
+            if fast is None or slow is None
+            else f"EMA20 {_fmt(fast.value)} / EMA80 {_fmt(slow.value)}",
+            "cắt",
+            f"trong {cross_window_bars} nến 1h",
+            has_cross,
+        )
+    ]
+    if fast is not None and slow is not None and atr_obs is not None and atr_obs.value > 0:
+        gap = abs(float(fast.value) - float(slow.value))
+        required_gap = min_ema_gap_atr_multiple * float(atr_obs.value)
+        items.append(
+            ChecklistItem(
+                "ema_gap_atr",
+                "Khoảng cách |EMA20 − EMA80| đủ rộng theo ATR14",
+                f"{_fmt(gap, 4)} ({_fmt(gap / float(atr_obs.value), 3)} ATR)",
+                ">=",
+                f"{min_ema_gap_atr_multiple} ATR",
+                gap >= required_gap,
+            )
+        )
+    else:
+        items.append(
+            ChecklistItem(
+                "ema_gap_atr",
+                "Khoảng cách |EMA20 − EMA80| đủ rộng theo ATR14",
+                "thiếu dữ liệu",
+                ">=",
+                f"{min_ema_gap_atr_multiple} ATR",
+                None,
+            )
+        )
+
+    h4 = snapshot.get_series("4h")
+    ema200 = _feature(snapshot, "ema_200", "4h")
+    if h4 is not None and h4.bars and ema200 is not None:
+        close = h4.bars[-1].close
+        side_ok = (
+            None
+            if direction is None
+            else (
+                Decimal(str(ema200.value)) < close
+                if direction == "long"
+                else Decimal(str(ema200.value)) > close
+            )
+        )
+        items.append(
+            ChecklistItem(
+                "htf_trend",
+                "Giá đóng 4h cùng phía EMA200 với hướng giao cắt",
+                f"đóng 4h {_fmt(close, 2)} / EMA200 {_fmt(ema200.value, 2)}",
+                ">" if direction == "long" else "<" if direction == "short" else "cùng phía",
+                "EMA200 4h",
+                side_ok,
+            )
+        )
+    else:
+        items.append(
+            ChecklistItem("htf_trend", "Giá 4h cùng phía EMA200", "thiếu dữ liệu", "—", "—", None)
+        )
+
+    adx = _feature(snapshot, "adx_14", "1h")
+    items.append(
+        ChecklistItem(
+            "adx",
+            "ADX14 1h đủ mạnh",
+            _fmt(adx.value if adx else None, 2),
+            ">=",
+            "20",
+            None if adx is None else adx.value >= 20,
+        )
+    )
+
+    if cooldown_bars_after_stop > 0 and snapshot.last_stop_exit_at is not None:
+        elapsed_hours = (snapshot.decision_time - snapshot.last_stop_exit_at).total_seconds() / 3600
+        items.append(
+            ChecklistItem(
+                "post_stop_cooldown",
+                f"Đã qua cooldown {cooldown_bars_after_stop} nến 1h sau stop",
+                f"{elapsed_hours:.2f}h",
+                ">=",
+                f"{cooldown_bars_after_stop}h",
+                elapsed_hours >= cooldown_bars_after_stop,
+            )
+        )
+    else:
+        items.append(
+            ChecklistItem(
+                "post_stop_cooldown",
+                f"Không trong cooldown {cooldown_bars_after_stop} nến 1h sau stop",
+                "không có stop gần đây",
+                ">=",
+                f"{cooldown_bars_after_stop}h",
+                True,
+            )
+        )
+    return tuple(items)
+
+
+def _h03_v4(
+    snapshot: DecisionSnapshot, settings: StrategySelection, timeframe: str = "1h"
+) -> tuple[ChecklistItem, ...]:
+    params = dict(settings.parameters)
+    lookback = int(params.get("donchian_lookback", 55))
+    volume_lookback = int(params.get("volume_median_lookback", 20))
+    atr_buffer_mult = float(params.get("breakout_atr_buffer", 0.25))
+    vol_mult = float(params.get("volume_median_multiplier", 1.5))
+    min_adx = float(params.get("min_adx", 20.0))
+    min_er = float(params.get("min_efficiency_ratio", 0.25))
+
+    series = snapshot.get_series(timeframe)
+    atr_obs = _feature(snapshot, "atr_14", timeframe)
+    adx_obs = _feature(snapshot, "adx_14", timeframe)
+    er_obs = _feature(snapshot, "efficiency_ratio_40", timeframe)
+    items: list[ChecklistItem] = []
+
+    if series is None or len(series.bars) < lookback + 1 or atr_obs is None or atr_obs.value <= 0:
+        items.append(
+            ChecklistItem(
+                "donchian_breakout",
+                f"Giá đóng phá kênh Donchian {lookback} nến + {atr_buffer_mult} ATR ({timeframe})",
+                "thiếu dữ liệu",
+                "phá",
+                "—",
+                None,
+            )
+        )
+    else:
+        prior = series.bars[-(lookback + 1) : -1]
+        current = series.bars[-1]
+        high = max(bar.high for bar in prior)
+        low = min(bar.low for bar in prior)
+        buf = Decimal(str(atr_buffer_mult)) * Decimal(str(atr_obs.value))
+        broke_up = current.close > high + buf
+        broke_down = current.close < low - buf
+        items.append(
+            ChecklistItem(
+                "donchian_breakout",
+                f"Giá đóng phá kênh Donchian {lookback} nến + {atr_buffer_mult} ATR ({timeframe})",
+                f"đóng {_fmt(current.close, 2)}; biên {_fmt(low - buf, 2)} – {_fmt(high + buf, 2)}",
+                ">" if broke_up else "<" if broke_down else "ngoài biên",
+                _fmt(high + buf, 2) if not broke_down else _fmt(low - buf, 2),
+                broke_up or broke_down,
+            )
+        )
+
+    volumes = None if series is None else series.quote_volumes
+    if volumes is None or len(volumes) < volume_lookback + 1:
+        items.append(
+            ChecklistItem(
+                "volume_above_median",
+                f"Quote volume >= {vol_mult}× median {volume_lookback} nến trước",
+                "thiếu dữ liệu",
+                ">=",
+                "—",
+                None,
+            )
+        )
+    else:
+        reference = median(volumes[-(volume_lookback + 1) : -1])
+        threshold = vol_mult * reference
+        items.append(
+            ChecklistItem(
+                "volume_above_median",
+                f"Quote volume >= {vol_mult}× median {volume_lookback} nến trước",
+                _fmt(volumes[-1], 0),
+                ">=",
+                _fmt(threshold, 0),
+                reference > 0 and volumes[-1] >= threshold,
+            )
+        )
+
+    items.append(
+        ChecklistItem(
+            "regime_adx",
+            f"ADX14 {timeframe} đủ mạnh (tránh chop)",
+            _fmt(adx_obs.value if adx_obs else None, 2),
+            ">=",
+            f"{min_adx}",
+            None if adx_obs is None else float(adx_obs.value) >= min_adx,
+        )
+    )
+    items.append(
+        ChecklistItem(
+            "regime_er",
+            f"Efficiency ratio 40 {timeframe} đủ cao",
+            _fmt(er_obs.value if er_obs else None, 3),
+            ">=",
+            f"{min_er}",
+            None if er_obs is None else float(er_obs.value) >= min_er,
+        )
+    )
+    return tuple(items)
+
+
+def _h06_v3_1h(
+    snapshot: DecisionSnapshot, settings: StrategySelection
+) -> tuple[ChecklistItem, ...]:
+    params = dict(settings.parameters)
+    min_tp_atr = float(params.get("min_tp_atr_multiple", 1.2))
+
+    def value(name: str) -> float | None:
+        feature = _feature(snapshot, name, "1h")
+        return None if feature is None else float(feature.value)
+
+    adx, er, z, rsi_v, atr_v = (
+        value(n) for n in ("adx_14", "efficiency_ratio_40", "zscore_20", "rsi_14", "atr_14")
+    )
+    macro_ok = (
+        None
+        if snapshot.macro_blackout is None or snapshot.macro_is_fresh is None
+        else (not snapshot.macro_blackout and snapshot.macro_is_fresh)
+    )
+    long_extreme = z is not None and rsi_v is not None and z < -2.0 and rsi_v < 30.0
+    short_extreme = z is not None and rsi_v is not None and z > 2.0 and rsi_v > 70.0
+    direction = "long" if long_extreme else ("short" if short_extreme else None)
+    items = [
+        ChecklistItem(
+            "macro_clear",
+            "Không trong khoảng cấm quanh sự kiện vĩ mô, lịch còn mới",
+            "thiếu dữ liệu"
+            if macro_ok is None
+            else ("đang cấm" if snapshot.macro_blackout else "rõ"),
+            "=",
+            "không cấm",
+            macro_ok,
+        ),
+        ChecklistItem(
+            "range_adx",
+            "ADX14 1h thấp (đi ngang)",
+            _fmt(adx, 2),
+            "<",
+            "18",
+            None if adx is None else adx < 18.0,
+        ),
+        ChecklistItem(
+            "range_er",
+            "Efficiency ratio 40 1h thấp",
+            _fmt(er, 3),
+            "<",
+            "0.25",
+            None if er is None else er < 0.25,
+        ),
+        ChecklistItem(
+            "extreme",
+            "Z20 và RSI14 1h cùng vượt ngưỡng",
+            f"Z20 {_fmt(z, 2)} / RSI14 {_fmt(rsi_v, 1)}",
+            "vượt",
+            "Z < −2 & RSI < 30, hoặc Z > 2 & RSI > 70",
+            None if z is None or rsi_v is None else (long_extreme or short_extreme),
+        ),
+    ]
+    series = snapshot.get_series("1h")
+    if series is not None and len(series.bars) >= 121 and direction is not None:
+        prior = series.bars[-121:-1]
+        current = series.bars[-1]
+        floor, ceiling = min(bar.low for bar in prior), max(bar.high for bar in prior)
+        safe = current.close >= floor if direction == "long" else current.close <= ceiling
+        items.append(
+            ChecklistItem(
+                "no_adverse_break",
+                "Chưa phá biên 120 nến 1h theo hướng bất lợi",
+                f"đóng {_fmt(current.close, 2)}; biên {_fmt(floor, 2)} – {_fmt(ceiling, 2)}",
+                ">=" if direction == "long" else "<=",
+                _fmt(floor if direction == "long" else ceiling, 2),
+                safe,
+            )
+        )
+        items.append(
+            ChecklistItem(
+                "reversal_candle",
+                "Nến 1h xác nhận đảo chiều (thân thuận chiều hoặc râu ≥ 40%)",
+                f"O {_fmt(current.open, 2)} / C {_fmt(current.close, 2)}",
+                "đảo chiều",
+                "thân thuận chiều hoặc râu ≥ 40%",
+                _is_reversal_candle(current, direction),
+            )
+        )
+        mean_20 = sum(bar.close for bar in series.bars[-20:]) / Decimal("20")
+        if atr_v is not None and atr_v > 0:
+            dist = (
+                float(mean_20 - current.close)
+                if direction == "long"
+                else float(current.close - mean_20)
+            )
+            tp_mult = dist / atr_v
+            items.append(
+                ChecklistItem(
+                    "mean_tp_hurdle",
+                    f"Khoảng cách về trung bình 20 nến >= {min_tp_atr} ATR",
+                    f"{_fmt(tp_mult, 2)} ATR (mean20 {_fmt(mean_20, 2)})",
+                    ">=",
+                    f"{min_tp_atr} ATR",
+                    tp_mult >= min_tp_atr,
+                )
+            )
     return tuple(items)
 
 
@@ -2061,10 +2399,10 @@ def _h03_condition_series(
 
 
 def _h06_condition_series(
-    snapshot: DecisionSnapshot, _settings: StrategySelection
+    snapshot: DecisionSnapshot, _settings: StrategySelection, timeframe: str = "15m"
 ) -> dict[str, list[float]]:
-    """Chuỗi điểm số điều kiện H06 trên nến 15m (range_adx, range_er, extreme, no_adverse_break)."""
-    bars, _ = _extract_eligible_series(snapshot, "15m")
+    """Chuỗi điểm số điều kiện H06 (range_adx, range_er, extreme, no_adverse_break)."""
+    bars, _ = _extract_eligible_series(snapshot, timeframe)
     if not bars:
         return {"range_adx": [], "range_er": [], "extreme": [], "no_adverse_break": []}
 
@@ -2121,9 +2459,14 @@ def checklist_condition_series(
     release_id: str, snapshot: DecisionSnapshot, settings: StrategySelection
 ) -> dict[str, list[float]]:
     """Tính chuỗi điểm số lịch sử (zero lookahead) cho điều kiện checklist theo ``release_id``."""
+    v4_timeframe = H03_V4_TIMEFRAMES.get(release_id)
+    if v4_timeframe is not None:
+        return _h03_condition_series(snapshot, settings, v4_timeframe)
     v3_timeframe = H03_V3_TIMEFRAMES.get(release_id)
     if v3_timeframe is not None:
         return _h03_condition_series(snapshot, settings, v3_timeframe)
+    if release_id == "h06-v3-1h":
+        return _h06_condition_series(snapshot, settings, "1h")
     normalized = release_id.lower()
     card = _strategy_cards_by_release().get(normalized)
     if card is not None:
@@ -2317,6 +2660,15 @@ def strategy_checklist(
     release_id: str, snapshot: DecisionSnapshot, settings: StrategySelection
 ) -> tuple[ChecklistItem, ...]:
     """Checklist cho các rule H01..H22 và Strategy Cards ``sc-binance-usdm-*``; khác trả rỗng."""
+    if release_id == "h01-v2":
+        return _attach_independence(_h01_v2(snapshot, settings), release_id, snapshot, settings)
+    v4_timeframe = H03_V4_TIMEFRAMES.get(release_id)
+    if v4_timeframe is not None:
+        return _attach_independence(
+            _h03_v4(snapshot, settings, v4_timeframe), release_id, snapshot, settings
+        )
+    if release_id == "h06-v3-1h":
+        return _attach_independence(_h06_v3_1h(snapshot, settings), release_id, snapshot, settings)
     # H03 v3: mỗi release một khung vào lệnh (15m/1h/4h) — checklist đọc đúng khung đó.
     v3_timeframe = H03_V3_TIMEFRAMES.get(release_id)
     if v3_timeframe is not None:
