@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-26 — CRY-292 [WP-03C/Task5] Done: Vòng đời User Data Stream & bộ chuẩn hóa/giảm trạng thái sự kiện venue
+
+- **Nguồn tài liệu hiện hành kiểm tra ngày 2026-11-26:**
+  - Binance USDⓈ-M Futures User Data Streams Docs (`POST/PUT/DELETE /fapi/v1/listenKey`, https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams): xác nhận `listenKey` hợp lệ 60 phút, cần `PUT /fapi/v1/listenKey` định kỳ, `listenKeyExpired` báo stream đóng, kết nối WebSocket chỉ sống tối đa 24 giờ (phải xoay chủ động), các sự kiện `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE` (gồm `LIQUIDATION`), `ALGO_UPDATE`.
+- **Thay đổi:**
+  - `src/trading_bot/domain/execution/venue_event_reducer.py`: định nghĩa `CanonicalVenueEventEnvelope` (`schema_version="wp03c-venue-event-v1"`, lưu event/transaction/receive time, account scope, event/order/client/trade/algo ID, facts đã khử nhạy cảm và cờ `is_liquidation_or_external`), `normalize_user_stream_payload` (tái dùng parser Task 1A cho `ORDER_TRADE_UPDATE`/`ALGO_UPDATE`/`ACCOUNT_UPDATE`, hỗ trợ `listenKeyExpired` và sự kiện lạ fail-closed `UNKNOWN`), và `VenueEventReducer` chịu trùng lặp/out-of-order (không nhân đôi fill, không dùng `event_time_ms` đơn thuần bỏ qua `trade_id` riêng biệt, không lùi terminal state, hội tụ idempotent với `apply_rest_snapshot`).
+  - `src/trading_bot/adapters/binance_usdm/user_stream.py`: triển khai `ListenKeyLease` (ẩn `listen_key` khỏi `repr` và telemetry qua `redacted_ws_url`), `BinanceUsdMListenKeyClient` (`POST/PUT/DELETE /fapi/v1/listenKey` ghim `BinanceDemoTarget`), và `UserStreamSupervisor` (gia hạn trước 60 phút, xoay kết nối chủ động ở 23h30m trước mốc 24h, giám sát heartbeat, đóng ngay `entry_gate_open=False` và đòi `on_reconcile_completed(matched=True)` khi mất kết nối/`listenKeyExpired`/`LIQUIDATION`).
+  - `tests/unit/test_binance_usdm_user_stream.py`, `tests/unit/test_venue_event_reducer.py` & `tests/e2e/test_wp03c_user_stream_e2e.py`: kiểm chứng toàn bộ vòng đời listenKey, redaction secret, xoay 24h, out-of-order/dedup/terminal-state, replay + REST snapshot hội tụ idempotent, và PostgreSQL Compose E2E chứng minh đóng/mở `BotRuntimeStateRecord` (`RECOVERY_REQUIRED` ↔ `READY`).
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format` & `uv run mypy` trên 2 source files + 3 test files: 100% clean.
+  - `uv run pytest -q --tb=short tests/unit/test_binance_usdm_user_stream.py tests/unit/test_venue_event_reducer.py tests/e2e/test_wp03c_user_stream_e2e.py`: exit code `0`, **5 passed in 20.71s**, 0 skipped (gồm PostgreSQL Compose E2E).
+
 ### 2026-11-26 — CRY-293 [WP-03C/Task6] Done: Partial fill & lệnh bảo vệ qua Binance USDⓈ-M Algo Service
 
 - **Nguồn tài liệu hiện hành kiểm tra ngày 2026-11-26:**
@@ -156,6 +168,13 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **CRY-220 [CK-2/con-lai]:** Backlog → In Progress, comment **#4950**. `tests/unit/test_cry220_ck2_golden_sideways.py`: golden đi ngang (`trend=range`, không hướng/không "độ mạnh %"), chip % từ giá mở khung lớn, streaming=batch cho swing đã xác nhận. Kiểm chứng 3 test mới + regression `test_ck_market_overview.py` **10 passed/0,08s**; ruff sạch.
 - **Còn mở sau CRY-220:** mục 7 (bộ lọc khung lớn/lược đồ v2 chờ owner quyết định), E2E RT1 cần chạy lại khi Docker rảnh.
 - **CRY-220 hoàn thiện → Done** (comment **#4964**): thêm `SETUP_MTF_ROLES`/`resolve_mtf_roles` (h01/h03/h06), luồng `web_router → service.get_market_overview(mtf_roles=...) → build_market_overview`, payload `roles_source`; template + JS + CSS chip `%` từ giá mở khung lớn, bỏ "độ mạnh %". Bằng chứng: unit CRY-220 5 passed; chart+overview 44 passed; regression sec18+chart+CRY-220 **153 passed/33,97s**; Playwright biểu đồ **4 passed/40,26s**; ruff/mypy/`git diff --check` sạch. Pitfall: đổi chữ ký `get_market_overview` bắt buộc cập nhật mock service trong `test_admin_market_chart.py`.
+
+### 2026-11-26 — RT1 E2E xanh sau khi mở giới hạn Docker
+
+- Chạy lại `tests/e2e/test_rt1_paper_market_loop.py` với Docker healthy (`server=29.9.3`): cuối cùng **1 passed / 377,01s**. Không kill stack của agent khác; lần lượt sửa lỗi thật: kỳ vọng `excluded_1h=[]` (640 nến 1h > 21 ngày), `_connect_scoped` đặt GUC `app.workspace_id`/`app.bot_id` để probe đọc `bot_decision` dưới RLS, `market_signal_composition` truyền `max_bars_per_stream=_MAX_BARS_PER_STREAM` (warmup 3×200), seed `market_funding`/`derivatives_snapshot` thêm `expires_at` (retention CRY-452 90 ngày), và `DerivativesWorker.insert` gộp `id` vào `values` thay vì truyền trùng keyword.
+- Kết quả callback: `statuses=['CANDIDATE:H01_LONG_ENTRY']`, `decision_count=1`, `dispatched_count=1`. Regression `test_cry345_derivatives_idempotency.py` + `test_ai4_derivatives.py` **19 passed**; ruff/mypy/`git diff --check` sạch.
+- Pitfall: probe RT1 dùng cả DB role migrate lẫn RLS; mọi phase đọc bảng SIGNAL phải set GUC sau `_connect()`. Khi assert compose thất bại, dùng `--assert=plain` để thấy stderr đầy đủ (pytest rewrite cắt repr).
+- WP06 Task9 (không phải RT1) sau cùng đạt `decision_count=3` nhưng dừng ở `verify-scorer-active-mode-gate`: `permission denied for table learning_score_event` dưới role admin-web (migration chỉ cấp column-level SELECT). Cần xử lý grant/role riêng, không tự mở rộng quyền để giả xanh.
 
 ### 2026-11-25 — CRY-241 golden fixture công thức feature
 
