@@ -1704,6 +1704,91 @@ def _card_l4_items(
                     deriv_passed,
                 )
             )
+        elif "orderbook_wall" in op or "order_book_wall" in op:
+            mode = str(params.get("mode", "warn")).strip().lower()
+            direction = (
+                str(params.get("direction", params.get("expected_direction", "NEUTRAL")))
+                .strip()
+                .upper()
+            )
+            min_dist = Decimal(str(params.get("min_wall_distance_atr", "0.5")))
+            gate_res = result.gate_result
+            ob_metrics = (
+                gate_res.metrics.get("orderbook_context", {})
+                if gate_res is not None and isinstance(gate_res.metrics, dict)
+                else {}
+            )
+            is_stale = bool(ob_metrics.get("is_stale", True))
+            if macro_blocked:
+                wall_passed: bool | None = None
+                wall_actual = "ngắt mạch macro blackout"
+            elif gate_res is None or is_stale:
+                wall_blocked = gate_res is not None and any(
+                    "ORDERBOOK_CONTEXT_UNAVAILABLE" in r for r in gate_res.reasons
+                )
+                wall_passed = False if wall_blocked else None
+                wall_actual = "thiếu dữ liệu / stale"
+            else:
+                wall_blocked = any(
+                    tag in reason
+                    for reason in gate_res.reasons
+                    for tag in ("ORDERBOOK_ASK_WALL_NEAR", "ORDERBOOK_BID_WALL_NEAR")
+                )
+                wall_passed = not wall_blocked
+                wall_actual = (
+                    f"ask_dist={_fmt(ob_metrics.get('ask_wall_distance_atr'), 2)}, "
+                    f"bid_dist={_fmt(ob_metrics.get('bid_wall_distance_atr'), 2)}"
+                )
+            items.append(
+                ChecklistItem(
+                    "l4_orderbook_wall",
+                    f"Cổng L4: Khoảng cách tường thanh khoản L2 ({mode}/{direction})",
+                    wall_actual,
+                    ">",
+                    f"{_fmt(min_dist, 2)} ATR",
+                    wall_passed,
+                )
+            )
+        elif "imbalance" in op or op == "obi_gate":
+            mode = str(params.get("mode", "warn")).strip().lower()
+            direction = (
+                str(params.get("direction", params.get("expected_direction", "NEUTRAL")))
+                .strip()
+                .upper()
+            )
+            max_obi = Decimal(str(params.get("max_adverse_obi", "0.35")))
+            band = str(params.get("obi_band", "50bps")).strip().lower()
+            gate_res = result.gate_result
+            ob_metrics = (
+                gate_res.metrics.get("orderbook_context", {})
+                if gate_res is not None and isinstance(gate_res.metrics, dict)
+                else {}
+            )
+            is_stale = bool(ob_metrics.get("is_stale", True))
+            obi_raw = ob_metrics.get("obi_100bps" if band == "100bps" else "obi_50bps")
+            if macro_blocked:
+                obi_passed: bool | None = None
+                obi_actual = "ngắt mạch macro blackout"
+            elif gate_res is None or is_stale or obi_raw is None:
+                obi_blocked = gate_res is not None and any(
+                    "ORDERBOOK_OBI_UNAVAILABLE" in r for r in gate_res.reasons
+                )
+                obi_passed = False if obi_blocked else None
+                obi_actual = "thiếu dữ liệu / stale"
+            else:
+                obi_blocked = any("ORDERBOOK_ADVERSE_OBI_" in reason for reason in gate_res.reasons)
+                obi_passed = not obi_blocked
+                obi_actual = f"OBI({band})={_fmt(obi_raw, 4)}"
+            items.append(
+                ChecklistItem(
+                    "l4_order_book_imbalance",
+                    f"Cổng L4: Mất cân bằng sổ lệnh OBI ({mode}/{direction})",
+                    obi_actual,
+                    "không chống chiều",
+                    f"ngưỡng ±{_fmt(max_obi, 2)}",
+                    obi_passed,
+                )
+            )
 
         if not atr_added and (
             "volatility" in op or "atr" in op or "min_atr" in params or "max_atr" in params

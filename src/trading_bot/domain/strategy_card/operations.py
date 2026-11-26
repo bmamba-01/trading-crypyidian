@@ -318,6 +318,36 @@ _RAW_SPECS: tuple[OperationSpec, ...] = (
         "funding_oi_context_gate",
         "Cổng lọc/cảnh báo đám đông quá tải theo funding tầng L4.",
     ),
+    OperationSpec(
+        "orderbook_wall_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "orderbook_wall_gate",
+        "Cổng lọc/cảnh báo khoảng cách tường thanh khoản Bid/Ask L2 theo ATR (chỉ tầng L4).",
+    ),
+    OperationSpec(
+        "order_book_wall_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "orderbook_wall_gate",
+        "Cổng lọc/cảnh báo tường thanh khoản Bid/Ask L2 tầng L4.",
+    ),
+    OperationSpec(
+        "order_book_imbalance_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "order_book_imbalance_gate",
+        "Cổng lọc/cảnh báo mất cân bằng sổ lệnh L2 (OBI) tầng L4.",
+    ),
+    OperationSpec(
+        "orderbook_imbalance_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "order_book_imbalance_gate",
+        "Cổng lọc/cảnh báo mất cân bằng sổ lệnh L2 (OBI) tầng L4.",
+    ),
+    OperationSpec(
+        "obi_gate",
+        CompositionLayer.L4_CONTEXT_GATE,
+        "order_book_imbalance_gate",
+        "Cổng lọc/cảnh báo OBI sổ lệnh L2 tầng L4.",
+    ),
     # --- L5: Strategy Trigger ---
     OperationSpec(
         "wick_reversal_trigger",

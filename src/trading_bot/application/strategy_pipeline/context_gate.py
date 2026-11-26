@@ -20,6 +20,12 @@ from trading_bot.domain.market.derivatives_context import (
     FundingCrowdingState,
     observation_from_snapshot_features,
 )
+from trading_bot.domain.market.order_book import (
+    OrderBookContext,
+)
+from trading_bot.domain.market.order_book import (
+    observation_from_snapshot_features as orderbook_from_snapshot_features,
+)
 from trading_bot.domain.strategy_card.operations import resolve_operation
 
 if TYPE_CHECKING:
@@ -314,6 +320,165 @@ class ContextGateEvaluator:
             warnings=tuple(advisory_warnings),
         )
 
+    def evaluate_orderbook_wall_gate(
+        self,
+        *,
+        context: OrderBookContext | None,
+        expected_direction: str = "NEUTRAL",
+        min_wall_distance_atr: Decimal = Decimal("0.5"),
+        mode: str = "warn",
+        fail_closed_on_missing: bool = False,
+    ) -> ContextGateResult:
+        """Đánh giá cổng L4 khoảng cách tường thanh khoản Bid/Ask L2 theo ATR.
+
+        CHỈ lọc hoặc cảnh báo ở tầng L4, tuyệt đối không sinh tín hiệu vào lệnh L5.
+        """
+        normalized_mode = mode.strip().lower()
+        is_filter_mode = normalized_mode in {"filter", "block"}
+        direction = expected_direction.strip().upper() or "NEUTRAL"
+
+        metrics: dict[str, Any] = {
+            "orderbook_context": (
+                context.to_metrics() if context is not None else {"is_stale": True}
+            ),
+            "orderbook_wall_gate_mode": normalized_mode,
+            "orderbook_wall_expected_direction": direction,
+        }
+
+        if context is None or context.is_stale:
+            msg = (
+                "ORDERBOOK_CONTEXT_UNAVAILABLE: Dữ liệu sổ lệnh L2 thiếu hoặc quá cũ (stale), "
+                "không thể kiểm tra khoảng cách tường thanh khoản."
+            )
+            if is_filter_mode and fail_closed_on_missing:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=(msg,),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=(msg,),
+            )
+
+        findings: list[str] = []
+        if direction in {"LONG", "BULLISH", "NEUTRAL", "BIDIRECTIONAL"}:
+            if (
+                context.ask_wall_distance_atr is not None
+                and context.ask_wall_distance_atr <= min_wall_distance_atr
+            ):
+                findings.append(
+                    f"ORDERBOOK_ASK_WALL_NEAR: Tường Ask tại {context.nearest_ask_wall_price} "
+                    f"chỉ cách {context.ask_wall_distance_atr:.4f} ATR <= {min_wall_distance_atr} "
+                    "ATR ngay phía trên, cản chiều LONG."
+                )
+        if direction in {"SHORT", "BEARISH", "NEUTRAL", "BIDIRECTIONAL"}:
+            if (
+                context.bid_wall_distance_atr is not None
+                and context.bid_wall_distance_atr <= min_wall_distance_atr
+            ):
+                findings.append(
+                    f"ORDERBOOK_BID_WALL_NEAR: Tường Bid tại {context.nearest_bid_wall_price} "
+                    f"chỉ cách {context.bid_wall_distance_atr:.4f} ATR <= {min_wall_distance_atr} "
+                    "ATR ngay phía dưới, cản chiều SHORT."
+                )
+
+        if findings:
+            if is_filter_mode:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=tuple(findings),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=tuple(findings),
+            )
+        return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
+
+    def evaluate_order_book_imbalance_gate(
+        self,
+        *,
+        context: OrderBookContext | None,
+        expected_direction: str = "NEUTRAL",
+        max_adverse_obi: Decimal = Decimal("0.35"),
+        obi_band: str = "50bps",
+        mode: str = "warn",
+        fail_closed_on_missing: bool = False,
+    ) -> ContextGateResult:
+        """Đánh giá cổng L4 mất cân bằng sổ lệnh L2 (OBI) chống chiều dự kiến."""
+        normalized_mode = mode.strip().lower()
+        is_filter_mode = normalized_mode in {"filter", "block"}
+        direction = expected_direction.strip().upper() or "NEUTRAL"
+        band_key = obi_band.strip().lower()
+
+        metrics: dict[str, Any] = {
+            "orderbook_context": (
+                context.to_metrics() if context is not None else {"is_stale": True}
+            ),
+            "orderbook_obi_gate_mode": normalized_mode,
+            "orderbook_obi_expected_direction": direction,
+            "orderbook_obi_band": band_key,
+        }
+
+        obi_value: Decimal | None = None
+        if context is not None and not context.is_stale:
+            obi_value = context.obi_100bps if band_key == "100bps" else context.obi_50bps
+
+        if context is None or context.is_stale or obi_value is None:
+            msg = (
+                "ORDERBOOK_OBI_UNAVAILABLE: Thiếu dữ liệu OBI sổ lệnh L2 hợp lệ "
+                "(stale hoặc dải giá rỗng)."
+            )
+            if is_filter_mode and fail_closed_on_missing:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=(msg,),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=(msg,),
+            )
+
+        findings: list[str] = []
+        if direction in {"LONG", "BULLISH"} and obi_value <= -max_adverse_obi:
+            findings.append(
+                f"ORDERBOOK_ADVERSE_OBI_LONG: OBI({band_key}) = {obi_value:.4f} <= "
+                f"-{max_adverse_obi}, áp lực Ask áp đảo chống chiều LONG."
+            )
+        elif direction in {"SHORT", "BEARISH"} and obi_value >= max_adverse_obi:
+            findings.append(
+                f"ORDERBOOK_ADVERSE_OBI_SHORT: OBI({band_key}) = {obi_value:.4f} >= "
+                f"{max_adverse_obi}, áp lực Bid áp đảo chống chiều SHORT."
+            )
+        elif direction in {"NEUTRAL", "BIDIRECTIONAL"} and abs(obi_value) >= max_adverse_obi:
+            findings.append(
+                f"ORDERBOOK_ADVERSE_OBI_EXTREME: |OBI({band_key})| = {abs(obi_value):.4f} >= "
+                f"{max_adverse_obi}."
+            )
+
+        if findings:
+            if is_filter_mode:
+                return ContextGateResult(
+                    status=ContextGateStatus.BLOCK,
+                    reasons=tuple(findings),
+                    metrics=metrics,
+                )
+            return ContextGateResult(
+                status=ContextGateStatus.PASS,
+                reasons=(),
+                metrics=metrics,
+                warnings=tuple(findings),
+            )
+        return ContextGateResult(status=ContextGateStatus.PASS, reasons=(), metrics=metrics)
+
     def _resolve_atr(
         self,
         node_outputs: Mapping[str, Any],
@@ -491,6 +656,48 @@ class ContextGateEvaluator:
                     fail_closed_on_missing=fail_closed_on_missing,
                     block_on_oi_anomaly=block_on_oi_anomaly,
                     max_abs_funding_rate=max_abs_funding_rate,
+                )
+                all_metrics.update(res.metrics)
+                all_warnings.extend(res.warnings)
+                if res.status == ContextGateStatus.BLOCK:
+                    all_reasons.extend(res.reasons)
+
+            elif canonical == "orderbook_wall_gate":
+                mode = str(params.get("mode", "warn")).strip().lower()
+                expected_direction = str(
+                    params.get("direction", params.get("expected_direction", "NEUTRAL"))
+                ).strip()
+                fail_closed_on_missing = bool(params.get("fail_closed_on_missing", False))
+                min_wall_distance_atr = Decimal(str(params.get("min_wall_distance_atr", "0.5")))
+                ob_ctx = orderbook_from_snapshot_features(snapshot)
+                res = self.evaluate_orderbook_wall_gate(
+                    context=ob_ctx,
+                    expected_direction=expected_direction,
+                    min_wall_distance_atr=min_wall_distance_atr,
+                    mode=mode,
+                    fail_closed_on_missing=fail_closed_on_missing,
+                )
+                all_metrics.update(res.metrics)
+                all_warnings.extend(res.warnings)
+                if res.status == ContextGateStatus.BLOCK:
+                    all_reasons.extend(res.reasons)
+
+            elif canonical == "order_book_imbalance_gate":
+                mode = str(params.get("mode", "warn")).strip().lower()
+                expected_direction = str(
+                    params.get("direction", params.get("expected_direction", "NEUTRAL"))
+                ).strip()
+                fail_closed_on_missing = bool(params.get("fail_closed_on_missing", False))
+                max_adverse_obi = Decimal(str(params.get("max_adverse_obi", "0.35")))
+                obi_band = str(params.get("obi_band", "50bps"))
+                ob_ctx = orderbook_from_snapshot_features(snapshot)
+                res = self.evaluate_order_book_imbalance_gate(
+                    context=ob_ctx,
+                    expected_direction=expected_direction,
+                    max_adverse_obi=max_adverse_obi,
+                    obi_band=obi_band,
+                    mode=mode,
+                    fail_closed_on_missing=fail_closed_on_missing,
                 )
                 all_metrics.update(res.metrics)
                 all_warnings.extend(res.warnings)
